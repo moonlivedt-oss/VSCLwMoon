@@ -3,13 +3,24 @@
 пользователя), генератор QSS и тёмный тайтлбар для Windows."""
 import sys
 
-PALETTE = {
+# Catppuccin Mocha (тёмная) и Latte (светлая) — совпадают с семейством тем
+# Catppuccin в VS Code у пользователя.
+PALETTE_DARK = {
     "bg": "#181825", "surface": "#1e1e2e", "surface2": "#11111b",
     "border": "#313244", "text": "#cdd6f4", "subtext": "#a6adc8",
     "accent": "#89b4fa", "accent_text": "#11111b", "accent_hover": "#a6c8ff",
     "success": "#a6e3a1", "warn": "#f9e2af", "error": "#f38ba8",
     "track": "#45475a", "input_bg": "#313244", "input_text": "#cdd6f4",
 }
+PALETTE_LIGHT = {
+    "bg": "#e6e9ef", "surface": "#eff1f5", "surface2": "#dce0e8",
+    "border": "#bcc0cc", "text": "#4c4f69", "subtext": "#6c6f85",
+    "accent": "#1e66f5", "accent_text": "#eff1f5", "accent_hover": "#3b7bff",
+    "success": "#40a02b", "warn": "#df8e1d", "error": "#d20f39",
+    "track": "#ccd0da", "input_bg": "#ffffff", "input_text": "#4c4f69",
+}
+PALETTES = {"dark": PALETTE_DARK, "light": PALETTE_LIGHT}
+PALETTE = PALETTE_DARK   # тема по умолчанию / обратная совместимость
 
 
 def _mix(c1, c2, t):
@@ -62,11 +73,6 @@ QLabel#Warn {{
     color: {p["error"]}; background: {_rgba(p["error"], 0.12)};
     border: 1px solid {_rgba(p["error"], 0.35)}; border-radius: 10px;
     padding: 8px 12px; font-weight: bold;
-}}
-QLabel#Core {{
-    color: {p["success"]}; background: {_rgba(p["success"], 0.10)};
-    border: 1px solid {_rgba(p["success"], 0.30)}; border-radius: 10px;
-    padding: 8px 12px; font-size: 9pt;
 }}
 QLabel#Summary {{ font-size: 11pt; font-weight: bold; color: {p["text"]}; }}
 
@@ -152,16 +158,21 @@ QFrame#HLine {{ background: {p["border"]}; border: none; max-height: 1px; }}
 """
 
 
-def apply_dark_titlebar(widget) -> None:
-    """Тёмная рамка/заголовок окна на Windows 10/11. На других ОС — no-op."""
+def apply_titlebar(widget, dark: bool = True) -> None:
+    """Тёмная/светлая рамка и заголовок окна на Windows 10/11. Другие ОС — no-op."""
     if sys.platform != "win32":
         return
     try:
         import ctypes
         hwnd = int(widget.winId())
-        val = ctypes.c_int(1)
+        val = ctypes.c_int(1 if dark else 0)
         for attr in (20, 19):   # DWMWA_USE_IMMERSIVE_DARK_MODE: 20 новое, 19 старое
             ctypes.windll.dwmapi.DwmSetWindowAttribute(
                 hwnd, attr, ctypes.byref(val), ctypes.sizeof(val))
     except Exception:
         pass
+
+
+def apply_dark_titlebar(widget) -> None:
+    """Обратная совместимость: тёмный тайтлбар."""
+    apply_titlebar(widget, True)

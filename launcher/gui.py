@@ -11,7 +11,7 @@ from .core import (
     launch, load_categories, load_config, load_descriptions, load_installed,
     read_installed_from_disk, save_config, uninstall_extension,
 )
-from .theme import PALETTE, apply_dark_titlebar, build_qss
+from .theme import PALETTES, apply_titlebar, build_qss
 
 
 def run_gui():
@@ -24,7 +24,7 @@ def run_gui():
         QSizePolicy, QDialog,
     )
 
-    cats = load_categories()
+    cats, cats_err = load_categories()
     ext_index = build_ext_index(cats)
     code_cli = find_code_cli()
     cfg = load_config()
@@ -251,10 +251,15 @@ def run_gui():
         """Шапка: PNG-баннер «cover» со скруглёнными углами, иначе ровный фон."""
         RADIUS = 16
 
-        def __init__(self):
+        def __init__(self, palette):
             super().__init__()
             self.setObjectName("Header")
+            self._pal = palette
             self._pm = QPixmap(str(BANNER_FILE))
+
+        def set_palette(self, palette):
+            self._pal = palette
+            self.update()
 
         def paintEvent(self, _e):
             p = QPainter(self)
@@ -271,10 +276,10 @@ def run_gui():
                 y = (scaled.height() - self.height()) // 2
                 p.drawPixmap(-x, -y, scaled)
             else:
-                p.fillRect(rect, QColor(PALETTE["surface"]))
+                p.fillRect(rect, QColor(self._pal["surface"]))
             p.setClipping(False)
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.setPen(QPen(QColor(PALETTE["border"]), 1))
+            p.setPen(QPen(QColor(self._pal["border"]), 1))
             p.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), self.RADIUS, self.RADIUS)
             p.end()
 
@@ -358,11 +363,29 @@ def run_gui():
             self._loaded = bool(self.installed)
             self.cat_checks: dict[str, CategoryCard] = {}
             self._install_threads = []
+            self._theme = cfg.get("theme", "dark")
+            if self._theme not in PALETTES:
+                self._theme = "dark"
+            self._pal = PALETTES[self._theme]
             self._build_ui()
             self._restore()
             self._update_summary()
             self._start_ext_load()
             self._probe_memory()
+
+        def _update_theme_btn(self):
+            self.theme_btn.setText("Тема: светлая" if self._theme == "light"
+                                   else "Тема: тёмная")
+
+        def _toggle_theme(self):
+            self._theme = "light" if self._theme == "dark" else "dark"
+            self._pal = PALETTES[self._theme]
+            QApplication.instance().setStyleSheet(build_qss(self._pal))
+            self.header.set_palette(self._pal)
+            apply_titlebar(self, self._theme == "dark")
+            self._update_theme_btn()
+            cfg["theme"] = self._theme
+            save_config(cfg)
 
         def _probe_memory(self):
             # Не плодим второй поток, пока прошлый замер не закончился: иначе
@@ -398,6 +421,7 @@ def run_gui():
             for key, card in self.cat_checks.items():
                 exts = cats["categories"][key]["extensions"]
                 card.set_installed(sum(1 for e in exts if e.lower() in inst_set))
+            self._refresh_unknown()
 
         def _on_installed(self, ids: list, source: str):
             self.b_run.setEnabled(bool(code_cli))
@@ -427,7 +451,8 @@ def run_gui():
             root.setContentsMargins(18, 18, 18, 14)
             root.setSpacing(14)
 
-            header = BannerHeader()
+            header = BannerHeader(self._pal)
+            self.header = header
             header.setFixedHeight(112)
             hl = QHBoxLayout(header); hl.setContentsMargins(24, 16, 24, 16)
             htext = QVBoxLayout(); htext.setSpacing(3)
@@ -444,12 +469,22 @@ def run_gui():
                 warn.setObjectName("Warn")
                 root.addWidget(warn)
 
+            if cats_err:
+                cwarn = _wrap(QLabel(cats_err)); cwarn.setObjectName("Warn")
+                root.addWidget(cwarn)
+
             mem_row = QHBoxLayout(); mem_row.setSpacing(8)
             self.mem_lbl = QLabel("VS Code сейчас: замеряю…"); self.mem_lbl.setObjectName("Section")
+            self.theme_btn = QPushButton(); self.theme_btn.setObjectName("Ghost")
+            self.theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.theme_btn.setToolTip("Переключить светлую/тёмную тему")
+            self.theme_btn.clicked.connect(self._toggle_theme)
+            self._update_theme_btn()
             mem_ref = QPushButton("⟳"); mem_ref.setObjectName("Ghost"); mem_ref.setFixedWidth(34)
             mem_ref.setToolTip("Обновить замер памяти запущенного VS Code")
             mem_ref.clicked.connect(self._probe_memory)
-            mem_row.addWidget(self.mem_lbl); mem_row.addStretch(); mem_row.addWidget(mem_ref)
+            mem_row.addWidget(self.mem_lbl); mem_row.addStretch()
+            mem_row.addWidget(self.theme_btn); mem_row.addWidget(mem_ref)
             root.addLayout(mem_row)
 
             pre_card = _card()
@@ -495,11 +530,15 @@ def run_gui():
             scroll.setWidget(holder)
             root.addWidget(scroll, 1)
 
-            ao = cats.get("always_on", {})
-            ao_lbl = QLabel(f'{ao.get("title","Ядро")}: {len(ao.get("extensions",[]))} шт. '
-                            f'— грузятся всегда. {ao.get("note","")}')
-            ao_lbl.setObjectName("Core"); _wrap(ao_lbl)
-            root.addWidget(ao_lbl)
+            self.unknown_btn = QPushButton(); self.unknown_btn.setObjectName("Ghost")
+            self.unknown_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.unknown_btn.setToolTip("Установленные расширения, которых нет в "
+                                        "data/categories.json — лаунчер всегда оставляет "
+                                        "их включёнными")
+            self.unknown_btn.clicked.connect(self._show_unknown)
+            urow = QHBoxLayout(); urow.addWidget(self.unknown_btn); urow.addStretch()
+            root.addLayout(urow)
+            self._refresh_unknown()
 
             fold_card = _card()
             fv = QVBoxLayout(fold_card); fv.setContentsMargins(14, 12, 14, 12); fv.setSpacing(8)
@@ -579,6 +618,47 @@ def run_gui():
 
         def _bare(self) -> bool:
             return getattr(self, "bare_cb", None) is not None and self.bare_cb.isChecked()
+
+        def _unknown(self) -> list[str]:
+            """Установленные расширения, которых нет в карте категорий."""
+            return sorted(e for e in self.installed if e not in ext_index)
+
+        def _refresh_unknown(self):
+            unk = self._unknown()
+            self.unknown_btn.setText(f"Не в карте: {len(unk)} — показать")
+            self.unknown_btn.setVisible(bool(unk))
+
+        def _show_unknown(self):
+            unk = self._unknown()
+            if not unk:
+                return
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Расширения не в карте")
+            dlg.resize(560, 560)
+            lay = QVBoxLayout(dlg)
+            lay.setContentsMargins(18, 18, 18, 16); lay.setSpacing(12)
+            title = QLabel("Не в data/categories.json"); title.setObjectName("Title")
+            lay.addWidget(title)
+            note = _wrap(QLabel(
+                f"{len(unk)} расширений нет в карте категорий, поэтому лаунчер всегда "
+                "оставляет их включёнными. Добавь их в нужную категорию в "
+                "data/categories.json, чтобы управлять ими из окна."))
+            note.setObjectName("Subtitle")
+            lay.addWidget(note)
+            lay.addWidget(_hline())
+            box = QPlainTextEdit(); box.setObjectName("Log"); box.setReadOnly(True)
+            box.setMaximumHeight(16777215)
+            box.setPlainText("\n".join(unk))
+            lay.addWidget(box, 1)
+            bar = QHBoxLayout()
+            copy = QPushButton("Копировать список"); copy.setObjectName("Ghost")
+            copy.clicked.connect(lambda: QApplication.clipboard().setText("\n".join(unk)))
+            bar.addWidget(copy); bar.addStretch()
+            close = QPushButton("Закрыть"); close.setObjectName("Accent")
+            close.clicked.connect(dlg.accept)
+            bar.addWidget(close)
+            lay.addLayout(bar)
+            dlg.exec()
 
         def _update_summary(self):
             if self._bare():
@@ -760,12 +840,15 @@ def run_gui():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     font = QFont(); font.setPointSize(10); app.setFont(font)
-    app.setStyleSheet(build_qss(PALETTE))
+    theme_name = cfg.get("theme", "dark")
+    if theme_name not in PALETTES:
+        theme_name = "dark"
+    app.setStyleSheet(build_qss(PALETTES[theme_name]))
     w = Launcher()
     icon_path = BANNER_FILE
     if icon_path.exists():
         from PyQt6.QtGui import QIcon
         w.setWindowIcon(QIcon(str(icon_path)))
     w.show()
-    apply_dark_titlebar(w)   # после show(), когда есть нативный hwnd
+    apply_titlebar(w, theme_name == "dark")   # после show(), когда есть нативный hwnd
     sys.exit(app.exec())

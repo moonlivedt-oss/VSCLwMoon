@@ -4,16 +4,25 @@
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+if getattr(sys, "frozen", False):
+    # Собранный PyInstaller exe: data/ и assets/ распаковываются в _MEIPASS,
+    # а пользовательский конфиг пишем рядом с exe, чтобы он переживал перезапуск.
+    ROOT = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    CONFIG_DIR = Path(sys.executable).parent
+else:
+    ROOT = Path(__file__).resolve().parent.parent
+    CONFIG_DIR = ROOT
+
 DATA_DIR = ROOT / "data"
 ASSETS_DIR = ROOT / "assets"
 CATEGORIES_FILE = DATA_DIR / "categories.json"
 DESCRIPTIONS_FILE = DATA_DIR / "plugin_descriptions.json"
 BANNER_FILE = ASSETS_DIR / "banner.png"
-# Личный конфиг остаётся в корне: он пользовательский и в .gitignore.
-CONFIG_FILE = ROOT / "launcher_config.json"
+# Личный конфиг: он пользовательский и в .gitignore.
+CONFIG_FILE = CONFIG_DIR / "launcher_config.json"
 
 # Ориентировочная «тяжесть» стека и её отражение в памяти. Ключи — как в categories.json.
 WEIGHT = {
@@ -41,9 +50,25 @@ def find_code_cli() -> str | None:
     return which("code") or which("code-insiders")
 
 
-def load_categories() -> dict:
-    with open(CATEGORIES_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+def load_categories() -> tuple[dict, str]:
+    """Читает карту категорий. Возвращает (данные, ошибка). При проблеме —
+    безопасная пустая структура и текст ошибки для показа в окне, чтобы
+    битый или отсутствующий categories.json не ронял приложение."""
+    empty = {"always_on": {"extensions": []}, "categories": {}}
+    try:
+        with open(CATEGORIES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return empty, f"Не найден {CATEGORIES_FILE.name} — стеки не загружены."
+    except json.JSONDecodeError as e:
+        return empty, f"Ошибка в {CATEGORIES_FILE.name}: {e}"
+    except Exception as e:
+        return empty, f"Не удалось прочитать {CATEGORIES_FILE.name}: {e}"
+    if not isinstance(data, dict):
+        return empty, f"{CATEGORIES_FILE.name}: ожидается объект верхнего уровня."
+    data.setdefault("always_on", {"extensions": []})
+    data.setdefault("categories", {})
+    return data, ""
 
 
 def load_descriptions() -> dict[str, str]:
@@ -258,7 +283,9 @@ def launch(cmd_line: str) -> None:
 def selftest(selected_csv: str):
     """Прогон логики без GUI: что включится/выключится и итоговая команда."""
     import time
-    cats = load_categories()
+    cats, cats_err = load_categories()
+    if cats_err:
+        print("categories.json:", cats_err)
     idx = build_ext_index(cats)
     code_cli = find_code_cli()
     print("code CLI:", code_cli)

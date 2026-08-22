@@ -66,6 +66,8 @@
   Профиль нужно заранее создать в самом VS Code (Profiles) — наполнить профиль
   расширениями из CLI нельзя, лаунчер только переключает на готовый.
 - **Показать команду** — превью того, что запустится.
+- **Тема** — переключатель светлой/тёмной темы (Catppuccin Latte / Mocha) вверху
+  окна. Выбор запоминается; тёмная по умолчанию.
 
 ### Горячие клавиши
 
@@ -95,19 +97,36 @@ python vscode_launcher.py --selftest python,web
 
 Покажет, что будет включено и выключено, неизвестные расширения и итоговую команду.
 
+## Сборка в один exe
+
+Чтобы раздать лаунчер без установки Python и PyQt6, собери одиночный exe
+(PyInstaller):
+
+- Двойной клик по `Собрать_exe.bat`, или вручную:
+  ```
+  pip install pyinstaller
+  pyinstaller VSCodeLauncher.spec --noconfirm
+  ```
+
+Готовый файл появится в `dist\VSCodeLauncher.exe`. Данные (`data/`, `assets/`)
+упакованы внутрь; личный `launcher_config.json` создаётся рядом с exe. Иконку
+можно задать в `VSCodeLauncher.spec` (`icon='assets/app.ico'`, нужен `.ico`).
+
 ## Структура проекта
 
 ```
 VSCodeLauncher/
   vscode_launcher.py       точка входа (запуск GUI или --selftest)
   Запустить.bat            запуск отдельным процессом
+  Собрать_exe.bat          сборка exe через PyInstaller
+  VSCodeLauncher.spec      конфиг сборки PyInstaller
   requirements.txt         зависимости (PyQt6)
   launcher/
     __init__.py
     core.py                логика: поиск CLI, чтение/установка/удаление
                            расширений, сборка команды, замер памяти
     gui.py                 окно PyQt6 (карточки, пресеты, диалоги)
-    theme.py               палитра Catppuccin Mocha, генератор QSS, тёмный тайтлбар
+    theme.py               палитры Catppuccin Mocha/Latte, генератор QSS, тайтлбар
   data/
     categories.json        карта расширений по категориям (правь под себя)
     plugin_descriptions.json   id — описание для окна «Подробнее»
@@ -118,7 +137,7 @@ VSCodeLauncher/
 ```
 
 Личный конфиг `launcher_config.json` (пресеты, недавние папки, последний выбор,
-кэш расширений) создаётся сам в корне и в репозиторий не попадает.
+тема, кэш расширений) создаётся сам и в репозиторий не попадает.
 
 ## Лицензия
 
