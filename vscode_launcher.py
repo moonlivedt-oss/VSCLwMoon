@@ -10,11 +10,10 @@ Selftest: python  vscode_launcher.py --selftest python,web
 """
 import sys
 
-from launcher.core import selftest
-from launcher.gui import run_gui
-
 if __name__ == "__main__":
     if len(sys.argv) >= 2 and sys.argv[1] == "--selftest":
+        from launcher.core import selftest   # без PyQt6
         selftest(sys.argv[2] if len(sys.argv) > 2 else "")
     else:
+        from launcher.gui import run_gui
         run_gui()

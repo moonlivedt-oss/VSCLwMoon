@@ -1,0 +1,50 @@
+name: CI
+
+# Тесты — на каждый push и pull request.
+# Сборка exe и выкладка в Release — при пуше тега вида v1.0.0.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dev deps
+        run: pip install -r requirements-dev.txt
+      - name: Run tests
+        run: python -m pytest -q
+
+  build:
+    # Собираем exe только на тег vX.Y.Z (после успешных тестов).
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: Build exe
+        run: pyinstaller VSCodeLauncher.spec --noconfirm
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VSCodeLauncher
+          path: dist/VSCodeLauncher.exe
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/VSCodeLauncher.exe

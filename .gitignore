@@ -13,9 +13,12 @@ dist/
 # Личный конфиг лаунчера — создаётся сам при первом запуске
 # (кэш установленных расширений, недавние папки, последний выбор).
 launcher_config.json
+launcher.log
+launcher.log.*
 
 # ОС / редакторы
 Thumbs.db
+desktop.ini
 .DS_Store
 .idea/
 .vscode/

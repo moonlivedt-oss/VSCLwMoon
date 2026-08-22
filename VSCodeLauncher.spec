@@ -6,8 +6,8 @@
 # запуске (core.py это учитывает через sys.frozen). launcher_config.json
 # пишется рядом с exe и переживает перезапуск.
 #
-# Иконку exe можно задать через icon='assets/app.ico' (нужен .ico; PNG DWM
-# не принимает). Оставлено пустым, чтобы сборка не требовала конвертации.
+# Иконка exe: assets/app.ico (сгенерирована из banner.png). Заменить —
+# положи свой .ico по этому пути.
 
 a = Analysis(
     ['vscode_launcher.py'],
@@ -42,5 +42,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon='assets/app.ico',
 )

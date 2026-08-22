@@ -1,0 +1,4 @@
+# Инструменты разработки (не нужны для запуска лаунчера).
+# Установка:  pip install -r requirements-dev.txt
+pytest>=8.0
+pyinstaller>=6.0

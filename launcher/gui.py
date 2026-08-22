@@ -1,48 +1,199 @@
 # -*- coding: utf-8 -*-
-"""Окно PyQt6: карточки стеков, пресеты, замер памяти, установка/удаление."""
+"""Окно PyQt6: карточки стеков, пресеты, замер памяти, установка/удаление.
+
+Самостоятельные части (хелперы, фоновые потоки, шапка, карточка стека) вынесены
+на уровень модуля. Внутри run_gui остаются Launcher и show_details, которые
+держат общее состояние сессии (конфиг, карта категорий, путь к CLI).
+"""
 import json
+import os
 import sys
 from pathlib import Path
 
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtGui import QFont, QIcon
+from PyQt6.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QCheckBox,
+    QPushButton, QLabel, QLineEdit, QFileDialog, QComboBox,
+    QMessageBox, QInputDialog, QPlainTextEdit, QScrollArea, QFrame,
+    QSizePolicy, QDialog,
+)
+
+from . import __version__
 from .core import (
-    BANNER_FILE, WEIGHT, WEIGHT_LABEL,
+    ICON_FILE, WEIGHT, WEIGHT_LABEL,
     build_ext_index, build_launch_command, code_image_name, code_memory_mb,
     compute_disabled, estimate_saved_mb, find_code_cli, install_extension,
     launch, load_categories, load_config, load_descriptions, load_installed,
-    read_installed_from_disk, save_config, uninstall_extension,
+    read_installed_from_disk, save_config, setup_logging, uninstall_extension,
 )
 from .theme import PALETTES, apply_titlebar, build_qss
 
 
-def run_gui():
-    from PyQt6.QtCore import Qt, QRectF, QThread, pyqtSignal, QTimer
-    from PyQt6.QtGui import QFont, QPixmap, QPainter, QPainterPath, QColor, QPen
-    from PyQt6.QtWidgets import (
-        QApplication, QWidget, QVBoxLayout, QHBoxLayout, QCheckBox,
-        QPushButton, QLabel, QLineEdit, QFileDialog, QComboBox,
-        QMessageBox, QInputDialog, QPlainTextEdit, QScrollArea, QFrame,
-        QSizePolicy, QDialog,
-    )
+# --- мелкие хелперы виджетов ------------------------------------------------
 
+def _card() -> QFrame:
+    f = QFrame(); f.setObjectName("Card")
+    return f
+
+
+def _hline() -> QFrame:
+    ln = QFrame(); ln.setObjectName("HLine"); ln.setFixedHeight(1)
+    return ln
+
+
+def _wrap(lbl: QLabel) -> QLabel:
+    # Ignored по горизонтали разрешает лейблу переносить текст, а не тянуть окно
+    lbl.setWordWrap(True)
+    lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+    return lbl
+
+
+# --- фоновые потоки --------------------------------------------------------
+
+class ExtLoader(QThread):
+    """Фоновая загрузка списка расширений, чтобы окно не подмерзало на старте."""
+    loaded = pyqtSignal(list, str)
+
+    def __init__(self, cli):
+        super().__init__()
+        self._cli = cli
+
+    def run(self):
+        ids, source = load_installed(self._cli)
+        self.loaded.emit(ids, source)
+
+
+class MemProbe(QThread):
+    """Фоновый замер памяти запущенного VS Code."""
+    measured = pyqtSignal(int, int)
+
+    def __init__(self, cli):
+        super().__init__()
+        self._cli = cli
+
+    def run(self):
+        mb, n = code_memory_mb(self._cli)
+        self.measured.emit(mb, n)
+
+
+class Installer(QThread):
+    """Последовательная установка/удаление в фоне. action: install | uninstall."""
+    one_done = pyqtSignal(str, bool, str)
+    all_done = pyqtSignal()
+
+    def __init__(self, cli, ids, action="install"):
+        super().__init__()
+        self._cli = cli
+        self._ids = list(ids)
+        self._action = action
+
+    def run(self):
+        fn = install_extension if self._action == "install" else uninstall_extension
+        for i in self._ids:
+            ok, msg = fn(self._cli, i)
+            self.one_done.emit(i, ok, msg)
+        self.all_done.emit()
+
+
+# --- виджеты ---------------------------------------------------------------
+
+class CategoryCard(QFrame):
+    """Кликабельная карточка стека: галочка + название + бейджи."""
+
+    def __init__(self, key: str, cat: dict, inst: int, total: int, on_toggle, on_details):
+        super().__init__()
+        self.setObjectName("CatCard")
+        self.setProperty("on", "false")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._on_toggle = on_toggle
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(12)
+
+        self.cb = QCheckBox()
+        self.cb.setToolTip(cat.get("note", ""))
+        self.cb.stateChanged.connect(self._changed)
+        lay.addWidget(self.cb, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        mid = QVBoxLayout(); mid.setSpacing(2)
+        title = QLabel(cat.get("title", key)); title.setObjectName("CatTitle")
+        note = QLabel(cat.get("note", "")); note.setObjectName("CatNote")
+        note.setWordWrap(True)
+        note.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        mid.addWidget(title); mid.addWidget(note)
+        lay.addLayout(mid, 1)
+
+        weight = WEIGHT.get(key, "light")
+        wl = QLabel(WEIGHT_LABEL[weight]); wl.setObjectName(f"W{weight}")
+        wl.setToolTip("Ориентировочная нагрузка на память при включении")
+        lay.addWidget(wl, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._total = total
+        self.cnt = QLabel(); self.cnt.setObjectName("Count")
+        lay.addWidget(self.cnt, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.set_installed(inst)
+
+        info = QPushButton("Подробнее"); info.setObjectName("Ghost")
+        info.setCursor(Qt.CursorShape.PointingHandCursor)
+        info.setToolTip("Показать плагины стека и для чего они")
+        info.clicked.connect(on_details)
+        lay.addWidget(info, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    def set_installed(self, inst: int):
+        total = self._total
+        if inst:
+            self.cnt.setText(f"{inst}/{total}"); self.cnt.setObjectName("Count")
+            self.cnt.setToolTip(f"установлено {inst} из {total} расширений стека")
+            self.setToolTip("")
+        else:
+            self.cnt.setText("нет"); self.cnt.setObjectName("Woff")
+            self.cnt.setToolTip(f"ни одно из {total} расширений стека не установлено")
+            self.setToolTip("Расширения этого стека не установлены — "
+                            "галочка ни на что не влияет")
+        self.cnt.style().unpolish(self.cnt); self.cnt.style().polish(self.cnt)
+
+    def _changed(self):
+        self.setProperty("on", "true" if self.cb.isChecked() else "false")
+        self.style().unpolish(self); self.style().polish(self)
+        self._on_toggle()
+
+    def mousePressEvent(self, e):
+        self.cb.toggle()
+        super().mousePressEvent(e)
+
+    def isChecked(self): return self.cb.isChecked()
+    def setChecked(self, v): self.cb.setChecked(v)
+
+
+def run_gui():
+    log = setup_logging()
     cats, cats_err = load_categories()
     ext_index = build_ext_index(cats)
     code_cli = find_code_cli()
     cfg = load_config()
     descriptions = load_descriptions()
+    log.info("Старт v%s · CLI=%s · тема=%s%s", __version__, code_cli,
+             cfg.get("theme", "dark"), f" · categories.json: {cats_err}" if cats_err else "")
 
-    def _card() -> QFrame:
-        f = QFrame(); f.setObjectName("Card")
-        return f
-
-    def _hline() -> QFrame:
-        ln = QFrame(); ln.setObjectName("HLine"); ln.setFixedHeight(1)
-        return ln
-
-    def _wrap(lbl: QLabel) -> QLabel:
-        # Ignored по горизонтали разрешает лейблу переносить текст, а не тянуть окно
-        lbl.setWordWrap(True)
-        lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        return lbl
+    # Чистим «мёртвые» ключи категорий в пресетах/последнем выборе (например,
+    # если категорию переименовали в categories.json). Только когда карта
+    # загрузилась — иначе пустой набор ключей стёр бы все пресеты.
+    if not cats_err:
+        valid_keys = set(cats.get("categories", {}))
+        dirty = False
+        for name, keys in list(cfg.get("presets", {}).items()):
+            cleaned = [k for k in keys if k in valid_keys]
+            if cleaned != keys:
+                cfg["presets"][name] = cleaned; dirty = True
+        last = cfg.get("last_selected", [])
+        cleaned_last = [k for k in last if k in valid_keys]
+        if cleaned_last != last:
+            cfg["last_selected"] = cleaned_last; dirty = True
+        if dirty:
+            save_config(cfg)
+            log.info("Очищены несуществующие ключи категорий в конфиге")
 
     def show_details(parent, key, cat, installed):
         """Диалог со списком плагинов стека: описания + установка/удаление."""
@@ -205,156 +356,10 @@ def run_gui():
         lay.addLayout(bar)
         dlg.exec()
 
-    class ExtLoader(QThread):
-        """Фоновая загрузка списка расширений, чтобы окно не подмерзало на старте."""
-        loaded = pyqtSignal(list, str)
-
-        def __init__(self, cli):
-            super().__init__()
-            self._cli = cli
-
-        def run(self):
-            ids, source = load_installed(self._cli)
-            self.loaded.emit(ids, source)
-
-    class MemProbe(QThread):
-        """Фоновый замер памяти запущенного VS Code."""
-        measured = pyqtSignal(int, int)
-
-        def __init__(self, cli):
-            super().__init__()
-            self._cli = cli
-
-        def run(self):
-            mb, n = code_memory_mb(self._cli)
-            self.measured.emit(mb, n)
-
-    class Installer(QThread):
-        """Последовательная установка/удаление в фоне. action: install | uninstall."""
-        one_done = pyqtSignal(str, bool, str)
-        all_done = pyqtSignal()
-
-        def __init__(self, cli, ids, action="install"):
-            super().__init__()
-            self._cli = cli
-            self._ids = list(ids)
-            self._action = action
-
-        def run(self):
-            fn = install_extension if self._action == "install" else uninstall_extension
-            for i in self._ids:
-                ok, msg = fn(self._cli, i)
-                self.one_done.emit(i, ok, msg)
-            self.all_done.emit()
-
-    class BannerHeader(QFrame):
-        """Шапка: PNG-баннер «cover» со скруглёнными углами, иначе ровный фон."""
-        RADIUS = 16
-
-        def __init__(self, palette):
-            super().__init__()
-            self.setObjectName("Header")
-            self._pal = palette
-            self._pm = QPixmap(str(BANNER_FILE))
-
-        def set_palette(self, palette):
-            self._pal = palette
-            self.update()
-
-        def paintEvent(self, _e):
-            p = QPainter(self)
-            p.setRenderHint(QPainter.RenderHint.Antialiasing)
-            rect = QRectF(self.rect())
-            path = QPainterPath()
-            path.addRoundedRect(rect, self.RADIUS, self.RADIUS)
-            p.setClipPath(path)
-            if not self._pm.isNull():
-                scaled = self._pm.scaled(
-                    self.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                    Qt.TransformationMode.SmoothTransformation)
-                x = (scaled.width() - self.width()) // 2
-                y = (scaled.height() - self.height()) // 2
-                p.drawPixmap(-x, -y, scaled)
-            else:
-                p.fillRect(rect, QColor(self._pal["surface"]))
-            p.setClipping(False)
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.setPen(QPen(QColor(self._pal["border"]), 1))
-            p.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), self.RADIUS, self.RADIUS)
-            p.end()
-
-    class CategoryCard(QFrame):
-        """Кликабельная карточка стека: галочка + название + бейджи."""
-
-        def __init__(self, key: str, cat: dict, inst: int, total: int, on_toggle, on_details):
-            super().__init__()
-            self.setObjectName("CatCard")
-            self.setProperty("on", "false")
-            self.setCursor(Qt.CursorShape.PointingHandCursor)
-            self._on_toggle = on_toggle
-
-            lay = QHBoxLayout(self)
-            lay.setContentsMargins(12, 10, 12, 10)
-            lay.setSpacing(12)
-
-            self.cb = QCheckBox()
-            self.cb.setToolTip(cat.get("note", ""))
-            self.cb.stateChanged.connect(self._changed)
-            lay.addWidget(self.cb, 0, Qt.AlignmentFlag.AlignVCenter)
-
-            mid = QVBoxLayout(); mid.setSpacing(2)
-            title = QLabel(cat.get("title", key)); title.setObjectName("CatTitle")
-            note = QLabel(cat.get("note", "")); note.setObjectName("CatNote")
-            note.setWordWrap(True)
-            note.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-            mid.addWidget(title); mid.addWidget(note)
-            lay.addLayout(mid, 1)
-
-            weight = WEIGHT.get(key, "light")
-            wl = QLabel(WEIGHT_LABEL[weight]); wl.setObjectName(f"W{weight}")
-            wl.setToolTip("Ориентировочная нагрузка на память при включении")
-            lay.addWidget(wl, 0, Qt.AlignmentFlag.AlignVCenter)
-
-            self._total = total
-            self.cnt = QLabel(); self.cnt.setObjectName("Count")
-            lay.addWidget(self.cnt, 0, Qt.AlignmentFlag.AlignVCenter)
-            self.set_installed(inst)
-
-            info = QPushButton("Подробнее"); info.setObjectName("Ghost")
-            info.setCursor(Qt.CursorShape.PointingHandCursor)
-            info.setToolTip("Показать плагины стека и для чего они")
-            info.clicked.connect(on_details)
-            lay.addWidget(info, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        def set_installed(self, inst: int):
-            total = self._total
-            if inst:
-                self.cnt.setText(f"{inst}/{total}"); self.cnt.setObjectName("Count")
-                self.cnt.setToolTip(f"установлено {inst} из {total} расширений стека")
-                self.setToolTip("")
-            else:
-                self.cnt.setText("нет"); self.cnt.setObjectName("Woff")
-                self.cnt.setToolTip(f"ни одно из {total} расширений стека не установлено")
-                self.setToolTip("Расширения этого стека не установлены — "
-                                "галочка ни на что не влияет")
-            self.cnt.style().unpolish(self.cnt); self.cnt.style().polish(self.cnt)
-
-        def _changed(self):
-            self.setProperty("on", "true" if self.cb.isChecked() else "false")
-            self.style().unpolish(self); self.style().polish(self)
-            self._on_toggle()
-
-        def mousePressEvent(self, e):
-            self.cb.toggle()
-            super().mousePressEvent(e)
-
-        def isChecked(self): return self.cb.isChecked()
-        def setChecked(self, v): self.cb.setChecked(v)
-
     class Launcher(QWidget):
         def __init__(self):
             super().__init__()
-            self.setWindowTitle("VS Code Launcher — переключатель нагрузки")
+            self.setWindowTitle(f"VS Code Launcher {__version__} — переключатель нагрузки")
             self.resize(760, 820)
             self.setMinimumSize(680, 560)
             # Стартуем из кэша (мгновенно), свежий список догружаем в фоне.
@@ -374,14 +379,13 @@ def run_gui():
             self._probe_memory()
 
         def _update_theme_btn(self):
-            self.theme_btn.setText("Тема: светлая" if self._theme == "light"
-                                   else "Тема: тёмная")
+            # Показываем текущую тему; действие поясняет tooltip.
+            self.theme_btn.setText("Светлая" if self._theme == "light" else "Тёмная")
 
         def _toggle_theme(self):
             self._theme = "light" if self._theme == "dark" else "dark"
             self._pal = PALETTES[self._theme]
             QApplication.instance().setStyleSheet(build_qss(self._pal))
-            self.header.set_palette(self._pal)
             apply_titlebar(self, self._theme == "dark")
             self._update_theme_btn()
             cfg["theme"] = self._theme
@@ -451,10 +455,8 @@ def run_gui():
             root.setContentsMargins(18, 18, 18, 14)
             root.setSpacing(14)
 
-            header = BannerHeader(self._pal)
-            self.header = header
-            header.setFixedHeight(112)
-            hl = QHBoxLayout(header); hl.setContentsMargins(24, 16, 24, 16)
+            header = QFrame(); header.setObjectName("Header")
+            hl = QHBoxLayout(header); hl.setContentsMargins(22, 16, 18, 16)
             htext = QVBoxLayout(); htext.setSpacing(3)
             title = QLabel("VS Code Launcher"); title.setObjectName("Title")
             sub = _wrap(QLabel("Открой редактор только с нужными стеками — остальные "
@@ -462,6 +464,8 @@ def run_gui():
             sub.setObjectName("Subtitle")
             htext.addWidget(title); htext.addWidget(sub)
             hl.addLayout(htext, 1)
+            ver = QLabel(f"v{__version__}"); ver.setObjectName("Count")
+            hl.addWidget(ver, 0, Qt.AlignmentFlag.AlignTop)
             root.addWidget(header)
 
             if not code_cli:
@@ -477,58 +481,71 @@ def run_gui():
             self.mem_lbl = QLabel("VS Code сейчас: замеряю…"); self.mem_lbl.setObjectName("Section")
             self.theme_btn = QPushButton(); self.theme_btn.setObjectName("Ghost")
             self.theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.theme_btn.setFixedWidth(104)
             self.theme_btn.setToolTip("Переключить светлую/тёмную тему")
             self.theme_btn.clicked.connect(self._toggle_theme)
             self._update_theme_btn()
-            mem_ref = QPushButton("⟳"); mem_ref.setObjectName("Ghost"); mem_ref.setFixedWidth(34)
+            mem_ref = QPushButton("Обновить"); mem_ref.setObjectName("Ghost")
             mem_ref.setToolTip("Обновить замер памяти запущенного VS Code")
             mem_ref.clicked.connect(self._probe_memory)
             mem_row.addWidget(self.mem_lbl); mem_row.addStretch()
             mem_row.addWidget(self.theme_btn); mem_row.addWidget(mem_ref)
             root.addLayout(mem_row)
 
+            # Середина (пресеты → параметры) — в одном скролле, чтобы шапка и
+            # нижняя панель «Запустить» всегда были видны, а окно оставалось
+            # адаптивным при любой высоте.
+            scroll = QScrollArea(); scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            content = QWidget(); cv = QVBoxLayout(content)
+            cv.setContentsMargins(0, 0, 6, 0); cv.setSpacing(12)
+
             pre_card = _card()
             pre = QHBoxLayout(pre_card); pre.setContentsMargins(14, 10, 14, 10); pre.setSpacing(8)
             plbl = QLabel("Пресет"); plbl.setObjectName("Section")
             pre.addWidget(plbl)
-            self.preset_box = QComboBox(); self.preset_box.setMinimumWidth(200)
+            self.preset_box = QComboBox(); self.preset_box.setMinimumWidth(180)
             self._reload_presets()
             self.preset_box.activated.connect(self._apply_preset)
-            pre.addWidget(self.preset_box)
+            pre.addWidget(self.preset_box, 1)
             b_save = QPushButton("Сохранить…"); b_save.clicked.connect(self._save_preset)
             b_del = QPushButton("Удалить"); b_del.setObjectName("Ghost"); b_del.clicked.connect(self._delete_preset)
-            b_exp = QPushButton("⭱"); b_exp.setObjectName("Ghost"); b_exp.setFixedWidth(34)
+            b_exp = QPushButton("Экспорт"); b_exp.setObjectName("Ghost")
             b_exp.setToolTip("Экспортировать все пресеты в файл")
             b_exp.clicked.connect(self._export_presets)
-            b_imp = QPushButton("⭳"); b_imp.setObjectName("Ghost"); b_imp.setFixedWidth(34)
+            b_imp = QPushButton("Импорт"); b_imp.setObjectName("Ghost")
             b_imp.setToolTip("Импортировать пресеты из файла (объединяются с текущими)")
             b_imp.clicked.connect(self._import_presets)
             pre.addWidget(b_save); pre.addWidget(b_del)
-            pre.addWidget(b_exp); pre.addWidget(b_imp); pre.addStretch()
-            b_all = QPushButton("Всё вкл"); b_all.setObjectName("Ghost"); b_all.clicked.connect(lambda: self._set_all(True))
-            b_none = QPushButton("Минимум"); b_none.setObjectName("Ghost"); b_none.clicked.connect(lambda: self._set_all(False))
-            pre.addWidget(b_all); pre.addWidget(b_none)
-            root.addWidget(pre_card)
+            pre.addWidget(b_exp); pre.addWidget(b_imp)
+            cv.addWidget(pre_card)
 
+            sec_row = QHBoxLayout(); sec_row.setSpacing(8)
             sec = QLabel("СТЕКИ  ·  ОТМЕТЬ, ЧТО НУЖНО В ЭТОЙ СЕССИИ")
             sec.setObjectName("Section")
-            root.addWidget(sec)
+            sec_row.addWidget(sec); sec_row.addStretch()
+            b_all = QPushButton("Всё вкл"); b_all.setObjectName("Ghost")
+            b_all.clicked.connect(lambda: self._set_all(True))
+            b_none = QPushButton("Минимум"); b_none.setObjectName("Ghost")
+            b_none.clicked.connect(lambda: self._set_all(False))
+            sec_row.addWidget(b_all); sec_row.addWidget(b_none)
+            cv.addLayout(sec_row)
 
-            scroll = QScrollArea(); scroll.setWidgetResizable(True)
-            holder = QWidget(); vb = QVBoxLayout(holder)
-            vb.setContentsMargins(0, 0, 6, 0); vb.setSpacing(8)
             installed_set = set(self.installed)
-            for key, cat in cats.get("categories", {}).items():
+            # Сортируем тяжёлые стеки вверх — их отключение даёт максимум экономии.
+            weight_rank = {"heavy": 0, "medium": 1, "light": 2}
+            ordered = sorted(
+                cats.get("categories", {}).items(),
+                key=lambda kv: (weight_rank.get(WEIGHT.get(kv[0], "light"), 2),
+                                kv[1].get("title", kv[0]).lower()))
+            for key, cat in ordered:
                 exts = cat["extensions"]
                 inst = sum(1 for e in exts if e.lower() in installed_set)
                 card = CategoryCard(
                     key, cat, inst, len(exts), self._update_summary,
                     lambda _=False, k=key, c=cat: show_details(self, k, c, set(self.installed)))
                 self.cat_checks[key] = card
-                vb.addWidget(card)
-            vb.addStretch()
-            scroll.setWidget(holder)
-            root.addWidget(scroll, 1)
+                cv.addWidget(card)
 
             self.unknown_btn = QPushButton(); self.unknown_btn.setObjectName("Ghost")
             self.unknown_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -537,7 +554,7 @@ def run_gui():
                                         "их включёнными")
             self.unknown_btn.clicked.connect(self._show_unknown)
             urow = QHBoxLayout(); urow.addWidget(self.unknown_btn); urow.addStretch()
-            root.addLayout(urow)
+            cv.addLayout(urow)
             self._refresh_unknown()
 
             fold_card = _card()
@@ -558,27 +575,31 @@ def run_gui():
             self.recent_box.activated.connect(
                 lambda: self.folder_edit.setText(self.recent_box.currentData() or ""))
             fv.addWidget(self.recent_box)
-            root.addWidget(fold_card)
+            cv.addWidget(fold_card)
 
+            opt_card = _card()
+            ov = QVBoxLayout(opt_card); ov.setContentsMargins(14, 12, 14, 12); ov.setSpacing(8)
+            olbl = QLabel("ПАРАМЕТРЫ ЗАПУСКА"); olbl.setObjectName("Section")
+            ov.addWidget(olbl)
             self.kill_cb = QCheckBox("Закрыть VS Code перед стартом (чтобы память освободилась)")
             self.kill_cb.setChecked(cfg.get("kill_first", True))
             self.kill_cb.setToolTip(
                 f"Принудительно закроет все окна VS Code ({code_image_name(code_cli)}). "
                 "Сохрани файлы заранее! Запускай этот тул НЕ из терминала VS Code.")
-            root.addWidget(self.kill_cb)
+            ov.addWidget(self.kill_cb)
             self.newwin_cb = QCheckBox("Открыть в новом окне (--new-window)")
             self.newwin_cb.setChecked(cfg.get("new_window", True))
-            root.addWidget(self.newwin_cb)
+            ov.addWidget(self.newwin_cb)
             self.gpu_cb = QCheckBox("Без GPU-ускорения (--disable-gpu) — для слабых видеокарт")
             self.gpu_cb.setChecked(cfg.get("disable_gpu", False))
             self.gpu_cb.setToolTip("Отключает аппаратное ускорение отрисовки. "
                                    "Иногда лечит артефакты/лаги на старых GPU и экономит немного памяти.")
-            root.addWidget(self.gpu_cb)
+            ov.addWidget(self.gpu_cb)
             self.bare_cb = QCheckBox("Голый режим: полностью без расширений (--disable-extensions)")
             self.bare_cb.setToolTip("Отключит ВСЕ расширения, включая ядро — максимальная скорость. "
                                     "Галочки стеков при этом игнорируются.")
             self.bare_cb.stateChanged.connect(self._update_summary)
-            root.addWidget(self.bare_cb)
+            ov.addWidget(self.bare_cb)
 
             prof_row = QHBoxLayout(); prof_row.setSpacing(8)
             prof_lbl = QLabel("Профиль"); prof_lbl.setObjectName("Section")
@@ -588,7 +609,12 @@ def run_gui():
                 "Откроет окно с этим профилем (--profile). Профиль нужно заранее создать "
                 "в VS Code (шестерёнка → Profiles). Пусто — профиль по умолчанию.")
             prof_row.addWidget(prof_lbl); prof_row.addWidget(self.profile_edit, 1)
-            root.addLayout(prof_row)
+            ov.addLayout(prof_row)
+            cv.addWidget(opt_card)
+
+            cv.addStretch()
+            scroll.setWidget(content)
+            root.addWidget(scroll, 1)
 
             root.addWidget(_hline())
             bar = QHBoxLayout(); bar.setSpacing(10)
@@ -711,11 +737,14 @@ def run_gui():
                                        **self._cmd_kwargs())
             try:
                 launch(cmd)
+                log.info("Запуск: %s", "голый режим" if self._bare()
+                         else f"выключено {len(dis)} расширений")
                 if self._bare():
                     self.log.appendPlainText("Запуск: голый режим (все расширения выкл). OK.")
                 else:
                     self.log.appendPlainText(f"Запуск: выключено {len(dis)} расширений. OK.")
             except Exception as e:
+                log.exception("Ошибка запуска")
                 QMessageBox.critical(self, "Ошибка запуска", str(e))
                 return
             self._persist()
@@ -845,10 +874,18 @@ def run_gui():
         theme_name = "dark"
     app.setStyleSheet(build_qss(PALETTES[theme_name]))
     w = Launcher()
-    icon_path = BANNER_FILE
-    if icon_path.exists():
-        from PyQt6.QtGui import QIcon
-        w.setWindowIcon(QIcon(str(icon_path)))
+    if ICON_FILE.exists():
+        w.setWindowIcon(QIcon(str(ICON_FILE)))
+    _shot = os.environ.get("LAUNCHER_SHOT")   # dev-хук: снять окно в PNG и выйти
+    if _shot:
+        sw, sh = os.environ.get("LAUNCHER_W"), os.environ.get("LAUNCHER_H")
+        if sw and sh:
+            w.resize(int(sw), int(sh))
     w.show()
     apply_titlebar(w, theme_name == "dark")   # после show(), когда есть нативный hwnd
+    if _shot:
+        def _grab():
+            w.grab().save(_shot)
+            app.quit()
+        QTimer.singleShot(1800, _grab)
     sys.exit(app.exec())

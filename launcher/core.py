@@ -20,9 +20,35 @@ DATA_DIR = ROOT / "data"
 ASSETS_DIR = ROOT / "assets"
 CATEGORIES_FILE = DATA_DIR / "categories.json"
 DESCRIPTIONS_FILE = DATA_DIR / "plugin_descriptions.json"
-BANNER_FILE = ASSETS_DIR / "banner.png"
+ICON_FILE = ASSETS_DIR / "app.ico"
 # Личный конфиг: он пользовательский и в .gitignore.
 CONFIG_FILE = CONFIG_DIR / "launcher_config.json"
+LOG_FILE = CONFIG_DIR / "launcher.log"
+
+
+def setup_logging():
+    """Пишем лог в файл рядом с exe/скриптом (с ротацией) и ловим необработанные
+    исключения — чтобы у распространяемого exe оставался след при падении."""
+    import logging
+    from logging.handlers import RotatingFileHandler
+    logger = logging.getLogger("launcher")
+    if logger.handlers:
+        return logger
+    logger.setLevel(logging.INFO)
+    try:
+        h = RotatingFileHandler(str(LOG_FILE), maxBytes=512_000,
+                                backupCount=1, encoding="utf-8")
+        h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(h)
+    except Exception:
+        pass
+
+    def _hook(exc_type, exc, tb):
+        logger.error("Необработанное исключение", exc_info=(exc_type, exc, tb))
+        sys.__excepthook__(exc_type, exc, tb)
+
+    sys.excepthook = _hook
+    return logger
 
 # Ориентировочная «тяжесть» стека и её отражение в памяти. Ключи — как в categories.json.
 WEIGHT = {
@@ -56,7 +82,7 @@ def load_categories() -> tuple[dict, str]:
     битый или отсутствующий categories.json не ронял приложение."""
     empty = {"always_on": {"extensions": []}, "categories": {}}
     try:
-        with open(CATEGORIES_FILE, "r", encoding="utf-8") as f:
+        with open(CATEGORIES_FILE, "r", encoding="utf-8-sig") as f:  # терпим BOM
             data = json.load(f)
     except FileNotFoundError:
         return empty, f"Не найден {CATEGORIES_FILE.name} — стеки не загружены."
@@ -210,7 +236,7 @@ def estimate_saved_mb(disabled: list[str], ext_index: dict[str, str]) -> int:
 def load_config() -> dict:
     if CONFIG_FILE.exists():
         try:
-            return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            return json.loads(CONFIG_FILE.read_text(encoding="utf-8-sig"))
         except Exception:
             pass
     return {"presets": {}, "recent_folders": [], "last_selected": [], "kill_first": True}
@@ -263,7 +289,7 @@ def build_launch_command(code_cli: str, disabled: list[str], folder: str,
         cmd.append("--disable-extensions")
     else:
         for d in disabled:
-            cmd.append(f"--disable-extension {d}")
+            cmd.append(f'--disable-extension "{d}"')
     if disable_gpu:
         cmd.append("--disable-gpu")
     if folder:

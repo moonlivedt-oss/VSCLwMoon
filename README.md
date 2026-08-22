@@ -1,5 +1,7 @@
 # VS Code Launcher
 
+![VS Code Launcher](docs/screenshot-dark.png)
+
 Запускает VS Code только с нужными в текущей сессии стеками расширений. Остальные
 тяжёлые языковые серверы (Java/redhat, SonarLint ~880 МБ, cpptools, около 15
 расширений Azure и т.д.) не грузятся — экономия примерно 1–1.5 ГБ ОЗУ.
@@ -109,8 +111,8 @@ python vscode_launcher.py --selftest python,web
   ```
 
 Готовый файл появится в `dist\VSCodeLauncher.exe`. Данные (`data/`, `assets/`)
-упакованы внутрь; личный `launcher_config.json` создаётся рядом с exe. Иконку
-можно задать в `VSCodeLauncher.spec` (`icon='assets/app.ico'`, нужен `.ico`).
+упакованы внутрь; личный `launcher_config.json` создаётся рядом с exe. Иконка
+exe — `assets/app.ico` (задаётся в `VSCodeLauncher.spec`).
 
 ## Структура проекта
 
@@ -120,24 +122,51 @@ VSCodeLauncher/
   Запустить.bat            запуск отдельным процессом
   Собрать_exe.bat          сборка exe через PyInstaller
   VSCodeLauncher.spec      конфиг сборки PyInstaller
-  requirements.txt         зависимости (PyQt6)
+  requirements.txt         зависимости для запуска (PyQt6)
+  requirements-dev.txt     инструменты разработки (pytest, pyinstaller)
   launcher/
-    __init__.py
+    __init__.py            версия пакета
     core.py                логика: поиск CLI, чтение/установка/удаление
-                           расширений, сборка команды, замер памяти
+                           расширений, сборка команды, замер памяти, лог
     gui.py                 окно PyQt6 (карточки, пресеты, диалоги)
     theme.py               палитры Catppuccin Mocha/Latte, генератор QSS, тайтлбар
   data/
     categories.json        карта расширений по категориям (правь под себя)
     plugin_descriptions.json   id — описание для окна «Подробнее»
   assets/
-    banner.png             баннер в шапке окна (необязателен)
+    app.ico                иконка окна и exe
+  docs/
+    screenshot-dark.png    скриншоты для README
+    screenshot-light.png
+  tests/
+    test_core.py           тесты чистой логики (pytest)
   LICENSE
   README.md
 ```
 
-Личный конфиг `launcher_config.json` (пресеты, недавние папки, последний выбор,
-тема, кэш расширений) создаётся сам и в репозиторий не попадает.
+Личный конфиг `launcher_config.json` и `launcher.log` создаются сами рядом с
+приложением и в репозиторий не попадают.
+
+## Скриншоты
+
+Тёмная тема (Catppuccin Mocha):
+
+![Тёмная тема](docs/screenshot-dark.png)
+
+Светлая тема (Catppuccin Latte):
+
+![Светлая тема](docs/screenshot-light.png)
+
+## Тесты
+
+```
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+Покрывают чистую логику из `launcher/core.py` (карта категорий, расчёт
+выключаемых расширений, оценка памяти, сборка команды, устойчивость к битому
+`categories.json`).
 
 ## Лицензия
 
