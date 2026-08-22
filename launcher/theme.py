@@ -8,14 +8,14 @@ import sys
 PALETTE_DARK = {
     "bg": "#181825", "surface": "#1e1e2e", "surface2": "#11111b",
     "border": "#313244", "text": "#cdd6f4", "subtext": "#a6adc8",
-    "accent": "#89b4fa", "accent_text": "#11111b", "accent_hover": "#a6c8ff",
+    "accent": "#cba6f7", "accent_text": "#11111b", "accent_hover": "#d9bbff",
     "success": "#a6e3a1", "warn": "#f9e2af", "error": "#f38ba8",
     "track": "#45475a", "input_bg": "#313244", "input_text": "#cdd6f4",
 }
 PALETTE_LIGHT = {
     "bg": "#e6e9ef", "surface": "#eff1f5", "surface2": "#dce0e8",
     "border": "#bcc0cc", "text": "#4c4f69", "subtext": "#6c6f85",
-    "accent": "#1e66f5", "accent_text": "#eff1f5", "accent_hover": "#3b7bff",
+    "accent": "#8839ef", "accent_text": "#eff1f5", "accent_hover": "#9d5cf5",
     "success": "#40a02b", "warn": "#df8e1d", "error": "#d20f39",
     "track": "#ccd0da", "input_bg": "#ffffff", "input_text": "#4c4f69",
 }
@@ -78,16 +78,21 @@ QLabel#Summary {{ font-size: 11pt; font-weight: bold; color: {p["text"]}; }}
 
 QLabel#Count {{
     color: {p["accent"]}; background: {_rgba(p["accent"], 0.14)};
-    border-radius: 9px; padding: 2px 9px; font-size: 9pt; font-weight: bold;
+    border-radius: 9px; padding: 3px 10px; font-size: 9pt; font-weight: bold;
+    min-width: 44px; qproperty-alignment: AlignCenter;
 }}
 QLabel#Wheavy {{ color: {p["error"]};  background: {_rgba(p["error"], 0.14)};
-    border-radius: 9px; padding: 2px 9px; font-size: 8pt; font-weight: bold; }}
+    border-radius: 9px; padding: 3px 10px; font-size: 8pt; font-weight: bold;
+    min-width: 62px; qproperty-alignment: AlignCenter; }}
 QLabel#Wmedium {{ color: {p["warn"]}; background: {_rgba(p["warn"], 0.14)};
-    border-radius: 9px; padding: 2px 9px; font-size: 8pt; font-weight: bold; }}
+    border-radius: 9px; padding: 3px 10px; font-size: 8pt; font-weight: bold;
+    min-width: 62px; qproperty-alignment: AlignCenter; }}
 QLabel#Wlight {{ color: {p["success"]}; background: {_rgba(p["success"], 0.12)};
-    border-radius: 9px; padding: 2px 9px; font-size: 8pt; font-weight: bold; }}
+    border-radius: 9px; padding: 3px 10px; font-size: 8pt; font-weight: bold;
+    min-width: 62px; qproperty-alignment: AlignCenter; }}
 QLabel#Woff {{ color: {p["subtext"]}; background: {_rgba(p["subtext"], 0.10)};
-    border-radius: 9px; padding: 2px 9px; font-size: 8pt; font-weight: bold; }}
+    border-radius: 9px; padding: 3px 10px; font-size: 8pt; font-weight: bold;
+    min-width: 62px; qproperty-alignment: AlignCenter; }}
 
 QPushButton {{
     background: {p["input_bg"]}; color: {p["text"]};

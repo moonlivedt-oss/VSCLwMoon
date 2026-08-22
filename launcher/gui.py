@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont, QIcon
+from PyQt6.QtGui import QFont, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QCheckBox,
     QPushButton, QLabel, QLineEdit, QFileDialog, QComboBox,
@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 
 from . import __version__
 from .core import (
-    ICON_FILE, WEIGHT, WEIGHT_LABEL,
+    ICON_FILE, LOGO_FILE, WEIGHT, WEIGHT_LABEL,
     build_ext_index, build_launch_command, code_image_name, code_memory_mb,
     compute_disabled, estimate_saved_mb, find_code_cli, install_extension,
     launch, load_categories, load_config, load_descriptions, load_installed,
@@ -225,8 +225,8 @@ def run_gui():
 
         def refresh_meta():
             n = sum(1 for e in exts if e.lower() in installed)
-            meta.setText(f"{len(exts)} расширений · установлено {n} · "
-                         f"нагрузка: {WEIGHT_LABEL[weight]}")
+            meta.setText(f"{len(exts)} расширений, установлено {n}, "
+                         f"нагрузка {WEIGHT_LABEL[weight]}")
 
         def set_row_state(eid, is_inst):
             tag, ib, ub = rows.get(eid, (None, None, None))
@@ -403,7 +403,7 @@ def run_gui():
 
         def _on_memory(self, mb: int, n: int):
             if n:
-                self.mem_lbl.setText(f"VS Code сейчас: {mb} МБ · {n} проц.")
+                self.mem_lbl.setText(f"VS Code сейчас: {mb} МБ, {n} процессов")
                 self.mem_lbl.setToolTip("Суммарный working set всех процессов VS Code")
             else:
                 self.mem_lbl.setText("VS Code сейчас не запущен")
@@ -456,16 +456,20 @@ def run_gui():
             root.setSpacing(14)
 
             header = QFrame(); header.setObjectName("Header")
-            hl = QHBoxLayout(header); hl.setContentsMargins(22, 16, 18, 16)
-            htext = QVBoxLayout(); htext.setSpacing(3)
+            hl = QHBoxLayout(header); hl.setContentsMargins(22, 18, 22, 18); hl.setSpacing(16)
+            if LOGO_FILE.exists():
+                logo = QLabel()
+                logo.setPixmap(QPixmap(str(LOGO_FILE)).scaled(
+                    54, 54, Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation))
+                hl.addWidget(logo, 0, Qt.AlignmentFlag.AlignVCenter)
+            htext = QVBoxLayout(); htext.setSpacing(4)
             title = QLabel("VS Code Launcher"); title.setObjectName("Title")
             sub = _wrap(QLabel("Открой редактор только с нужными стеками — остальные "
                                "тяжёлые серверы не грузятся, память свободна."))
             sub.setObjectName("Subtitle")
             htext.addWidget(title); htext.addWidget(sub)
             hl.addLayout(htext, 1)
-            ver = QLabel(f"v{__version__}"); ver.setObjectName("Count")
-            hl.addWidget(ver, 0, Qt.AlignmentFlag.AlignTop)
             root.addWidget(header)
 
             if not code_cli:
@@ -521,7 +525,7 @@ def run_gui():
             cv.addWidget(pre_card)
 
             sec_row = QHBoxLayout(); sec_row.setSpacing(8)
-            sec = QLabel("СТЕКИ  ·  ОТМЕТЬ, ЧТО НУЖНО В ЭТОЙ СЕССИИ")
+            sec = QLabel("СТЕКИ РАСШИРЕНИЙ")
             sec.setObjectName("Section")
             sec_row.addWidget(sec); sec_row.addStretch()
             b_all = QPushButton("Всё вкл"); b_all.setObjectName("Ghost")
@@ -617,9 +621,11 @@ def run_gui():
             root.addWidget(scroll, 1)
 
             root.addWidget(_hline())
-            bar = QHBoxLayout(); bar.setSpacing(10)
             self.summary = QLabel(); self.summary.setObjectName("Summary")
-            bar.addWidget(self.summary, 1)
+            self.summary.setWordWrap(True)
+            root.addWidget(self.summary)
+            bar = QHBoxLayout(); bar.setSpacing(10)
+            bar.addStretch()
             b_cmd = QPushButton("Показать команду"); b_cmd.setObjectName("Ghost")
             b_cmd.clicked.connect(self._show_cmd)
             self.b_run = QPushButton("Запустить VS Code"); self.b_run.setObjectName("Accent")
@@ -697,7 +703,7 @@ def run_gui():
             dis = self._disabled_list()
             en = len(self.installed) - len(dis)
             saved = estimate_saved_mb(dis, ext_index)
-            self.summary.setText(f"Вкл {en} · выкл {len(dis)} · ~{saved} МБ экономии")
+            self.summary.setText(f"Включено {en}, выключено {len(dis)} — экономия ~{saved} МБ")
 
         def _cmd_kwargs(self) -> dict:
             return {

@@ -21,6 +21,7 @@ ASSETS_DIR = ROOT / "assets"
 CATEGORIES_FILE = DATA_DIR / "categories.json"
 DESCRIPTIONS_FILE = DATA_DIR / "plugin_descriptions.json"
 ICON_FILE = ASSETS_DIR / "app.ico"
+LOGO_FILE = ASSETS_DIR / "logo.png"   # необязательный логотип в шапке
 # Личный конфиг: он пользовательский и в .gitignore.
 CONFIG_FILE = CONFIG_DIR / "launcher_config.json"
 LOG_FILE = CONFIG_DIR / "launcher.log"
