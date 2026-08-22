@@ -147,6 +147,7 @@ def run_gui():
             worker = Installer(code_cli, todo, action)
             worker.one_done.connect(lambda e, ok, m, a=action: on_done(e, ok, m, a))
             worker.all_done.connect(lambda a=action: on_all_done(a))
+            worker.finished.connect(lambda w=worker: parent._reap_installer(w))
             parent._install_threads.append(worker)
             worker.start()
 
@@ -364,6 +365,10 @@ def run_gui():
             self._probe_memory()
 
         def _probe_memory(self):
+            # Не плодим второй поток, пока прошлый замер не закончился: иначе
+            # ссылка на живой QThread терялась бы и Qt ронял приложение.
+            if getattr(self, "_mem", None) is not None and self._mem.isRunning():
+                return
             self.mem_lbl.setText("VS Code сейчас: замеряю…")
             self._mem = MemProbe(code_cli)
             self._mem.measured.connect(self._on_memory)
@@ -378,6 +383,8 @@ def run_gui():
                 self.mem_lbl.setToolTip("")
 
         def _start_ext_load(self):
+            if getattr(self, "_loader", None) is not None and self._loader.isRunning():
+                return
             if not self._loaded:
                 self.summary.setText("Считаю расширения…")
             self.b_run.setEnabled(False)
@@ -734,6 +741,21 @@ def run_gui():
                 self.close()
                 return
             super().keyPressEvent(e)
+
+        def _reap_installer(self, worker):
+            # Убираем завершившийся поток установки/удаления, чтобы список не рос.
+            if worker in self._install_threads:
+                self._install_threads.remove(worker)
+
+        def closeEvent(self, e):
+            # Дождёмся фоновых потоков, иначе Qt ругается «QThread destroyed while
+            # running». Ждём с потолком, чтобы окно не зависало на сетевой установке.
+            threads = [getattr(self, "_mem", None), getattr(self, "_loader", None)]
+            threads += list(self._install_threads)
+            for t in threads:
+                if t is not None and t.isRunning():
+                    t.wait(2000)
+            super().closeEvent(e)
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
