@@ -7,9 +7,13 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CATEGORIES_FILE = ROOT / "categories.json"
+DATA_DIR = ROOT / "data"
+ASSETS_DIR = ROOT / "assets"
+CATEGORIES_FILE = DATA_DIR / "categories.json"
+DESCRIPTIONS_FILE = DATA_DIR / "plugin_descriptions.json"
+BANNER_FILE = ASSETS_DIR / "banner.png"
+# Личный конфиг остаётся в корне: он пользовательский и в .gitignore.
 CONFIG_FILE = ROOT / "launcher_config.json"
-DESCRIPTIONS_FILE = ROOT / "plugin_descriptions.json"
 
 # Ориентировочная «тяжесть» стека и её отражение в памяти. Ключи — как в categories.json.
 WEIGHT = {

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from .core import (
-    ROOT, WEIGHT, WEIGHT_LABEL,
+    BANNER_FILE, WEIGHT, WEIGHT_LABEL,
     build_ext_index, build_launch_command, code_image_name, code_memory_mb,
     compute_disabled, estimate_saved_mb, find_code_cli, install_extension,
     launch, load_categories, load_config, load_descriptions, load_installed,
@@ -253,7 +253,7 @@ def run_gui():
         def __init__(self):
             super().__init__()
             self.setObjectName("Header")
-            self._pm = QPixmap(str(ROOT / "banner.png"))
+            self._pm = QPixmap(str(BANNER_FILE))
 
         def paintEvent(self, _e):
             p = QPainter(self)
@@ -723,12 +723,24 @@ def run_gui():
                 cfg["recent_folders"] = rec[:8]
             save_config(cfg)
 
+        def keyPressEvent(self, e):
+            # Enter — запустить (если кнопка активна), Esc — закрыть окно.
+            # Опасный путь (закрыть VS Code) всё равно спрашивает подтверждение в _run.
+            if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if self.b_run.isEnabled():
+                    self._run()
+                return
+            if e.key() == Qt.Key.Key_Escape:
+                self.close()
+                return
+            super().keyPressEvent(e)
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     font = QFont(); font.setPointSize(10); app.setFont(font)
     app.setStyleSheet(build_qss(PALETTE))
     w = Launcher()
-    icon_path = ROOT / "banner.png"
+    icon_path = BANNER_FILE
     if icon_path.exists():
         from PyQt6.QtGui import QIcon
         w.setWindowIcon(QIcon(str(icon_path)))
