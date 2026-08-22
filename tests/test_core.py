@@ -173,3 +173,74 @@ def test_load_categories_wrong_type(tmp_path, monkeypatch):
     data, err = core.load_categories()
     assert err
     assert data["categories"] == {}
+
+
+# --- valid_ext_id (безопасность) ------------------------------------------
+
+@pytest.mark.parametrize("eid", [
+    "ms-python.python", "redhat.java", "13xforever.language-x86-64-assembly",
+    "ms-ceintl.vscode-language-pack-ru", "moonlivedt.diagnostics-ru",
+])
+def test_valid_ext_id_accepts_real_ids(eid):
+    assert core.valid_ext_id(eid)
+
+
+@pytest.mark.parametrize("bad", [
+    "", "nodot", "a.b & calc.exe", "pub.name; rm -rf", 'pub.name"', "pub name.x",
+    "pub.name`x`", "pub.name|x", "../evil",
+])
+def test_valid_ext_id_rejects_injection(bad):
+    assert not core.valid_ext_id(bad)
+
+
+def test_build_launch_command_drops_invalid_ids():
+    cmd = core.build_launch_command(
+        "code.cmd", ["ms-python.python", "evil & calc.exe"], "", True, False)
+    assert "ms-python.python" in cmd
+    assert "calc.exe" not in cmd          # инъекция отфильтрована
+
+
+def test_install_rejects_bad_id():
+    ok, msg = core.install_extension("code.cmd", "evil & calc")
+    assert not ok and "Недопустимый" in msg
+
+
+def test_shell_safe_strips_breakout_chars():
+    assert core.shell_safe('C:\\a" & calc') == 'C:\\a & calc'   # кавычка убрана
+    assert core.shell_safe("%APPDATA%\\x") == "APPDATA\\x"       # % убран
+    assert core.shell_safe("C:\\Rock & Roll") == "C:\\Rock & Roll"  # & сам по себе ок
+
+
+def test_build_launch_command_sanitizes_folder():
+    cmd = core.build_launch_command("code.cmd", [], 'C:\\a" & calc.exe', True, False)
+    # кавычки-вырыва нет: путь целиком внутри одной пары кавычек
+    assert '" & calc.exe"' not in cmd
+    assert cmd.count('"') % 2 == 0
+
+
+# --- apply_settings (автонастройка) ---------------------------------------
+
+def test_apply_settings_adds_missing_and_keeps_existing(tmp_path):
+    p = tmp_path / "settings.json"
+    p.write_text('{"editor.fontSize": 14}', encoding="utf-8")
+    ok, msg = core.apply_settings(p, {"editor.fontSize": 20, "git.autofetch": True})
+    assert ok
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert data["editor.fontSize"] == 14      # существующее не тронуто
+    assert data["git.autofetch"] is True      # недостающее добавлено
+    assert list(tmp_path.glob("settings.backup-*.json"))  # есть бэкап
+
+
+def test_apply_settings_refuses_jsonc(tmp_path):
+    p = tmp_path / "settings.json"
+    p.write_text('{\n  // комментарий\n  "a": 1\n}', encoding="utf-8")
+    ok, msg = core.apply_settings(p, {"b": 2})
+    assert not ok and "JSONC" in msg
+    assert "// комментарий" in p.read_text(encoding="utf-8")   # файл не изменён
+
+
+def test_apply_settings_creates_when_missing(tmp_path):
+    p = tmp_path / "settings.json"   # файла нет
+    ok, msg = core.apply_settings(p, {"a": 1})
+    assert ok and p.exists()
+    assert json.loads(p.read_text(encoding="utf-8"))["a"] == 1

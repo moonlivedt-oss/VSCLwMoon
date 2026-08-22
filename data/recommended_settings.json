@@ -1,0 +1,24 @@
+{
+  "_comment": "Рекомендованные настройки VS Code по стекам. Автонастройка добавляет только НЕДОСТАЮЩИЕ ключи (существующие не трогает) и делает бэкап settings.json. Ключ _comment игнорируется.",
+  "python": {
+    "[python]": { "editor.defaultFormatter": "charliermarsh.ruff", "editor.formatOnSave": true },
+    "python.analysis.typeCheckingMode": "basic"
+  },
+  "web": {
+    "eslint.format.enable": true,
+    "editor.codeActionsOnSave": { "source.fixAll.eslint": "explicit" }
+  },
+  "git": {
+    "git.autofetch": true,
+    "git.confirmSync": false
+  },
+  "cpp": {
+    "C_Cpp.intelliSenseEngine": "default"
+  },
+  "powershell": {
+    "[powershell]": { "editor.formatOnSave": true }
+  },
+  "markdown": {
+    "[markdown]": { "editor.wordWrap": "on" }
+  }
+}

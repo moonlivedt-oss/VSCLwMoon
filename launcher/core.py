@@ -3,6 +3,7 @@
 установка/удаление, сборка команды запуска, замер памяти."""
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -20,8 +21,25 @@ DATA_DIR = ROOT / "data"
 ASSETS_DIR = ROOT / "assets"
 CATEGORIES_FILE = DATA_DIR / "categories.json"
 DESCRIPTIONS_FILE = DATA_DIR / "plugin_descriptions.json"
+RECOMMENDED_FILE = DATA_DIR / "recommended_settings.json"
 ICON_FILE = ASSETS_DIR / "app.ico"
 LOGO_FILE = ASSETS_DIR / "logo.png"   # необязательный логотип в шапке
+
+# id расширения VS Code: publisher.name. Только безопасные символы — чтобы
+# подменённый categories.json/extensions.json не мог протащить инъекцию в
+# командную строку (запуск идёт через shell).
+_EXT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*\.[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def valid_ext_id(ext_id: str) -> bool:
+    return bool(ext_id) and bool(_EXT_ID_RE.match(ext_id))
+
+
+def shell_safe(s: str) -> str:
+    """Убирает символы, которыми можно вырваться из кавычек в cmd или подставить
+    переменную окружения (защита от инъекции через путь/имя профиля). В обычных
+    путях и именах профилей этих символов не бывает."""
+    return "".join(ch for ch in (s or "") if ch not in '"\r\n%')
 # Личный конфиг: он пользовательский и в .gitignore.
 CONFIG_FILE = CONFIG_DIR / "launcher_config.json"
 LOG_FILE = CONFIG_DIR / "launcher.log"
@@ -54,9 +72,11 @@ def setup_logging():
 # Ориентировочная «тяжесть» стека и её отражение в памяти. Ключи — как в categories.json.
 WEIGHT = {
     "sonar": "heavy", "java": "heavy", "azure": "heavy", "cpp": "heavy",
+    "rust": "heavy", "data": "heavy",
     "python": "medium", "sql": "medium", "git": "medium",
+    "go": "medium", "docker": "medium",
     "web": "light", "graphics3d": "light", "markdown": "light",
-    "powershell": "light",
+    "powershell": "light", "remote": "light", "api": "light", "config": "light",
 }
 WEIGHT_LABEL = {"heavy": "тяжёлый", "medium": "средний", "light": "лёгкий"}
 WEIGHT_MB = {"heavy": 500, "medium": 150, "light": 30}
@@ -164,6 +184,8 @@ def list_installed_extensions(code_cli: str) -> list[str]:
 
 def install_extension(code_cli: str, ext_id: str) -> tuple[bool, str]:
     """Установить расширение из маркетплейса. Возвращает (успех, вывод)."""
+    if not valid_ext_id(ext_id):
+        return False, f"Недопустимый id расширения: {ext_id!r}"
     try:
         out = subprocess.run(
             [os.environ.get("COMSPEC", "cmd.exe"), "/c", code_cli,
@@ -178,6 +200,8 @@ def install_extension(code_cli: str, ext_id: str) -> tuple[bool, str]:
 
 def uninstall_extension(code_cli: str, ext_id: str) -> tuple[bool, str]:
     """Удалить расширение. Возвращает (успех, вывод)."""
+    if not valid_ext_id(ext_id):
+        return False, f"Недопустимый id расширения: {ext_id!r}"
     try:
         out = subprocess.run(
             [os.environ.get("COMSPEC", "cmd.exe"), "/c", code_cli,
@@ -247,6 +271,79 @@ def save_config(cfg: dict) -> None:
     CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+# --- Автонастройка settings.json ------------------------------------------
+
+def load_recommended() -> dict:
+    """Рекомендованные настройки VS Code по категориям: ключ категории -> {настройки}."""
+    if RECOMMENDED_FILE.exists():
+        try:
+            return json.loads(RECOMMENDED_FILE.read_text(encoding="utf-8-sig"))
+        except Exception:
+            return {}
+    return {}
+
+
+def vscode_user_settings_path(code_cli: str | None) -> Path | None:
+    """Путь к settings.json пользователя (Code или Code - Insiders)."""
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return None
+    folder = "Code - Insiders" if code_cli and "insiders" in code_cli.lower() else "Code"
+    return Path(appdata) / folder / "User" / "settings.json"
+
+
+def categories_present(installed: list[str], ext_index: dict[str, str]) -> set[str]:
+    """Категории, у которых есть хотя бы одно установленное расширение (кроме ядра)."""
+    present = {ext_index.get(e) for e in installed}
+    present.discard(None)
+    present.discard("always_on")
+    return present
+
+
+def recommended_for(keys, recommended: dict) -> dict:
+    """Слить рекомендации выбранных категорий в один словарь настроек."""
+    merged: dict = {}
+    for k in keys:
+        merged.update(recommended.get(k, {}))
+    return merged
+
+
+def apply_settings(path: Path, to_add: dict) -> tuple[bool, str]:
+    """Безопасно дописать НЕДОСТАЮЩИЕ ключи в settings.json:
+    сначала бэкап, существующие ключи не трогаем, при JSONC (комментарии/хвостовые
+    запятые) отказываемся — чтобы не сломать файл. Возвращает (успех, сообщение)."""
+    if not to_add:
+        return False, "Нет рекомендованных настроек для установленных стеков."
+    existing: dict = {}
+    if path.exists():
+        raw = path.read_text(encoding="utf-8-sig")
+        try:
+            existing = json.loads(raw) if raw.strip() else {}
+        except Exception:
+            return (False, "В settings.json есть комментарии или JSONC-синтаксис — "
+                    "автоприменение отменено, чтобы не сломать файл. Скопируй "
+                    "настройки и вставь вручную.")
+        if not isinstance(existing, dict):
+            return False, "settings.json имеет неожиданный формат."
+    missing = {k: v for k, v in to_add.items() if k not in existing}
+    if not missing:
+        return True, "Все рекомендованные настройки уже заданы — ничего не добавлено."
+    from datetime import datetime
+    if path.exists():
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = path.with_name(f"settings.backup-{ts}.json")
+        backup.write_text(path.read_text(encoding="utf-8-sig"), encoding="utf-8")
+    else:
+        backup = None
+        path.parent.mkdir(parents=True, exist_ok=True)
+    existing.update(missing)
+    path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+    msg = f"Добавлено настроек: {len(missing)}."
+    if backup:
+        msg += f"\nБэкап: {backup.name}"
+    return True, msg
+
+
 def code_image_name(code_cli: str) -> str:
     """Имя процесса для taskkill: 'Code.exe' или 'Code - Insiders.exe'."""
     return "Code - Insiders.exe" if "insiders" in (code_cli or "").lower() else "Code.exe"
@@ -277,6 +374,8 @@ def build_launch_command(code_cli: str, disabled: list[str], folder: str,
                          new_window: bool, kill_first: bool,
                          profile: str = "", disable_gpu: bool = False,
                          bare: bool = False) -> str:
+    folder = shell_safe(folder)      # защита от инъекции через путь/профиль
+    profile = shell_safe(profile)
     parts = []
     if kill_first:
         parts.append(f'taskkill /F /IM "{code_image_name(code_cli)}" >nul 2>&1')
@@ -290,7 +389,8 @@ def build_launch_command(code_cli: str, disabled: list[str], folder: str,
         cmd.append("--disable-extensions")
     else:
         for d in disabled:
-            cmd.append(f'--disable-extension "{d}"')
+            if valid_ext_id(d):   # мусор/инъекцию в команду не пускаем
+                cmd.append(f'--disable-extension "{d}"')
     if disable_gpu:
         cmd.append("--disable-gpu")
     if folder:

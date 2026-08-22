@@ -66,6 +66,13 @@ QFrame#CatCard[on="true"] {{
     border: 1px solid {p["accent"]};
     background: {_rgba(p["accent"], 0.10)};
 }}
+QWidget#CatInner {{ background: transparent; }}
+QFrame#Strip_heavy {{ background: {p["error"]};
+    border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
+QFrame#Strip_medium {{ background: {p["warn"]};
+    border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
+QFrame#Strip_light {{ background: {p["success"]};
+    border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
 QLabel#Section {{ color: {p["subtext"]}; font-size: 9pt; font-weight: bold; letter-spacing: 1px; }}
 QLabel#CatTitle {{ font-size: 11pt; font-weight: bold; color: {p["text"]}; }}
 QLabel#CatNote {{ color: {p["subtext"]}; font-size: 9pt; }}

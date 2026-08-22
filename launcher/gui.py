@@ -10,22 +10,24 @@ import os
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont, QIcon, QPixmap
+from PyQt6.QtCore import Qt, QByteArray, QThread, pyqtSignal, QTimer
+from PyQt6.QtGui import QFont, QIcon, QPixmap, QColor
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QCheckBox,
     QPushButton, QLabel, QLineEdit, QFileDialog, QComboBox,
     QMessageBox, QInputDialog, QPlainTextEdit, QScrollArea, QFrame,
-    QSizePolicy, QDialog,
+    QSizePolicy, QDialog, QGraphicsDropShadowEffect,
 )
 
 from . import __version__
 from .core import (
     ICON_FILE, LOGO_FILE, WEIGHT, WEIGHT_LABEL,
-    build_ext_index, build_launch_command, code_image_name, code_memory_mb,
-    compute_disabled, estimate_saved_mb, find_code_cli, install_extension,
-    launch, load_categories, load_config, load_descriptions, load_installed,
-    read_installed_from_disk, save_config, setup_logging, uninstall_extension,
+    apply_settings, build_ext_index, build_launch_command, categories_present,
+    code_image_name, code_memory_mb, compute_disabled, estimate_saved_mb,
+    find_code_cli, install_extension, launch, load_categories, load_config,
+    load_descriptions, load_installed, load_recommended, read_installed_from_disk,
+    recommended_for, save_config, setup_logging, uninstall_extension,
+    vscode_user_settings_path,
 )
 from .theme import PALETTES, apply_titlebar, build_qss
 
@@ -107,10 +109,20 @@ class CategoryCard(QFrame):
         self.setProperty("on", "false")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._on_toggle = on_toggle
+        weight = WEIGHT.get(key, "light")
 
-        lay = QHBoxLayout(self)
+        # Внешний контейнер: цветная полоска нагрузки слева (flush) + контент.
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(0)
+        strip = QFrame(); strip.setObjectName(f"Strip_{weight}")
+        strip.setFixedWidth(4)
+        strip.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        outer.addWidget(strip)
+        inner = QWidget(); inner.setObjectName("CatInner")
+        lay = QHBoxLayout(inner)
         lay.setContentsMargins(12, 10, 12, 10)
         lay.setSpacing(12)
+        outer.addWidget(inner, 1)
 
         self.cb = QCheckBox()
         self.cb.setToolTip(cat.get("note", ""))
@@ -125,7 +137,6 @@ class CategoryCard(QFrame):
         mid.addWidget(title); mid.addWidget(note)
         lay.addLayout(mid, 1)
 
-        weight = WEIGHT.get(key, "light")
         wl = QLabel(WEIGHT_LABEL[weight]); wl.setObjectName(f"W{weight}")
         wl.setToolTip("Ориентировочная нагрузка на память при включении")
         lay.addWidget(wl, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -162,6 +173,18 @@ class CategoryCard(QFrame):
     def mousePressEvent(self, e):
         self.cb.toggle()
         super().mousePressEvent(e)
+
+    def enterEvent(self, e):
+        # Приподнимаем карточку тенью при наведении.
+        eff = QGraphicsDropShadowEffect(self)
+        eff.setBlurRadius(22); eff.setXOffset(0); eff.setYOffset(4)
+        eff.setColor(QColor(0, 0, 0, 120))
+        self.setGraphicsEffect(eff)
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self.setGraphicsEffect(None)
+        super().leaveEvent(e)
 
     def isChecked(self): return self.cb.isChecked()
     def setChecked(self, v): self.cb.setChecked(v)
@@ -377,6 +400,12 @@ def run_gui():
             self._update_summary()
             self._start_ext_load()
             self._probe_memory()
+            geo = cfg.get("geometry")
+            if geo:   # запоминаем размер и позицию окна между запусками
+                try:
+                    self.restoreGeometry(QByteArray.fromBase64(geo.encode("ascii")))
+                except Exception:
+                    pass
 
         def _update_theme_btn(self):
             # Показываем текущую тему; действие поясняет tooltip.
@@ -536,12 +565,15 @@ def run_gui():
             cv.addLayout(sec_row)
 
             installed_set = set(self.installed)
-            # Сортируем тяжёлые стеки вверх — их отключение даёт максимум экономии.
+            # Сначала установленные стеки (по ним и есть что выключать), внутри —
+            # тяжёлые вверх (максимум экономии). Неустановленные сборки — ниже.
             weight_rank = {"heavy": 0, "medium": 1, "light": 2}
             ordered = sorted(
                 cats.get("categories", {}).items(),
-                key=lambda kv: (weight_rank.get(WEIGHT.get(kv[0], "light"), 2),
-                                kv[1].get("title", kv[0]).lower()))
+                key=lambda kv: (
+                    0 if any(e.lower() in installed_set for e in kv[1]["extensions"]) else 1,
+                    weight_rank.get(WEIGHT.get(kv[0], "light"), 2),
+                    kv[1].get("title", kv[0]).lower()))
             for key, cat in ordered:
                 exts = cat["extensions"]
                 inst = sum(1 for e in exts if e.lower() in installed_set)
@@ -616,6 +648,26 @@ def run_gui():
             ov.addLayout(prof_row)
             cv.addWidget(opt_card)
 
+            cfg_card = _card()
+            cvv = QVBoxLayout(cfg_card); cvv.setContentsMargins(14, 12, 14, 12); cvv.setSpacing(8)
+            aclbl = QLabel("НАСТРОЙКА VS CODE"); aclbl.setObjectName("Section")
+            cvv.addWidget(aclbl)
+            ac_row = QHBoxLayout()
+            self.autoconf_btn = QPushButton("Автонастройка settings.json")
+            self.autoconf_btn.setObjectName("Ghost")
+            self.autoconf_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.autoconf_btn.setToolTip("Добавить рекомендованные настройки для "
+                                         "установленных стеков")
+            self.autoconf_btn.clicked.connect(self._show_autoconfig)
+            ac_row.addWidget(self.autoconf_btn); ac_row.addStretch()
+            cvv.addLayout(ac_row)
+            ac_hint = _wrap(QLabel(
+                "Пропишет базовые настройки для установленных стеков (формат при "
+                "сохранении и т.п.). Существующие настройки не трогаются, перед "
+                "записью делается бэкап settings.json."))
+            ac_hint.setObjectName("CatNote"); cvv.addWidget(ac_hint)
+            cv.addWidget(cfg_card)
+
             cv.addStretch()
             scroll.setWidget(content)
             root.addWidget(scroll, 1)
@@ -687,6 +739,59 @@ def run_gui():
             copy.clicked.connect(lambda: QApplication.clipboard().setText("\n".join(unk)))
             bar.addWidget(copy); bar.addStretch()
             close = QPushButton("Закрыть"); close.setObjectName("Accent")
+            close.clicked.connect(dlg.accept)
+            bar.addWidget(close)
+            lay.addLayout(bar)
+            dlg.exec()
+
+        def _show_autoconfig(self):
+            recommended = load_recommended()
+            present = categories_present(self.installed, ext_index)
+            to_add = {k: v for k, v in recommended_for(present, recommended).items()
+                      if k != "_comment"}
+            path = vscode_user_settings_path(code_cli)
+            text = (json.dumps(to_add, ensure_ascii=False, indent=2) if to_add
+                    else "Нет рекомендаций для установленных стеков.")
+
+            dlg = QDialog(self); dlg.setWindowTitle("Автонастройка VS Code")
+            dlg.resize(600, 560)
+            lay = QVBoxLayout(dlg); lay.setContentsMargins(18, 18, 18, 16); lay.setSpacing(12)
+            title = QLabel("Рекомендованные настройки"); title.setObjectName("Title")
+            lay.addWidget(title)
+            stacks = ", ".join(sorted(present)) or "—"
+            info = _wrap(QLabel(
+                f"Стеки: {stacks}. «Применить» добавит только НЕДОСТАЮЩИЕ ключи в "
+                f"settings.json и сделает бэкап; существующие настройки не меняются.\n"
+                f"Файл: {path if path else 'не найден'}"))
+            info.setObjectName("Subtitle"); lay.addWidget(info)
+            lay.addWidget(_hline())
+            box = QPlainTextEdit(); box.setObjectName("Log"); box.setReadOnly(True)
+            box.setMaximumHeight(16777215); box.setPlainText(text)
+            lay.addWidget(box, 1)
+
+            bar = QHBoxLayout()
+            copy = QPushButton("Копировать"); copy.setObjectName("Ghost")
+            copy.setEnabled(bool(to_add))
+            copy.clicked.connect(lambda: QApplication.clipboard().setText(text))
+            bar.addWidget(copy)
+            apply_btn = QPushButton("Применить (бэкап)"); apply_btn.setObjectName("Accent")
+            apply_btn.setEnabled(bool(to_add and path))
+
+            def do_apply():
+                if QMessageBox.question(
+                        dlg, "Применить настройки?",
+                        "Добавить недостающие рекомендованные ключи в settings.json?\n"
+                        "Существующие настройки не изменятся, будет сделан бэкап.",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                    return
+                ok, msg = apply_settings(path, to_add)
+                log.info("Автонастройка: %s", msg.replace("\n", " | "))
+                (QMessageBox.information if ok else QMessageBox.warning)(
+                    dlg, "Автонастройка", msg)
+            apply_btn.clicked.connect(do_apply)
+            bar.addWidget(apply_btn); bar.addStretch()
+            close = QPushButton("Закрыть"); close.setObjectName("Ghost")
             close.clicked.connect(dlg.accept)
             bar.addWidget(close)
             lay.addLayout(bar)
@@ -863,6 +968,11 @@ def run_gui():
                 self._install_threads.remove(worker)
 
         def closeEvent(self, e):
+            try:   # запоминаем геометрию окна
+                cfg["geometry"] = bytes(self.saveGeometry().toBase64()).decode("ascii")
+                save_config(cfg)
+            except Exception:
+                pass
             # Дождёмся фоновых потоков, иначе Qt ругается «QThread destroyed while
             # running». Ждём с потолком, чтобы окно не зависало на сетевой установке.
             threads = [getattr(self, "_mem", None), getattr(self, "_loader", None)]

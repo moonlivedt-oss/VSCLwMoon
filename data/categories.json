@@ -24,7 +24,8 @@
       "seyyedkhandon.qpack",
       "kisstkondoros.vscode-codemetrics",
       "eriklynd.json-tools",
-      "formulahendry.code-runner"
+      "formulahendry.code-runner",
+      "moonlivedt.diagnostics-ru"
     ]
   },
 
@@ -175,6 +176,61 @@
       "note": "Запускает Java (~880 МБ). Держи выключенным, если не нужен.",
       "extensions": [
         "sonarsource.sonarlint-vscode"
+      ]
+    },
+    "go": {
+      "title": "Go",
+      "note": "Ещё не установлен. Официальное расширение Go (gopls). «Подробнее» → «Установить недостающие».",
+      "extensions": [
+        "golang.go"
+      ]
+    },
+    "rust": {
+      "title": "Rust",
+      "note": "Ещё не установлен. rust-analyzer тяжёлый, но мощный. Ставится из «Подробнее».",
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "serayuzgur.crates"
+      ]
+    },
+    "docker": {
+      "title": "Docker / Kubernetes",
+      "note": "Ещё не установлен. Образы, контейнеры, кластеры.",
+      "extensions": [
+        "ms-azuretools.vscode-docker",
+        "ms-kubernetes-tools.vscode-kubernetes-tools"
+      ]
+    },
+    "data": {
+      "title": "Данные / Jupyter",
+      "note": "Ещё не установлен. Ноутбуки и просмотр данных — тяжёлый набор.",
+      "extensions": [
+        "ms-toolsai.jupyter",
+        "ms-toolsai.datawrangler"
+      ]
+    },
+    "remote": {
+      "title": "Удалённая разработка",
+      "note": "Ещё не установлен. Работа по SSH и в WSL.",
+      "extensions": [
+        "ms-vscode-remote.remote-ssh",
+        "ms-vscode-remote.remote-wsl"
+      ]
+    },
+    "api": {
+      "title": "REST / API",
+      "note": "Ещё не установлен. Отправка HTTP-запросов из редактора.",
+      "extensions": [
+        "humao.rest-client",
+        "rangav.vscode-thunder-client"
+      ]
+    },
+    "config": {
+      "title": "YAML / TOML / конфиги",
+      "note": "Ещё не установлен. Схемы и подсветка конфигов.",
+      "extensions": [
+        "redhat.vscode-yaml",
+        "tamasfe.even-better-toml"
       ]
     }
   }
