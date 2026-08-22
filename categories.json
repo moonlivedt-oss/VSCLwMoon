@@ -1,0 +1,181 @@
+{
+  "_comment": "Карта расширение -> категория. always_on грузятся ВСЕГДА. Остальные категории включаются галочками в лаунчере. Всё, чего нет в этом файле, тоже остаётся включённым (безопасный дефолт). id пиши в нижнем регистре, как в 'code --list-extensions'.",
+
+  "always_on": {
+    "title": "Ядро (всегда вкл)",
+    "note": "Косметика, продуктивность, орфография, Claude, русский язык — лёгкие и нужны везде.",
+    "extensions": [
+      "catppuccin.catppuccin-vsc",
+      "pkief.material-icon-theme",
+      "brandonkirbyson.vscode-animations",
+      "be5invis.vscode-custom-css",
+      "aaron-bond.better-comments",
+      "jzmstrjp.color-the-tag-name",
+      "anthropic.claude-code",
+      "gruntfuggly.todo-tree",
+      "alefragnani.bookmarks",
+      "cardinal90.multi-cursor-case-preserve",
+      "usernamehw.errorlens",
+      "streetsidesoftware.code-spell-checker",
+      "streetsidesoftware.code-spell-checker-russian",
+      "ms-ceintl.vscode-language-pack-ru",
+      "christian-kohler.path-intellisense",
+      "adpyke.codesnap",
+      "seyyedkhandon.qpack",
+      "kisstkondoros.vscode-codemetrics",
+      "eriklynd.json-tools",
+      "formulahendry.code-runner"
+    ]
+  },
+
+  "categories": {
+    "git": {
+      "title": "Git / контроль версий",
+      "note": "GitLens индексирует историю репозитория — заметная память. Вынесен из ядра, чтобы можно было отключать на не-git проектах.",
+      "extensions": [
+        "eamodio.gitlens",
+        "mhutchie.git-graph",
+        "donjayamanne.githistory",
+        "github.vscode-pull-request-github",
+        "github.vscode-github-actions",
+        "waderyan.gitblame",
+        "codezombiech.gitignore"
+      ]
+    },
+    "python": {
+      "title": "Python",
+      "note": "Pylance индексирует проект — заметная память.",
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.debugpy",
+        "ms-python.vscode-python-envs",
+        "donjayamanne.python-extension-pack",
+        "kevinrose.vsc-python-indent",
+        "njpwerner.autodocstring",
+        "charliermarsh.ruff",
+        "batisteo.vscode-django",
+        "wholroyd.jinja"
+      ]
+    },
+    "cpp": {
+      "title": "C / C++",
+      "note": "cpptools IntelliSense — тяжёлый.",
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cpptools-extension-pack",
+        "ms-vscode.cpp-devtools",
+        "ms-vscode.cpptools-themes",
+        "amiralizadeh9480.cpp-helper",
+        "franneck94.c-cpp-runner",
+        "hars.cppsnippets",
+        "ms-vscode.cmake-tools",
+        "twxs.cmake",
+        "ms-vscode.makefile-tools",
+        "vadimcn.vscode-lldb",
+        "fougas.msys2",
+        "xaver.clang-format",
+        "13xforever.language-x86-64-assembly",
+        "nicolascapel.sfml"
+      ]
+    },
+    "java": {
+      "title": "Java",
+      "note": "redhat.java поднимает JDK Language Server — сотни МБ.",
+      "extensions": [
+        "vscjava.vscode-java-pack",
+        "redhat.java",
+        "vscjava.vscode-java-debug",
+        "vscjava.vscode-java-test",
+        "vscjava.vscode-java-dependency",
+        "vscjava.vscode-maven",
+        "vscjava.vscode-gradle"
+      ]
+    },
+    "web": {
+      "title": "Web / JS / TS / Vue",
+      "note": "ESLint, Vue Volar, Tailwind, Live Server.",
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "denoland.vscode-deno",
+        "bradlc.vscode-tailwindcss",
+        "vue.volar",
+        "hollowtree.vue-snippets",
+        "formulahendry.auto-rename-tag",
+        "ritwickdey.liveserver",
+        "leizongmin.node-module-intellisense",
+        "ms-edgedevtools.vscode-edge-devtools"
+      ]
+    },
+    "sql": {
+      "title": "SQL / данные",
+      "note": "MSSQL, SQLTools, SQLite, CSV.",
+      "extensions": [
+        "ms-mssql.mssql",
+        "ms-mssql.data-workspace-vscode",
+        "ms-mssql.sql-database-projects-vscode",
+        "ms-mssql.sql-bindings-vscode",
+        "mtxr.sqltools",
+        "alexcvzz.vscode-sqlite",
+        "qwtel.sqlite-viewer",
+        "adpyke.vscode-sql-formatter",
+        "mechatroner.rainbow-csv"
+      ]
+    },
+    "azure": {
+      "title": "Azure / облако / контейнеры",
+      "note": "15+ расширений, тянут .NET рантайм. Нужны редко.",
+      "extensions": [
+        "ms-vscode.vscode-node-azure-pack",
+        "ms-azuretools.vscode-azureresourcegroups",
+        "ms-azuretools.azure-dev",
+        "ms-azuretools.vscode-azurefunctions",
+        "ms-azuretools.vscode-azureappservice",
+        "ms-azuretools.vscode-azurecontainerapps",
+        "ms-azuretools.vscode-azurestaticwebapps",
+        "ms-azuretools.vscode-azurestorage",
+        "ms-azuretools.vscode-azurevirtualmachines",
+        "ms-azuretools.vscode-cosmosdb",
+        "ms-azuretools.vscode-containers",
+        "ms-azure-load-testing.microsoft-testing",
+        "ms-vscode-remote.remote-containers",
+        "ms-dotnettools.vscode-dotnet-runtime",
+        "ms-azuretools.vscode-azure-github-copilot",
+        "ms-azuretools.vscode-azure-mcp-server",
+        "ms-windows-ai-studio.windows-ai-studio"
+      ]
+    },
+    "graphics3d": {
+      "title": "3D / графика",
+      "note": "Просмотрщики glTF/GLB/3D-моделей.",
+      "extensions": [
+        "cesium.gltf-vscode",
+        "slevesque.vscode-3dviewer",
+        "ohziinteractivestudio.ohzi-vscode-glb-viewer"
+      ]
+    },
+    "markdown": {
+      "title": "Markdown / докум.",
+      "note": "Mermaid-диаграммы, просмотр PDF.",
+      "extensions": [
+        "bierner.markdown-mermaid",
+        "bpruitt-goddard.mermaid-markdown-syntax-highlighting",
+        "tomoki1207.pdf"
+      ]
+    },
+    "powershell": {
+      "title": "PowerShell",
+      "note": "Язык и отладка PowerShell.",
+      "extensions": [
+        "ms-vscode.powershell"
+      ]
+    },
+    "sonar": {
+      "title": "SonarLint (тяжёлый!)",
+      "note": "Запускает Java (~880 МБ). Держи выключенным, если не нужен.",
+      "extensions": [
+        "sonarsource.sonarlint-vscode"
+      ]
+    }
+  }
+}
