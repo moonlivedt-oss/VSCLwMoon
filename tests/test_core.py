@@ -246,6 +246,35 @@ def test_build_launch_args_sanitizes():
     assert "p" in args               # профиль очищен от " и %
 
 
+# --- safe_arg / argument injection ----------------------------------------
+
+def test_safe_arg_strips_leading_dashes():
+    # значение-подделка под флаг обезврежено, внутренние дефисы сохранены
+    assert core.safe_arg("--disable-workspace-trust") == "disable-workspace-trust"
+    assert core.safe_arg("  --extensions-dir=C:\\evil") == "extensions-dir=C:\\evil"
+    assert core.safe_arg("D:\\my-project") == "D:\\my-project"
+    assert core.safe_arg("") == ""
+
+
+def test_build_launch_args_blocks_flag_injection_via_folder():
+    # папка вида '--disable-workspace-trust' не должна стать флагом Code.exe
+    args = core.build_launch_args([], "--disable-workspace-trust", True, False)
+    assert "--disable-workspace-trust" not in args
+    assert args[-1] == "disable-workspace-trust"
+
+
+def test_build_launch_command_blocks_flag_injection_via_folder():
+    cmd = core.build_launch_command("code.cmd", [], "--extensions-dir=C:\\evil", True, False)
+    assert '"--extensions-dir=C:\\evil"' not in cmd
+    assert "extensions-dir=C:\\evil" in cmd
+
+
+def test_build_launch_args_blocks_flag_injection_via_profile():
+    args = core.build_launch_args([], "", True, False, profile="--foo")
+    assert "--foo" not in args
+    assert "foo" in args
+
+
 # --- apply_settings (автонастройка) ---------------------------------------
 
 def test_apply_settings_adds_missing_and_keeps_existing(tmp_path):

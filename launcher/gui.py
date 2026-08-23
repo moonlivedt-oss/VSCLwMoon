@@ -823,16 +823,32 @@ def run_gui():
                 self.folder_edit.setText(d.replace("/", "\\"))
 
         def _show_cmd(self):
+            # Сам лаунчер запускает Code.exe напрямую (без оболочки), но здесь
+            # показываем эквивалентную команду для cmd — её удобно скопировать
+            # в скрипт/ярлык. Помечаем это явно, чтобы не вводить в заблуждение.
             cmd = build_launch_command(code_cli or "code", self._disabled_list(),
                                        self.folder_edit.text().strip(),
                                        self.newwin_cb.isChecked(), self.kill_cb.isChecked(),
                                        **self._cmd_kwargs())
-            self.log.setPlainText(cmd)
+            self.log.setPlainText("Эквивалент для cmd (сам лаунчер запускает "
+                                  "Code.exe напрямую, без оболочки):\n" + cmd)
 
         def _run(self):
             if not code_cli:
                 QMessageBox.critical(self, "Ошибка", "Не найден CLI VS Code (code.cmd).")
                 return
+            folder = self.folder_edit.text().strip()
+            if folder and not Path(folder).exists():
+                # Не открываем молча несуществующий путь — легче заметить опечатку
+                # и это отсекает попытку подсунуть в поле что-то, что не является путём.
+                r = QMessageBox.question(
+                    self, "Папка не найдена",
+                    f"Путь не существует:\n{folder}\n\nОткрыть VS Code без папки?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No)
+                if r != QMessageBox.StandardButton.Yes:
+                    return
+                self.folder_edit.clear()
             if self.kill_cb.isChecked():
                 r = QMessageBox.question(
                     self, "Закрыть VS Code?",

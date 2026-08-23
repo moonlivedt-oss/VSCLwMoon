@@ -40,6 +40,15 @@ def shell_safe(s: str) -> str:
     переменную окружения (защита от инъекции через путь/имя профиля). В обычных
     путях и именах профилей этих символов не бывает."""
     return "".join(ch for ch in (s or "") if ch not in '"\r\n%')
+
+
+def safe_arg(s: str) -> str:
+    """shell_safe + защита от argument injection: срезаем ведущие дефисы и
+    пробелы, чтобы значение вроде '--disable-workspace-trust' или
+    '--extensions-dir=...' в поле папки/профиля не было воспринято Code.exe как
+    флаг CLI. Актуально даже при запуске без оболочки (argv). Обычные пути и
+    имена профилей с дефиса не начинаются, внутренние дефисы сохраняются."""
+    return shell_safe(s).strip().lstrip("-").strip()
 # Личный конфиг: он пользовательский и в .gitignore.
 CONFIG_FILE = CONFIG_DIR / "launcher_config.json"
 LOG_FILE = CONFIG_DIR / "launcher.log"
@@ -376,8 +385,8 @@ def build_launch_command(code_cli: str, disabled: list[str], folder: str,
                          new_window: bool, kill_first: bool,
                          profile: str = "", disable_gpu: bool = False,
                          bare: bool = False) -> str:
-    folder = shell_safe(folder)      # защита от инъекции через путь/профиль
-    profile = shell_safe(profile)
+    folder = safe_arg(folder)        # защита от shell- и argument-инъекции
+    profile = safe_arg(profile)
     parts = []
     if kill_first:
         parts.append(f'taskkill /F /IM "{code_image_name(code_cli)}" >nul 2>&1')
@@ -405,9 +414,11 @@ def build_launch_args(disabled: list[str], folder: str, new_window: bool,
                       kill_first: bool, profile: str = "",
                       disable_gpu: bool = False, bare: bool = False) -> list[str]:
     """Аргументы запуска СПИСКОМ (без строки-команды) — для запуска без оболочки.
-    Никакого экранирования не нужно: каждый аргумент уходит в argv как есть."""
-    folder = shell_safe(folder)
-    profile = shell_safe(profile)
+    Никакого экранирования не нужно: каждый аргумент уходит в argv как есть.
+    safe_arg дополнительно срезает ведущие дефисы, чтобы путь/профиль не
+    превратился в флаг Code.exe (argument injection)."""
+    folder = safe_arg(folder)
+    profile = safe_arg(profile)
     args: list[str] = []
     if new_window or kill_first:
         args.append("--new-window")
