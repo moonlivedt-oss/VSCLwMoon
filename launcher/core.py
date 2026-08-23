@@ -279,7 +279,20 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> None:
-    CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    """Атомарная запись: пишем во временный файл рядом и подменяем им целевой
+    (os.replace атомарен в пределах одного тома). Прерванная на середине запись
+    не повредит текущий launcher_config.json с пресетами и настройками."""
+    data = json.dumps(cfg, ensure_ascii=False, indent=2)
+    tmp = CONFIG_FILE.with_name(f"{CONFIG_FILE.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(data, encoding="utf-8")
+        os.replace(tmp, CONFIG_FILE)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 # --- Автонастройка settings.json ------------------------------------------

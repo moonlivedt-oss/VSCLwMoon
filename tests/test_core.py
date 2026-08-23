@@ -321,3 +321,29 @@ def test_apply_settings_creates_when_missing(tmp_path):
     ok, msg = core.apply_settings(p, {"a": 1})
     assert ok and p.exists()
     assert json.loads(p.read_text(encoding="utf-8"))["a"] == 1
+
+
+# --- save_config (атомарная запись) ---------------------------------------
+
+def test_save_config_atomic_roundtrip(tmp_path, monkeypatch):
+    cf = tmp_path / "launcher_config.json"
+    monkeypatch.setattr(core, "CONFIG_FILE", cf)
+    core.save_config({"presets": {"web": ["web"]}, "kill_first": True})
+    data = json.loads(cf.read_text(encoding="utf-8"))
+    assert data["presets"]["web"] == ["web"]
+    assert list(tmp_path.glob("*.tmp")) == []   # временный файл не остаётся
+
+
+def test_save_config_keeps_old_on_write_error(tmp_path, monkeypatch):
+    cf = tmp_path / "launcher_config.json"
+    cf.write_text('{"presets": {"old": []}}', encoding="utf-8")
+    monkeypatch.setattr(core, "CONFIG_FILE", cf)
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(core.os, "replace", boom)
+    with pytest.raises(OSError):
+        core.save_config({"presets": {"new": []}})
+    # прежний конфиг цел, мусора не осталось
+    assert json.loads(cf.read_text(encoding="utf-8"))["presets"] == {"old": []}
+    assert list(tmp_path.glob("*.tmp")) == []

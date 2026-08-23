@@ -13,6 +13,7 @@ dist/
 # Личный конфиг лаунчера — создаётся сам при первом запуске
 # (кэш установленных расширений, недавние папки, последний выбор).
 launcher_config.json
+launcher_config.json.*.tmp
 launcher.log
 launcher.log.*
 

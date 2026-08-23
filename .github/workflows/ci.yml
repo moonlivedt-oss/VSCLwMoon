@@ -13,11 +13,14 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.12', '3.14']   # 3.12 = CI baseline, 3.14 = как у автора
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python-version }}
       - name: Install dev deps
         run: pip install -r requirements-dev.txt
       - name: Run tests
@@ -32,7 +35,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.14'   # exe собираем на той же версии, что у автора
       - name: Install deps
         run: |
           pip install -r requirements.txt
