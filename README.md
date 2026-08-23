@@ -183,7 +183,6 @@ VSCodeLauncher/
   Запустить.bat            запуск отдельным процессом
   Собрать_exe.bat          сборка exe через PyInstaller
   VSCodeLauncher.spec      конфиг сборки PyInstaller
-  version_info.txt         свойства exe (версия, описание, автор)
   requirements.txt         зависимости для запуска (PyQt6)
   requirements-dev.txt     инструменты разработки (pytest, pyinstaller)
   launcher/
