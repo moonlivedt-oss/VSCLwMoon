@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Оформление: палитра Catppuccin Mocha (совпадает с темой VS Code у
-пользователя), генератор QSS и тёмный тайтлбар для Windows."""
+"""Оформление: палитры Catppuccin Mocha (тёмная) и Latte (светлая), генератор
+QSS и свето/тёмный тайтлбар окна для Windows."""
 import sys
 
 # Catppuccin Mocha (тёмная) и Latte (светлая) — совпадают с семейством тем
@@ -20,7 +20,6 @@ PALETTE_LIGHT = {
     "track": "#ccd0da", "input_bg": "#ffffff", "input_text": "#4c4f69",
 }
 PALETTES = {"dark": PALETTE_DARK, "light": PALETTE_LIGHT}
-PALETTE = PALETTE_DARK   # тема по умолчанию / обратная совместимость
 
 
 def _mix(c1, c2, t):
@@ -183,8 +182,3 @@ def apply_titlebar(widget, dark: bool = True) -> None:
                 hwnd, attr, ctypes.byref(val), ctypes.sizeof(val))
     except Exception:
         pass
-
-
-def apply_dark_titlebar(widget) -> None:
-    """Обратная совместимость: тёмный тайтлбар."""
-    apply_titlebar(widget, True)
