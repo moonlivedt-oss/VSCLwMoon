@@ -275,6 +275,26 @@ def test_build_launch_args_blocks_flag_injection_via_profile():
     assert "foo" in args
 
 
+# --- kill_vscode (мягко / жёстко) -----------------------------------------
+
+def test_kill_vscode_force_uses_slash_f(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(core.subprocess, "run",
+                        lambda a, **k: seen.setdefault("args", a))
+    core.kill_vscode("code.cmd")                      # по умолчанию — жёстко
+    assert "/F" in seen["args"]
+    assert seen["args"][-1] == "Code.exe"
+
+
+def test_kill_vscode_graceful_omits_slash_f(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(core.subprocess, "run",
+                        lambda a, **k: seen.setdefault("args", a))
+    core.kill_vscode("code.cmd", graceful=True)       # мягко — без /F
+    assert "/F" not in seen["args"]
+    assert "/IM" in seen["args"] and seen["args"][-1] == "Code.exe"
+
+
 # --- apply_settings (автонастройка) ---------------------------------------
 
 def test_apply_settings_adds_missing_and_keeps_existing(tmp_path):

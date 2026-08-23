@@ -27,7 +27,8 @@ from .core import (
     estimate_saved_mb, find_code_cli, install_extension, kill_vscode,
     launch_detached, load_categories, load_config, load_descriptions,
     load_installed, load_recommended, read_installed_from_disk, recommended_for,
-    save_config, setup_logging, uninstall_extension, vscode_user_settings_path,
+    save_config, setup_logging, uninstall_extension, vscode_process_count,
+    vscode_user_settings_path,
 )
 from .theme import PALETTES, apply_titlebar, build_qss
 
@@ -110,6 +111,11 @@ class CategoryCard(QFrame):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._on_toggle = on_toggle
         weight = WEIGHT.get(key, "light")
+        # Текст для поиска: ключ, название, заметка и id расширений стека.
+        self.search_text = " ".join([
+            key, cat.get("title", ""), cat.get("note", ""),
+            " ".join(cat.get("extensions", [])),
+        ]).lower()
 
         # Внешний контейнер: цветная полоска нагрузки слева (flush) + контент.
         outer = QHBoxLayout(self)
@@ -564,6 +570,14 @@ def run_gui():
             sec_row.addWidget(b_all); sec_row.addWidget(b_none)
             cv.addLayout(sec_row)
 
+            self.search_edit = QLineEdit()
+            self.search_edit.setPlaceholderText("Поиск стека или расширения…")
+            self.search_edit.setClearButtonEnabled(True)
+            self.search_edit.setToolTip("Фильтрует карточки по названию, заметке "
+                                        "и id расширений. На выбор не влияет.")
+            self.search_edit.textChanged.connect(self._filter_cards)
+            cv.addWidget(self.search_edit)
+
             installed_set = set(self.installed)
             # Сначала установленные стеки (по ним и есть что выключать), внутри —
             # тяжёлые вверх (максимум экономии). Неустановленные сборки — ниже.
@@ -620,9 +634,21 @@ def run_gui():
             self.kill_cb = QCheckBox("Закрыть VS Code перед стартом (чтобы память освободилась)")
             self.kill_cb.setChecked(cfg.get("kill_first", True))
             self.kill_cb.setToolTip(
-                f"Принудительно закроет все окна VS Code ({code_image_name(code_cli)}). "
-                "Сохрани файлы заранее! Запускай этот тул НЕ из терминала VS Code.")
+                f"Закроет все окна VS Code ({code_image_name(code_cli)}) перед стартом. "
+                "Запускай этот тул НЕ из терминала VS Code.")
             ov.addWidget(self.kill_cb)
+            self.soft_cb = QCheckBox("   Мягко: дать VS Code сохранить (иначе принудительно)")
+            self.soft_cb.setChecked(cfg.get("soft_close", False))
+            self.soft_cb.setToolTip(
+                "Пошлёт окну обычный запрос на закрытие — VS Code сам спросит про "
+                "несохранённые файлы. Лаунчер подождёт, пока редактор закроется, и "
+                "только потом стартует новый. Если оставить открытым диалог сохранения, "
+                "запуск отменится (ничего не потеряется). Выкл — жёсткое закрытие (/F): "
+                "быстро и надёжно освобождает память, но несохранённое теряется.")
+            self.kill_cb.stateChanged.connect(
+                lambda: self.soft_cb.setEnabled(self.kill_cb.isChecked()))
+            self.soft_cb.setEnabled(self.kill_cb.isChecked())
+            ov.addWidget(self.soft_cb)
             self.newwin_cb = QCheckBox("Открыть в новом окне (--new-window)")
             self.newwin_cb.setChecked(cfg.get("new_window", True))
             ov.addWidget(self.newwin_cb)
@@ -694,8 +720,16 @@ def run_gui():
             return {k for k, cb in self.cat_checks.items() if cb.isChecked()}
 
         def _set_all(self, state: bool):
+            # Применяем только к видимым (после фильтра) карточкам — чтобы «Всё вкл»
+            # при активном поиске не трогал скрытые стеки неожиданно.
             for cb in self.cat_checks.values():
-                cb.setChecked(state)
+                if cb.isVisible():
+                    cb.setChecked(state)
+
+        def _filter_cards(self, text: str = ""):
+            q = (text or "").strip().lower()
+            for card in self.cat_checks.values():
+                card.setVisible(q in card.search_text)
 
         def _disabled_list(self) -> list[str]:
             return compute_disabled(self.installed, ext_index, self._selected())
@@ -879,12 +913,38 @@ def run_gui():
                 QTimer.singleShot(6000, self._probe_memory)   # новый footprint
 
             if self.kill_cb.isChecked():
-                kill_vscode(code_cli)   # закрыть текущие окна, затем стартуем с паузой
-                self.log.appendPlainText("Закрываю VS Code…")
-                QTimer.singleShot(1800, do_launch)   # не блокируем интерфейс
+                if self.soft_cb.isChecked():
+                    self._graceful_close_then(do_launch)   # дать сохранить, дождаться
+                else:
+                    kill_vscode(code_cli)   # жёстко (/F), затем стартуем с паузой
+                    self.log.appendPlainText("Закрываю VS Code…")
+                    QTimer.singleShot(1800, do_launch)   # не блокируем интерфейс
             else:
                 do_launch()
             self._persist()
+
+        def _graceful_close_then(self, cont):
+            """Мягко закрыть VS Code (с запросом на сохранение) и дождаться выхода,
+            затем cont(). Если через ~15 с редактор ещё открыт (скорее всего висит
+            диалог сохранения) — отменяем запуск, ничего не потеряв."""
+            kill_vscode(code_cli, graceful=True)
+            self.log.appendPlainText("Прошу VS Code закрыться (ответь на запрос сохранения)…")
+            self._soft_tries = 0
+
+            def check():
+                self._soft_tries += 1
+                if vscode_process_count(code_cli) == 0:
+                    self.log.appendPlainText("VS Code закрыт. Запускаю…")
+                    cont()
+                    return
+                if self._soft_tries >= 20:   # ~15 секунд
+                    self.log.appendPlainText(
+                        "VS Code всё ещё открыт — запуск отменён. Закрой окна "
+                        "(или ответь на запрос сохранения) и нажми «Запустить» снова.")
+                    return
+                QTimer.singleShot(750, check)
+
+            QTimer.singleShot(750, check)
 
         def _reload_presets(self):
             self.preset_box.blockSignals(True)
@@ -966,6 +1026,7 @@ def run_gui():
         def _persist(self):
             cfg["last_selected"] = sorted(self._selected())
             cfg["kill_first"] = self.kill_cb.isChecked()
+            cfg["soft_close"] = self.soft_cb.isChecked()
             cfg["new_window"] = self.newwin_cb.isChecked()
             cfg["disable_gpu"] = self.gpu_cb.isChecked()
             cfg["profile"] = self.profile_edit.text().strip()

@@ -33,7 +33,10 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # UPX выключен намеренно: сжатые им exe часто ловят ложные срабатывания
+    # Windows Defender/антивирусов. Для раздачи важнее отсутствие блокировок,
+    # чем ~10 МБ размера.
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,          # оконное приложение, без консоли
@@ -43,4 +46,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='assets/app.ico',
+    version='version_info.txt',   # свойства файла: версия, описание, автор
 )

@@ -1,0 +1,36 @@
+# -*- coding: utf-8 -*-
+# Ресурс свойств exe (вкладка «Подробно» в свойствах файла Windows).
+# Версию держим синхронной с launcher/__init__.py::__version__.
+# Подключается в VSCodeLauncher.spec через version='version_info.txt'.
+VSVersionInfo(
+    ffi=FixedFileInfo(
+        filevers=(1, 0, 0, 0),
+        prodvers=(1, 0, 0, 0),
+        mask=0x3f,
+        flags=0x0,
+        OS=0x40004,
+        fileType=0x1,
+        subtype=0x0,
+        date=(0, 0),
+    ),
+    kids=[
+        StringFileInfo(
+            [
+                StringTable(
+                    "040904B0",  # язык-нейтрально (en-US), кодовая страница Unicode
+                    [
+                        StringStruct("CompanyName", "moonlivedt"),
+                        StringStruct("FileDescription", "VS Code Launcher - stack-based extension launcher"),
+                        StringStruct("FileVersion", "1.0.0.0"),
+                        StringStruct("InternalName", "VSCodeLauncher"),
+                        StringStruct("LegalCopyright", "MIT License. (c) moonlivedt"),
+                        StringStruct("OriginalFilename", "VSCodeLauncher.exe"),
+                        StringStruct("ProductName", "VS Code Launcher"),
+                        StringStruct("ProductVersion", "1.0.0.0"),
+                    ],
+                )
+            ]
+        ),
+        VarFileInfo([VarStruct("Translation", [0x0409, 1200])]),
+    ],
+)

@@ -446,13 +446,24 @@ def code_gui_exe(code_cli: str | None) -> Path | None:
     return exe if exe.exists() else None
 
 
-def kill_vscode(code_cli: str | None) -> None:
-    """Закрыть все окна VS Code (без оболочки). Аргументы фиксированные."""
+def kill_vscode(code_cli: str | None, graceful: bool = False) -> None:
+    """Закрыть все окна VS Code (без оболочки). Аргументы фиксированные.
+    graceful=True — послать WM_CLOSE (taskkill без /F): VS Code успеет спросить
+    про несохранённые файлы и закроется сам. graceful=False — принудительно (/F),
+    память освобождается гарантированно, но несохранённое теряется."""
+    args = ["taskkill", "/IM", code_image_name(code_cli)]
+    if not graceful:
+        args.insert(1, "/F")
     try:
-        subprocess.run(["taskkill", "/F", "/IM", code_image_name(code_cli)],
-                       capture_output=True, timeout=15)
+        subprocess.run(args, capture_output=True, timeout=15)
     except Exception:
         pass
+
+
+def vscode_process_count(code_cli: str | None) -> int:
+    """Сколько процессов VS Code сейчас запущено (0 — закрыт). Для ожидания
+    завершения при мягком закрытии."""
+    return code_memory_mb(code_cli)[1]
 
 
 def launch_detached(code_cli: str, args: list[str]) -> None:
