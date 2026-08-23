@@ -72,11 +72,13 @@ def setup_logging():
 # Ориентировочная «тяжесть» стека и её отражение в памяти. Ключи — как в categories.json.
 WEIGHT = {
     "sonar": "heavy", "java": "heavy", "azure": "heavy", "cpp": "heavy",
-    "rust": "heavy", "data": "heavy",
+    "rust": "heavy", "data": "heavy", "dotnet": "heavy",
     "python": "medium", "sql": "medium", "git": "medium",
-    "go": "medium", "docker": "medium",
+    "go": "medium", "docker": "medium", "php": "medium", "ruby": "medium",
+    "terraform": "medium",
     "web": "light", "graphics3d": "light", "markdown": "light",
     "powershell": "light", "remote": "light", "api": "light", "config": "light",
+    "lua": "light", "svelte_astro": "light", "graphql": "light",
 }
 WEIGHT_LABEL = {"heavy": "тяжёлый", "medium": "средний", "light": "лёгкий"}
 WEIGHT_MB = {"heavy": 500, "medium": 150, "light": 30}
@@ -399,12 +401,63 @@ def build_launch_command(code_cli: str, disabled: list[str], folder: str,
     return " & ".join(parts)
 
 
-def launch(cmd_line: str) -> None:
+def build_launch_args(disabled: list[str], folder: str, new_window: bool,
+                      kill_first: bool, profile: str = "",
+                      disable_gpu: bool = False, bare: bool = False) -> list[str]:
+    """Аргументы запуска СПИСКОМ (без строки-команды) — для запуска без оболочки.
+    Никакого экранирования не нужно: каждый аргумент уходит в argv как есть."""
+    folder = shell_safe(folder)
+    profile = shell_safe(profile)
+    args: list[str] = []
+    if new_window or kill_first:
+        args.append("--new-window")
+    if profile:
+        args += ["--profile", profile]
+    if bare:
+        args.append("--disable-extensions")
+    else:
+        for d in disabled:
+            if valid_ext_id(d):
+                args += ["--disable-extension", d]
+    if disable_gpu:
+        args.append("--disable-gpu")
+    if folder:
+        args.append(folder)
+    return args
+
+
+def code_gui_exe(code_cli: str | None) -> Path | None:
+    """GUI-исполняемый файл (Code.exe) рядом с bin/code.cmd — чтобы запускать
+    напрямую через CreateProcess, минуя cmd.exe. None, если не удалось найти."""
+    if not code_cli:
+        return None
+    exe = Path(code_cli).resolve().parent.parent / code_image_name(code_cli)
+    return exe if exe.exists() else None
+
+
+def kill_vscode(code_cli: str | None) -> None:
+    """Закрыть все окна VS Code (без оболочки). Аргументы фиксированные."""
+    try:
+        subprocess.run(["taskkill", "/F", "/IM", code_image_name(code_cli)],
+                       capture_output=True, timeout=15)
+    except Exception:
+        pass
+
+
+def launch_detached(code_cli: str, args: list[str]) -> None:
+    """Запуск без оболочки: напрямую Code.exe (argv, без разбора метасимволов).
+    Если Code.exe не найден (портативная сборка) — запасной путь через cmd /c,
+    но уже списком аргументов, а не единой строкой."""
     DETACHED_PROCESS = 0x00000008
     CREATE_NEW_PROCESS_GROUP = 0x00000200
-    subprocess.Popen(cmd_line, shell=True,
-                     creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-                     close_fds=True)
+    flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    exe = code_gui_exe(code_cli)
+    if exe is not None:
+        subprocess.Popen([str(exe), *args], creationflags=flags, close_fds=True)
+    else:
+        comspec = os.environ.get("COMSPEC", "cmd.exe")
+        subprocess.Popen([comspec, "/c", code_cli, *args],
+                         creationflags=flags, close_fds=True)
 
 
 def selftest(selected_csv: str):

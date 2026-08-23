@@ -232,6 +232,59 @@
         "redhat.vscode-yaml",
         "tamasfe.even-better-toml"
       ]
+    },
+    "dotnet": {
+      "title": "C# / .NET",
+      "note": "Ещё не установлен. C# Dev Kit — тяжёлый, но полноценная IDE для .NET.",
+      "extensions": [
+        "ms-dotnettools.csharp",
+        "ms-dotnettools.csdevkit"
+      ]
+    },
+    "php": {
+      "title": "PHP",
+      "note": "Ещё не установлен. Intelephense и отладка Xdebug.",
+      "extensions": [
+        "bmewburn.vscode-intelephense-client",
+        "xdebug.php-debug"
+      ]
+    },
+    "ruby": {
+      "title": "Ruby",
+      "note": "Ещё не установлен. Ruby LSP: анализ и автодополнение.",
+      "extensions": [
+        "shopify.ruby-lsp"
+      ]
+    },
+    "lua": {
+      "title": "Lua",
+      "note": "Ещё не установлен. Языковой сервер Lua (sumneko).",
+      "extensions": [
+        "sumneko.lua"
+      ]
+    },
+    "terraform": {
+      "title": "Terraform / IaC",
+      "note": "Ещё не установлен. Подсветка и подсказки для Terraform.",
+      "extensions": [
+        "hashicorp.terraform"
+      ]
+    },
+    "svelte_astro": {
+      "title": "Svelte / Astro",
+      "note": "Ещё не установлен. Современные веб-фреймворки.",
+      "extensions": [
+        "svelte.svelte-vscode",
+        "astro-build.astro-vscode"
+      ]
+    },
+    "graphql": {
+      "title": "GraphQL",
+      "note": "Ещё не установлен. Подсветка и автодополнение GraphQL.",
+      "extensions": [
+        "graphql.vscode-graphql",
+        "graphql.vscode-graphql-syntax"
+      ]
     }
   }
 }

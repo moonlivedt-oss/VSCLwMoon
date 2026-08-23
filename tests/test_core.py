@@ -218,6 +218,34 @@ def test_build_launch_command_sanitizes_folder():
     assert cmd.count('"') % 2 == 0
 
 
+# --- build_launch_args (запуск без оболочки) -------------------------------
+
+def test_build_launch_args_list_form():
+    args = core.build_launch_args(
+        ["ms-python.python", "bad id&"], "D:\\proj", True, False,
+        profile="Web", disable_gpu=True)
+    assert args[0] == "--new-window"
+    # каждый id — отдельным аргументом, невалидный отброшен
+    assert "--disable-extension" in args
+    assert "ms-python.python" in args
+    assert "bad id&" not in args
+    assert "--profile" in args and "Web" in args
+    assert "--disable-gpu" in args
+    assert args[-1] == "D:\\proj"          # папка — последним аргументом
+
+
+def test_build_launch_args_bare():
+    args = core.build_launch_args(["ms-python.python"], "", True, False, bare=True)
+    assert "--disable-extensions" in args
+    assert "--disable-extension" not in args
+
+
+def test_build_launch_args_sanitizes():
+    args = core.build_launch_args([], 'C:\\a"x', True, False, profile='p"%')
+    assert 'C:\\ax' in args          # кавычка убрана из пути
+    assert "p" in args               # профиль очищен от " и %
+
+
 # --- apply_settings (автонастройка) ---------------------------------------
 
 def test_apply_settings_adds_missing_and_keeps_existing(tmp_path):

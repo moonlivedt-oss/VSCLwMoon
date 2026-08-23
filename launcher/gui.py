@@ -22,12 +22,12 @@ from PyQt6.QtWidgets import (
 from . import __version__
 from .core import (
     ICON_FILE, LOGO_FILE, WEIGHT, WEIGHT_LABEL,
-    apply_settings, build_ext_index, build_launch_command, categories_present,
-    code_image_name, code_memory_mb, compute_disabled, estimate_saved_mb,
-    find_code_cli, install_extension, launch, load_categories, load_config,
-    load_descriptions, load_installed, load_recommended, read_installed_from_disk,
-    recommended_for, save_config, setup_logging, uninstall_extension,
-    vscode_user_settings_path,
+    apply_settings, build_ext_index, build_launch_args, build_launch_command,
+    categories_present, code_image_name, code_memory_mb, compute_disabled,
+    estimate_saved_mb, find_code_cli, install_extension, kill_vscode,
+    launch_detached, load_categories, load_config, load_descriptions,
+    load_installed, load_recommended, read_installed_from_disk, recommended_for,
+    save_config, setup_logging, uninstall_extension, vscode_user_settings_path,
 )
 from .theme import PALETTES, apply_titlebar, build_qss
 
@@ -843,23 +843,32 @@ def run_gui():
                 if r != QMessageBox.StandardButton.Yes:
                     return
             dis = self._disabled_list()
-            cmd = build_launch_command(code_cli, dis, self.folder_edit.text().strip(),
-                                       self.newwin_cb.isChecked(), self.kill_cb.isChecked(),
-                                       **self._cmd_kwargs())
-            try:
-                launch(cmd)
-                log.info("Запуск: %s", "голый режим" if self._bare()
+            bare = self._bare()
+            args = build_launch_args(dis, self.folder_edit.text().strip(),
+                                     self.newwin_cb.isChecked(), self.kill_cb.isChecked(),
+                                     **self._cmd_kwargs())
+
+            def do_launch():
+                try:
+                    launch_detached(code_cli, args)   # без оболочки, напрямую Code.exe
+                except Exception as e:
+                    log.exception("Ошибка запуска")
+                    QMessageBox.critical(self, "Ошибка запуска", str(e))
+                    return
+                log.info("Запуск: %s", "голый режим" if bare
                          else f"выключено {len(dis)} расширений")
-                if self._bare():
-                    self.log.appendPlainText("Запуск: голый режим (все расширения выкл). OK.")
-                else:
-                    self.log.appendPlainText(f"Запуск: выключено {len(dis)} расширений. OK.")
-            except Exception as e:
-                log.exception("Ошибка запуска")
-                QMessageBox.critical(self, "Ошибка запуска", str(e))
-                return
+                self.log.appendPlainText("Запуск: голый режим (все расширения выкл). OK."
+                                         if bare else
+                                         f"Запуск: выключено {len(dis)} расширений. OK.")
+                QTimer.singleShot(6000, self._probe_memory)   # новый footprint
+
+            if self.kill_cb.isChecked():
+                kill_vscode(code_cli)   # закрыть текущие окна, затем стартуем с паузой
+                self.log.appendPlainText("Закрываю VS Code…")
+                QTimer.singleShot(1800, do_launch)   # не блокируем интерфейс
+            else:
+                do_launch()
             self._persist()
-            QTimer.singleShot(6000, self._probe_memory)   # покажем новый footprint
 
         def _reload_presets(self):
             self.preset_box.blockSignals(True)
