@@ -8,10 +8,12 @@
 """
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from .toolchains import install_package, uninstall_package, upgrade_package
+from .toolchains import (
+    install_package, install_package_elevated, uninstall_package, upgrade_package,
+)
 from .updates import check_for_update
 from .vscode import (
-    code_memory_mb, install_extension, load_installed, uninstall_extension,
+    code_footprint_mb, install_extension, load_installed, uninstall_extension,
 )
 
 
@@ -37,7 +39,7 @@ class MemProbe(QThread):
         self._cli = cli
 
     def run(self):
-        mb, n = code_memory_mb(self._cli)
+        mb, n = code_footprint_mb(self._cli)
         self.measured.emit(mb, n)
 
 
@@ -54,6 +56,30 @@ class UpdateCheck(QThread):
     def run(self):
         newer = check_for_update(self._current)
         self.done.emit(newer or "")
+
+
+class UpdateDownloader(QThread):
+    """Фоновое скачивание и проверка новой версии (#10). Сама сеть и сверка
+    SHA256 — в updates; наружу летят прогресс и итог. Окно не подмерзает на
+    скачивании десятков МБ."""
+    progress = pyqtSignal(int, int)      # получено, всего (0 — размер неизвестен)
+    done = pyqtSignal(bool, str, str)    # успех, сообщение, путь к скачанному
+
+    def __init__(self, dest):
+        super().__init__()
+        self._dest = str(dest)
+
+    def run(self):
+        from .updates import download_and_verify, fetch_latest_release_info
+        info = fetch_latest_release_info()
+        if not info:
+            self.done.emit(False, "Не удалось получить информацию о релизе "
+                                  "(нет сети или в релизе нет .exe).", "")
+            return
+        ok, msg = download_and_verify(
+            info, self._dest,
+            progress=lambda got, total: self.progress.emit(got, total))
+        self.done.emit(ok, msg, self._dest if ok else "")
 
 
 class Installer(QThread):
@@ -129,3 +155,38 @@ class ToolchainInstaller(QThread):
                 ok, msg = install_package(pkg, scope=self._scope)
             self.one_done.emit(pkg.winget_id, ok, msg)
         self.all_done.emit()
+
+
+class FnWorker(QThread):
+    """Выполнить произвольную функцию в фоне и вернуть результат (#5/#8).
+    Для недолгих, но блокирующих операций (winget upgrade, опрос версий всех
+    тулчейнов), которые нельзя звать из главного треда — окно подмёрзнет.
+    Исключение не роняет поток: приходит в done как объект-исключение."""
+    done = pyqtSignal(object)
+
+    def __init__(self, fn):
+        super().__init__()
+        self._fn = fn
+
+    def run(self):
+        try:
+            res = self._fn()
+        except Exception as e:   # noqa: BLE001 — намеренно ловим всё, отдаём наружу
+            res = e
+        self.done.emit(res)
+
+
+class ElevatedInstaller(QThread):
+    """Установка одного пакета с правами администратора в фоне (#10). Показывает
+    запрос UAC (внутри install_package_elevated) и ждёт завершения — поэтому в
+    фоне, чтобы окно не подмерзало на время elevated-установки."""
+    done = pyqtSignal(bool, str)
+
+    def __init__(self, package, scope="machine"):
+        super().__init__()
+        self._package = package
+        self._scope = scope
+
+    def run(self):
+        ok, msg = install_package_elevated(self._package, scope=self._scope)
+        self.done.emit(ok, msg)

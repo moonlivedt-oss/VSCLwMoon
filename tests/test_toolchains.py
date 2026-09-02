@@ -43,13 +43,17 @@ def test_catalog_ids_are_all_valid_and_probes_present():
 
 
 def test_catalog_keys_match_known_stack_keys():
-    # Ключи тулчейнов должны совпадать с ключами стеков из detect.py —
-    # это связывает «обнаружен стек» с «поставить его тулчейн».
+    # Тулчейн, чей ключ совпадает со стеком (detect.py), связывает «обнаружен
+    # стек» с «поставить его тулчейн». Часть тулчейнов — просто доступные к
+    # установке инструменты без стека (deno/bun/zig): их auto-detect по папке
+    # не предлагает, но поставить можно.
     from launcher import detect
     stack_keys = set(detect.FILENAME_MARKERS.values()) | set(detect.SUFFIX_MARKERS.values())
     stack_keys.add("git")   # git детектится по каталогу .git, а не по маркеру файла
+    EXTRA = {"deno", "bun", "zig"}   # внестековые, но устанавливаемые
     for key in tc.TOOLCHAINS:
-        assert key in stack_keys, f"тулчейн {key!r} не соответствует ни одному стеку"
+        assert key in stack_keys or key in EXTRA, \
+            f"тулчейн {key!r} не соответствует ни стеку, ни списку внестековых"
 
 
 def test_get_toolchain_and_keys():

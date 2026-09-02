@@ -24,6 +24,7 @@ ASSETS_DIR = ROOT / "assets"
 CATEGORIES_FILE = DATA_DIR / "categories.json"
 DESCRIPTIONS_FILE = DATA_DIR / "plugin_descriptions.json"
 RECOMMENDED_FILE = DATA_DIR / "recommended_settings.json"
+TOOLCHAINS_FILE = DATA_DIR / "toolchains.json"   # каталог языковых тулчейнов (#6)
 
 ICON_FILE = ASSETS_DIR / "app.ico"
 LOGO_FILE = ASSETS_DIR / "logo.png"   # необязательный логотип в шапке

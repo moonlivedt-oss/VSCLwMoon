@@ -1,0 +1,83 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/moonlivedt-oss/VSCLwMoon/blob/main/data/toolchains.schema.json",
+  "title": "VS Code Launcher — каталог языковых тулчейнов",
+  "description": "Схема для data/toolchains.json. Каждый тулчейн ставится через winget. Ключ, совпадающий со стеком из categories.json, связывает автодетект проекта с установкой инструмента.",
+  "type": "object",
+  "required": ["toolchains"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "_comment": { "type": "string" },
+    "toolchains": {
+      "type": "object",
+      "description": "Ключ тулчейна (python, cpp, php…) — совпадает с ключом стека, если такой стек есть.",
+      "propertyNames": { "pattern": "^[a-z0-9_]+$" },
+      "additionalProperties": {
+        "type": "object",
+        "required": ["title", "packages"],
+        "properties": {
+          "title": { "type": "string" },
+          "note": { "type": "string" },
+          "packages": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/package" }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "wingetId": {
+      "type": "string",
+      "description": "id пакета winget (Publisher.Name). Проверь: winget search <имя>.",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]*$"
+    },
+    "package": {
+      "type": "object",
+      "required": ["winget_id", "title", "probe"],
+      "properties": {
+        "winget_id": { "$ref": "#/$defs/wingetId" },
+        "title": { "type": "string" },
+        "probe": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Исполняемые файлы, по которым видно, что пакет установлен (без .exe).",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "note": { "type": "string" },
+        "optional": {
+          "type": "boolean",
+          "description": "Дополнительный пакет (не входит в «поставить всё» по умолчанию)."
+        },
+        "path_hints": {
+          "type": "array",
+          "description": "Типовые каталоги bin, куда дописать PATH, если winget этого не сделал.",
+          "items": { "type": "string" }
+        },
+        "version_arg": { "type": "string" },
+        "provides": {
+          "type": "array",
+          "description": "Полный набор инструментов пакета для показа в UI (у MinGW — gcc, g++, gdb…).",
+          "items": { "type": "string" }
+        },
+        "versions": {
+          "type": "array",
+          "description": "Варианты версии для выбора в UI (#4).",
+          "items": {
+            "type": "object",
+            "required": ["winget_id", "title"],
+            "properties": {
+              "winget_id": { "$ref": "#/$defs/wingetId" },
+              "title": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

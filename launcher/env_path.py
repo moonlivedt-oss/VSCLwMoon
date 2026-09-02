@@ -153,6 +153,61 @@ def is_on_path(directory: str) -> bool:
     return contains_dir(read_machine_path(), directory)
 
 
+def path_health(path_str: str | None = None) -> dict:
+    """Диагностика PATH (#8): дубликаты, несуществующие каталоги, длина.
+
+    Берёт PATH процесса (или переданную строку). Дубликаты — записи, совпадающие
+    после нормализации (регистр/слэши/%VAR%): они замедляют поиск и путают
+    порядок. missing — каталоги, которых нет на диске (мёртвые записи). length —
+    длина строки: у пользовательского PATH в реестре есть практические лимиты,
+    и близость к ним стоит показать. Чистая функция — тестируется без реестра."""
+    raw = os.environ.get("PATH", "") if path_str is None else path_str
+    entries = path_entries(raw)
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    missing: list[str] = []
+    for e in entries:
+        norm = _norm(e)
+        if norm in seen:
+            duplicates.append(e)
+        else:
+            seen.add(norm)
+        try:
+            if not Path(os.path.expandvars(e)).is_dir():
+                missing.append(e)
+        except Exception:
+            missing.append(e)
+    return {"count": len(entries), "duplicates": duplicates,
+            "missing": missing, "length": len(raw)}
+
+
+def refresh_process_path_from_registry() -> bool:
+    """Подтянуть в PATH текущего процесса каталоги, которые появились в реестре
+    (machine + user), но которых ещё нет у нас (#1).
+
+    Пакеты, которые winget прописывает в PATH сам (Python, Node, Go, JDK…),
+    кладут его в реестр, но у уже запущенного лаунчера `os.environ["PATH"]` не
+    меняется — и наш probe (`which`) не видит только что установленный инструмент
+    до перезапуска. Здесь мы, как новый терминал, дописываем недостающие
+    реестровые каталоги в PATH процесса. ТОЛЬКО добавляем — ничего из текущего
+    PATH не удаляем (там могут быть пути от родителя/venv). %VAR% раскрываем,
+    иначе `which` их не поймёт. Возвращает True, если что-то добавили; на
+    не-Windows реестр пуст — no-op."""
+    current = os.environ.get("PATH", "")
+    added = False
+    for raw in path_entries(read_machine_path()) + path_entries(read_user_path()):
+        try:
+            directory = os.path.expandvars(raw)
+        except Exception:
+            directory = raw
+        if directory and not contains_dir(current, directory):
+            current = compute_appended(current, directory)
+            added = True
+    if added:
+        os.environ["PATH"] = current
+    return added
+
+
 def add_to_user_path(directory: str) -> tuple[bool, str]:
     """Дописать `directory` в постоянный пользовательский PATH (реестр) и в PATH
     текущего процесса. Возвращает (изменили_ли, сообщение).

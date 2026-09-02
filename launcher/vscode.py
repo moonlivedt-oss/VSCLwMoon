@@ -53,6 +53,36 @@ def resolve_code_cli(cfg: dict | None = None) -> str | None:
     return find_code_cli()
 
 
+def list_code_installs() -> list[tuple[str, str]]:
+    """Обнаруженные установки VS Code для выбора в UI (#18): [(метка, путь), …].
+
+    Стабильная и Insiders в стандартных местах плюс то, что нашлось в PATH.
+    Только реально существующие пути, без дублей. Пусто — ничего не найдено,
+    тогда пользователь укажет путь вручную («Обзор…»)."""
+    local = Path(os.environ.get("LOCALAPPDATA", ""))
+    cands = [
+        ("VS Code (стабильная)",
+         local / "Programs" / "Microsoft VS Code" / "bin" / "code.cmd"),
+        ("VS Code (Program Files)",
+         Path("C:/Program Files/Microsoft VS Code/bin/code.cmd")),
+        ("VS Code Insiders",
+         local / "Programs" / "Microsoft VS Code Insiders" / "bin" / "code-insiders.cmd"),
+        ("VS Code Insiders (Program Files)",
+         Path("C:/Program Files/Microsoft VS Code Insiders/bin/code-insiders.cmd")),
+    ]
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for label, p in cands:
+        key = str(p).lower()
+        if p.exists() and key not in seen:
+            seen.add(key); out.append((label, str(p)))
+    from shutil import which
+    for w in (which("code"), which("code-insiders")):
+        if w and w.lower() not in seen:
+            seen.add(w.lower()); out.append((f"PATH: {w}", w))
+    return out
+
+
 def extensions_dir(code_cli: str | None) -> Path:
     """Папка установленных расширений. Учитывает VSCODE_EXTENSIONS и Insiders."""
     env = os.environ.get("VSCODE_EXTENSIONS")
@@ -162,7 +192,7 @@ def marketplace_url(ext_id: str) -> str | None:
     return f"https://marketplace.visualstudio.com/items?itemName={quote(ext_id)}"
 
 
-def code_image_name(code_cli: str) -> str:
+def code_image_name(code_cli: str | None) -> str:
     """Имя процесса для taskkill: 'Code.exe' или 'Code - Insiders.exe'."""
     return "Code - Insiders.exe" if "insiders" in (code_cli or "").lower() else "Code.exe"
 
@@ -195,6 +225,57 @@ def code_memory_mb(code_cli: str | None) -> tuple[int, int]:
         if digits:
             total_kb += int(digits); n += 1
     return round(total_kb / 1024), n
+
+
+def code_private_ws_mb(code_cli: str | None) -> tuple[int, int]:
+    """Честный footprint (#2): сумма PRIVATE working set всех процессов VS Code.
+
+    tasklist в code_memory_mb суммирует полный working set каждого процесса —
+    а десяток процессов Code делят общие страницы (движок, DLL), которые так
+    считаются многократно, и «сэкономлено X МБ» завышается. Private working set
+    (perf-счётчик WorkingSetPrivate) — только неразделяемая, реально
+    освобождаемая при закрытии память. Считаем её через PowerShell/CIM.
+
+    Возвращает (МБ, число процессов). (0, 0) — VS Code не запущен ИЛИ замер не
+    удался (нет PowerShell, счётчик недоступен): вызывающий откатывается на
+    code_memory_mb. Имена процессов в perf-классе — базовое имя без .exe, у
+    нескольких инстансов вид 'Code', 'Code#1'; фильтром берём оба."""
+    base = code_image_name(code_cli)[:-4]      # 'Code.exe' -> 'Code'
+    base = base.replace("'", "''")             # экранируем для WQL-фильтра
+    wql = f"Name='{base}' OR Name LIKE '{base}#%'"
+    ps = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "$r=Get-CimInstance Win32_PerfFormattedData_PerfProc_Process "
+        f"-Filter \"{wql}\";"
+        "'{0} {1}' -f (($r|Measure-Object WorkingSetPrivate -Sum).Sum),"
+        "($r|Measure-Object).Count"
+    )
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=15, creationflags=_NO_WINDOW,
+        )
+        parts = (out.stdout or "").split()
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            total_bytes, n = int(parts[0]), int(parts[1])
+            if n > 0:
+                return round(total_bytes / (1024 * 1024)), n
+    except Exception:
+        pass
+    return 0, 0
+
+
+def code_footprint_mb(code_cli: str | None) -> tuple[int, int]:
+    """Память VS Code для показа пользователю: сначала честный private working
+    set (#2), при неудаче — полный working set через tasklist (запасной путь,
+    всегда работает). Единая точка для GUI/selftest/CLI, чтобы базлайн и
+    текущий замер считались одной метрикой (иначе «экономия» = разница
+    несравнимых чисел)."""
+    mb, n = code_private_ws_mb(code_cli)
+    if n > 0:
+        return mb, n
+    return code_memory_mb(code_cli)
 
 
 def vscode_process_count(code_cli: str | None) -> int:

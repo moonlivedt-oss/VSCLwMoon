@@ -68,10 +68,23 @@ class Package:
     # MinGW это не только g++, но и gcc, gdb, mingw32-make, gfortran. probe —
     # подмножество для детекта; provides — что реально становится доступно.
     provides: tuple[str, ...] = ()
+    # Варианты версии для выбора в UI (#4): ((winget_id, метка), ...). Первый
+    # обычно совпадает с winget_id по умолчанию. Пусто — версия одна.
+    versions: tuple[tuple[str, str], ...] = ()
 
     def tools(self) -> tuple[str, ...]:
         """Все инструменты пакета: provides, если задан, иначе probe."""
         return self.provides or self.probe
+
+    def with_version(self, winget_id: str) -> Package:
+        """Копия пакета с другим winget_id (выбранная версия, #4). Если id не из
+        списка versions — возвращаем как есть (не даём подменить на произвольное).
+        title подставляем из versions, чтобы UI/лог показывали выбранную версию."""
+        import dataclasses
+        for vid, vtitle in self.versions:
+            if vid == winget_id:
+                return dataclasses.replace(self, winget_id=vid, title=vtitle)
+        return self
 
 
 @dataclass(frozen=True)
@@ -83,58 +96,90 @@ class Toolchain:
 
 
 # --- каталог ---------------------------------------------------------------
-# id проверены в реестре winget (community). Версии в id намеренно
-# «крупные» (мажорные) — winget сам поставит свежайшую в пределах мажора.
+# Каталог живёт в data/toolchains.json (#6) — пользователь правит его под себя
+# без изменения кода. Загружаем в те же dataclass'ы Package/Toolchain. Git
+# в JSON нет как стека, но тулчейн нужен — держим здесь и в JSON.
 
-TOOLCHAINS: dict[str, Toolchain] = {
+# Минимальный встроенный фолбэк: если data/toolchains.json отсутствует или
+# битый (например, повреждён при правке), лаунчер не должен остаться совсем без
+# каталога. Полный каталог — в JSON; здесь только самое необходимое.
+_FALLBACK_TOOLCHAINS: dict[str, Toolchain] = {
     "python": Toolchain(
         "python", "Python", "Интерпретатор Python и pip.",
-        (Package("Python.Python.3.12", "Python 3.12", ("python", "pip"),
-                 note="Сам прописывает PATH при установке."),)),
-    "cpp": Toolchain(
-        "cpp", "C / C++", "Компилятор GCC (MinGW-w64), отладчик GDB и make; опционально CMake, Ninja, Clang.",
-        (Package("BrechtSanders.WinLibs.POSIX.UCRT", "MinGW-w64 (GCC/G++/GDB/make)",
-                 ("g++", "gcc", "gdb"),
-                 note="Архивная сборка WinLibs — PATH пропишет сам лаунчер. "
-                      "Даёт компилятор, отладчик и mingw32-make.",
-                 provides=("gcc", "g++", "gdb", "mingw32-make", "gfortran")),
-         Package("Kitware.CMake", "CMake", ("cmake",), optional=True,
-                 note="Система сборки для крупных C/C++ проектов."),
-         Package("Ninja-build.Ninja", "Ninja", ("ninja",), optional=True,
-                 note="Быстрый генератор сборки — часто в паре с CMake."),
-         Package("LLVM.LLVM", "LLVM / Clang", ("clang", "clang++"), optional=True,
-                 note="Альтернативный компилятор Clang.",
-                 provides=("clang", "clang++", "clang-format", "lldb")))),
-    "java": Toolchain(
-        "java", "Java (JDK)", "OpenJDK (Eclipse Temurin): java и javac.",
-        (Package("EclipseAdoptium.Temurin.21.JDK", "Temurin JDK 21",
-                 ("java", "javac"),
-                 note="LTS-сборка OpenJDK. Прописывает JAVA_HOME и PATH."),)),
-    "go": Toolchain(
-        "go", "Go", "Компилятор и тулчейн Go.",
-        (Package("GoLang.Go", "Go", ("go",),
-                 note="Сам прописывает PATH при установке."),)),
-    "rust": Toolchain(
-        "rust", "Rust", "Rustup ставит компилятор rustc и пакетный менеджер cargo.",
-        (Package("Rustlang.Rustup", "Rustup (rustc + cargo)", ("cargo", "rustc"),
-                 note="Через rustup обновляется и переключается вся цепочка Rust."),)),
-    "dotnet": Toolchain(
-        "dotnet", ".NET", "SDK для C#/F#: команда dotnet.",
-        (Package("Microsoft.DotNet.SDK.8", ".NET SDK 8", ("dotnet",),
-                 note="Сам прописывает PATH при установке."),)),
-    "web": Toolchain(
-        "web", "Node.js", "Node.js и npm — для веб- и JS/TS-проектов.",
-        (Package("OpenJS.NodeJS", "Node.js LTS", ("node", "npm"),
-                 note="Сам прописывает PATH при установке."),)),
-    "ruby": Toolchain(
-        "ruby", "Ruby", "Интерпретатор Ruby и gem.",
-        (Package("RubyInstallerTeam.Ruby.3.3", "Ruby 3.3", ("ruby", "gem"),
+        (Package("Python.Python.3.13", "Python 3.13", ("python", "pip"),
                  note="Сам прописывает PATH при установке."),)),
     "git": Toolchain(
         "git", "Git", "Система контроля версий — нужна и самой VS Code.",
         (Package("Git.Git", "Git for Windows", ("git",),
                  note="Сам прописывает PATH при установке."),)),
 }
+
+
+def _package_from_dict(d: dict) -> Package | None:
+    """Собрать Package из записи JSON. None, если нет обязательных полей или
+    id/probe не проходят валидацию — битую запись пропускаем, а не роняем каталог."""
+    if not isinstance(d, dict):
+        return None
+    wid = d.get("winget_id")
+    probe = d.get("probe")
+    if not isinstance(wid, str) or not valid_winget_id(wid):
+        return None
+    if (not isinstance(probe, list) or not probe
+            or not all(isinstance(e, str) and e for e in probe)):
+        return None
+
+    def _strs(key: str) -> tuple[str, ...]:
+        v = d.get(key)
+        return tuple(x for x in v if isinstance(x, str)) if isinstance(v, list) else ()
+
+    versions: list[tuple[str, str]] = []
+    for v in (d.get("versions") or ()):
+        if (isinstance(v, dict) and isinstance(v.get("winget_id"), str)
+                and valid_winget_id(v["winget_id"])):
+            versions.append((v["winget_id"], str(v.get("title") or v["winget_id"])))
+    return Package(
+        winget_id=wid,
+        title=str(d.get("title") or wid),
+        probe=tuple(probe),
+        note=str(d.get("note") or ""),
+        optional=bool(d.get("optional", False)),
+        path_hints=_strs("path_hints"),
+        version_arg=str(d.get("version_arg") or "--version"),
+        provides=_strs("provides"),
+        versions=tuple(versions),
+    )
+
+
+def load_toolchains() -> dict[str, Toolchain]:
+    """Каталог тулчейнов из data/toolchains.json (#6). При отсутствии/битом файле
+    — встроенный фолбэк, чтобы приложение не осталось без каталога. Пакеты с
+    невалидным id/без probe пропускаются (в духе safety.py)."""
+    import json
+
+    from .paths import TOOLCHAINS_FILE
+    try:
+        data = json.loads(TOOLCHAINS_FILE.read_text(encoding="utf-8-sig"))
+    except Exception as e:
+        log.warning("toolchains.json не прочитан (%s) — встроенный фолбэк", e)
+        return dict(_FALLBACK_TOOLCHAINS)
+    chains_raw = data.get("toolchains") if isinstance(data, dict) else None
+    if not isinstance(chains_raw, dict):
+        log.warning("toolchains.json без объекта 'toolchains' — встроенный фолбэк")
+        return dict(_FALLBACK_TOOLCHAINS)
+    out: dict[str, Toolchain] = {}
+    for key, tc_raw in chains_raw.items():
+        if not isinstance(tc_raw, dict):
+            continue
+        pkgs = [p for p in (_package_from_dict(x) for x in tc_raw.get("packages") or ())
+                if p is not None]
+        if not pkgs:
+            continue
+        out[key] = Toolchain(key, str(tc_raw.get("title") or key),
+                             str(tc_raw.get("note") or ""), tuple(pkgs))
+    return out or dict(_FALLBACK_TOOLCHAINS)
+
+
+TOOLCHAINS: dict[str, Toolchain] = load_toolchains()
 
 
 def toolchain_keys() -> list[str]:
@@ -179,6 +224,21 @@ def winget_version() -> str | None:
             ver = None
     _winget_cache["version"] = ver
     return ver
+
+
+def _parse_winget_version(s: str | None) -> tuple[int, ...]:
+    """'v1.29.290' -> (1, 29, 290). Пусто/битое -> (0,)."""
+    if not s:
+        return (0,)
+    nums = re.findall(r"\d+", s)
+    return tuple(int(n) for n in nums) if nums else (0,)
+
+
+def winget_supports_disable_interactivity() -> bool:
+    """Флаг `--disable-interactivity` появился в winget 1.4 (#9). На более старых
+    winget он не распознаётся и ломает вызов, поэтому добавляем его только когда
+    версия достаточно свежая. Версию winget уже кэшируем."""
+    return _parse_winget_version(winget_version()) >= (1, 4)
 
 
 # --- определение, что уже стоит --------------------------------------------
@@ -355,6 +415,51 @@ def install_package(pkg: Package, scope: str | None = None) -> tuple[bool, str]:
     return _run_winget("install", pkg, scope=scope, repair=True)
 
 
+def install_package_elevated(pkg: Package, scope: str = "machine") -> tuple[bool, str]:
+    """Поставить пакет с правами администратора (#10) — для пакетов, что требуют
+    machine-scope и упираются в UAC (код -1978334967). Запускаем winget через
+    PowerShell `Start-Process -Verb RunAs` (появится запрос UAC) и ждём выхода.
+
+    Вывод самого winget тут не перехватить (elevated-процесс отдельный), поэтому
+    ориентируемся на код возврата. Аргументы — фиксированный список с уже
+    проверенным id; пользовательский ввод сюда не попадает."""
+    wg = winget_path()
+    if wg is None:
+        return False, ("winget не найден. Установите «App Installer» из Microsoft "
+                       "Store — он входит в состав Windows 10/11.")
+    if not valid_winget_id(pkg.winget_id):
+        return False, f"Недопустимый id пакета: {pkg.winget_id!r}"
+    inner = ["install", "--id", pkg.winget_id, "--exact",
+             "--accept-source-agreements", "--accept-package-agreements",
+             "--source", "winget"]
+    if scope in ("user", "machine"):
+        inner += ["--scope", scope]
+    # Массив аргументов PowerShell: каждый в одинарных кавычках с экранированием.
+    ps_args = ", ".join("'" + a.replace("'", "''") + "'" for a in inner)
+    ps = (f"try {{ $p = Start-Process -FilePath '{wg.replace(chr(39), chr(39) * 2)}' "
+          f"-ArgumentList {ps_args} -Verb RunAs -Wait -PassThru; exit $p.ExitCode }} "
+          f"catch {{ exit 1223 }}")   # 1223 = ERROR_CANCELLED (UAC отклонён)
+    log.info("winget install %s (elevated, scope=%s)", pkg.winget_id, scope)
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=1800, creationflags=_NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        return False, "Операция не уложилась в 30 минут и была прервана."
+    except Exception as e:
+        return False, str(e)
+    code = out.returncode
+    if code in _WINGET_OK_CODES:
+        env_path.refresh_process_path_from_registry()
+        note = repair_path_for(pkg)
+        msg = "Установлено с правами администратора."
+        return True, (msg + "\n" + note).strip() if note else msg
+    if code == 1223:
+        return False, "Запрос прав администратора (UAC) отклонён — установка отменена."
+    return False, explain_winget_code(code, (out.stdout or "") + (out.stderr or ""))
+
+
 def upgrade_package(pkg: Package, scope: str | None = None) -> tuple[bool, str]:
     """Обновить установленный пакет до свежей версии через `winget upgrade`.
     Если обновлять нечего — winget вернёт «update not applicable», и мы считаем
@@ -389,8 +494,9 @@ def _run_winget(action: str, pkg: Package, scope: str | None,
         return False, f"Недопустимый id пакета: {pkg.winget_id!r}"
 
     args = [wg, action, "--id", pkg.winget_id, "--exact",
-            "--accept-source-agreements", "--disable-interactivity",
-            "--source", "winget"]
+            "--accept-source-agreements", "--source", "winget"]
+    if winget_supports_disable_interactivity():   # #9: только на winget ≥ 1.4
+        args.append("--disable-interactivity")
     if action in ("install", "upgrade"):
         args += ["--accept-package-agreements"]
     if action in ("install", "upgrade") and scope in ("user", "machine"):
@@ -411,6 +517,11 @@ def _run_winget(action: str, pkg: Package, scope: str | None,
     ok = out.returncode in _WINGET_OK_CODES
     if ok:
         log.info("winget %s %s: успех (код %s)", action, pkg.winget_id, out.returncode)
+        # #1: пакет мог прописать PATH сам (Python/Node/Go/JDK…) — подтянем его
+        # в процесс из реестра, чтобы probe/статус увидели инструмент сразу, без
+        # перезапуска лаунчера, и repair ниже не добавлял лишнего.
+        if action in ("install", "upgrade"):
+            env_path.refresh_process_path_from_registry()
         if repair:
             note = repair_path_for(pkg)
             if note:
@@ -563,6 +674,132 @@ def missing_toolchains_for(folder: str) -> list[str]:
     from .detect import detect_stacks
     stacks = detect_stacks(folder, available=set(TOOLCHAINS))
     return [k for k in stacks if missing_required(k)]
+
+
+# --- менеджеры версий: предупреждение о конфликте (#7) ---------------------
+# Многие ставят Node через nvm-windows/fnm/volta, Python через pyenv-win. Второй
+# экземпляр того же языка из winget конфликтует с менеджером за PATH (какой
+# `node`/`python` возьмётся — вопрос порядка PATH). Не запрещаем, но
+# предупреждаем: пусть пользователь решит осознанно.
+
+# ключ тулчейна -> кортежи (имя менеджера, exe для which, env-переменная).
+_LANG_MANAGERS: dict[str, tuple[tuple[str, str, str], ...]] = {
+    "web": (("nvm-windows", "nvm", "NVM_HOME"),
+            ("fnm", "fnm", "FNM_DIR"),
+            ("Volta", "volta", "VOLTA_HOME")),
+    "python": (("pyenv-win", "pyenv", "PYENV"),),
+}
+
+
+def _manager_present(exe: str, env_var: str) -> bool:
+    """Менеджер версий считаем установленным, если его команда в PATH или задана
+    его переменная окружения."""
+    if exe and which(exe) is not None:
+        return True
+    return bool(env_var and os.environ.get(env_var))
+
+
+def detected_managers_for(key: str) -> list[str]:
+    """Имена установленных менеджеров версий, управляющих языком тулчейна `key`
+    (#7). Пусто — конфликта нет."""
+    return [name for name, exe, env_var in _LANG_MANAGERS.get(key, ())
+            if _manager_present(exe, env_var)]
+
+
+def manager_warning_for(key: str) -> str:
+    """Текст предупреждения, если для языка тулчейна установлен менеджер версий
+    (#7). Пустая строка — предупреждать не о чем."""
+    names = detected_managers_for(key)
+    if not names:
+        return ""
+    return ("Обнаружен менеджер версий: " + ", ".join(names) + ". "
+            "Установка через winget может конфликтовать с ним за PATH — "
+            "возможно, версию лучше ставить средствами самого менеджера.")
+
+
+# --- что обновить (#5) -----------------------------------------------------
+
+def _catalog_known_ids() -> set[str]:
+    """Все winget-id из каталога, включая варианты версий — по ним ищем в выводе
+    `winget upgrade`, что относится к нашим тулчейнам."""
+    known: set[str] = set()
+    for chain in TOOLCHAINS.values():
+        for pkg in chain.packages:
+            known.add(pkg.winget_id)
+            known.update(vid for vid, _t in pkg.versions)
+    return known
+
+
+def list_upgradable_ids(timeout: float = 120) -> set[str]:
+    """Множество winget-id наших тулчейнов, для которых доступно обновление (#5).
+
+    Гоняем `winget upgrade` (он перечисляет всё обновляемое) и оставляем те id,
+    что есть в каталоге. Парсинг устойчив к локализации таблицы: разбиваем строки
+    на токены и берём те, что точно совпали с известным id. Пусто — нечего
+    обновлять или winget недоступен."""
+    wg = winget_path()
+    if wg is None:
+        return set()
+    args = [wg, "upgrade", "--accept-source-agreements", "--source", "winget"]
+    if winget_supports_disable_interactivity():
+        args.append("--disable-interactivity")
+    try:
+        out = subprocess.run(args, capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", timeout=timeout, creationflags=_NO_WINDOW)
+    except Exception:
+        return set()
+    known = _catalog_known_ids()
+    found: set[str] = set()
+    for line in (out.stdout or "").splitlines():
+        for tok in line.split():
+            if tok in known:
+                found.add(tok)
+    return found
+
+
+def outdated_packages(upgradable: set[str] | None = None) -> list[dict]:
+    """Установленные пакеты каталога, у которых есть обновление (#5):
+    [{'key', 'package', 'version'}]. upgradable — результат list_upgradable_ids
+    (передай готовый, чтобы не звать winget повторно); None — посчитаем сами."""
+    if upgradable is None:
+        upgradable = list_upgradable_ids()
+    rows = []
+    for key, chain in TOOLCHAINS.items():
+        for pkg in chain.packages:
+            if pkg.winget_id in upgradable and package_installed(pkg):
+                rows.append({"key": key, "package": pkg,
+                             "version": package_status(pkg)["version"]})
+    return rows
+
+
+# --- доктор окружения (#8) --------------------------------------------------
+
+def _java_home_health() -> dict:
+    """Проверка JAVA_HOME: задан ли и указывает ли на JDK (есть bin\\java.exe)."""
+    jh = os.environ.get("JAVA_HOME")
+    if not jh:
+        return {"set": False, "ok": False, "path": "", "reason": "не задан"}
+    java_exe = Path(jh) / "bin" / "java.exe"
+    if java_exe.exists():
+        return {"set": True, "ok": True, "path": jh, "reason": ""}
+    return {"set": True, "ok": False, "path": jh,
+            "reason": "указывает не на JDK (нет bin\\java.exe)"}
+
+
+def environment_report() -> dict:
+    """Холистическая диагностика окружения (#8): установленные тулчейны с
+    версиями, здоровье PATH (дубли/мёртвые записи/длина) и корректность
+    JAVA_HOME. Для отдельной кнопки «Проверить окружение» в UI/CLI."""
+    tools = []
+    for key, chain in TOOLCHAINS.items():
+        for pkg in chain.packages:
+            st = package_status(pkg)
+            if st["installed"]:
+                tools.append({"key": key, "title": pkg.title,
+                              "version": st["version"]})
+    return {"tools": tools, "path": env_path.path_health(),
+            "java_home": _java_home_health(),
+            "winget": winget_version()}
 
 
 # --- сводка (для CLI/selftest/UI) ------------------------------------------
