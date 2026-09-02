@@ -64,8 +64,10 @@ QFrame#CatCard {{
 QFrame#CatCard:hover {{ border-color: {_rgba(p["accent"], 0.55)}; background: {hov}; }}
 QFrame#CatCard[on="true"] {{
     border: 1px solid {p["accent"]};
-    background: {_rgba(p["accent"], 0.10)};
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 {_rgba(p["accent"], 0.18)}, stop:1 {_rgba(p["accent"], 0.07)});
 }}
+QFrame#CatCard[on="true"]:hover {{ border-color: {p["accent_hover"]}; }}
 QWidget#CatInner {{ background: transparent; }}
 QFrame#Strip_heavy {{ background: {p["error"]};
     border-top-left-radius: 11px; border-bottom-left-radius: 11px; }}
@@ -82,6 +84,49 @@ QLabel#Warn {{
     padding: 8px 12px; font-weight: bold;
 }}
 QLabel#Summary {{ font-size: 11pt; font-weight: bold; color: {p["text"]}; }}
+
+/* Hero-панель экономии: крупное число сэкономленных МБ + подписи-чипы. */
+QFrame#SavingsCard {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 {_mix(p["surface"], p["accent"], 0.20)}, stop:1 {p["surface"]});
+    border: 1px solid {_rgba(p["accent"], 0.45)}; border-radius: 14px;
+}}
+QLabel#SavingsNumber {{ font-size: 30pt; font-weight: 800; color: {p["accent"]};
+    letter-spacing: 0.5px; }}
+QLabel#SavingsUnit {{ font-size: 12pt; font-weight: 700; color: {p["accent"]}; }}
+QLabel#SavingsCaption {{ font-size: 9pt; color: {p["subtext"]};
+    font-weight: bold; letter-spacing: 1px; }}
+QLabel#Stat {{
+    color: {p["text"]}; background: {_rgba(p["text"], 0.06)};
+    border: 1px solid {p["border"]}; border-radius: 9px;
+    padding: 4px 12px; font-size: 9pt; font-weight: bold;
+}}
+QLabel#StatAccent {{
+    color: {p["accent"]}; background: {_rgba(p["accent"], 0.12)};
+    border: 1px solid {_rgba(p["accent"], 0.35)}; border-radius: 9px;
+    padding: 4px 12px; font-size: 9pt; font-weight: bold;
+}}
+/* Чип «выбрано N / M» в шапке секции стеков. */
+QLabel#SelCount {{
+    color: {p["subtext"]}; background: {_rgba(p["text"], 0.06)};
+    border-radius: 9px; padding: 3px 12px; font-size: 9pt; font-weight: bold;
+}}
+
+/* Сегментированный фильтр: Все / Установленные / Не установленные. */
+QFrame#Segmented {{
+    background: {p["surface2"]}; border: 1px solid {p["border"]}; border-radius: 10px;
+}}
+QPushButton#SegBtn {{
+    background: transparent; border: none; border-radius: 8px;
+    padding: 6px 14px; color: {p["subtext"]}; font-size: 9pt; font-weight: bold;
+}}
+QPushButton#SegBtn:hover {{ color: {p["text"]}; background: {_rgba(p["text"], 0.06)}; }}
+QPushButton#SegBtn:checked {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 {p["accent_hover"]}, stop:1 {p["accent"]});
+    color: {p["accent_text"]};
+}}
+QPushButton#SegBtn:checked:hover {{ background: {p["accent_hover"]}; color: {p["accent_text"]}; }}
 
 QLabel#Count {{
     color: {p["accent"]}; background: {_rgba(p["accent"], 0.14)};
@@ -108,6 +153,9 @@ QPushButton {{
 QPushButton:hover {{ background: {hov}; border-color: {p["accent"]}; }}
 QPushButton:pressed {{ background: {_mix(p["surface"], p["surface2"], 0.5)}; }}
 QPushButton:disabled {{ color: {p["subtext"]}; background: {p["surface"]}; }}
+/* Видимый фокус с клавиатуры — доступность (Tab-навигация). */
+QPushButton:focus, QComboBox:focus {{ border: 2px solid {p["accent"]}; }}
+QCheckBox:focus {{ outline: none; }}
 QPushButton#Accent {{
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 {p["accent_hover"]}, stop:1 {p["accent"]});
@@ -140,10 +188,9 @@ QComboBox {{
     border: 1px solid {p["border"]}; border-radius: 8px; padding: 6px 10px; min-height: 18px;
 }}
 QComboBox:hover, QComboBox:focus {{ border-color: {p["accent"]}; }}
-QComboBox::drop-down {{ border: none; width: 22px; }}
-QComboBox::down-arrow {{
-    width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent;
-    border-top: 5px solid {p["subtext"]}; margin-right: 8px;
+QComboBox::drop-down {{
+    subcontrol-origin: padding; subcontrol-position: center right;
+    border: none; width: 24px; background: transparent;
 }}
 QComboBox QAbstractItemView {{
     background: {p["input_bg"]}; color: {p["input_text"]};

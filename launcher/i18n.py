@@ -312,6 +312,31 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Для этого проекта не хватает инструментов: {tools}. Установить "
         "компилятор/SDK?":
             "This project is missing tools: {tools}. Install the compiler/SDK?",
+        # редизайн: hero-панель экономии, чипы, адаптивная сетка
+        "МБ": "MB",
+        "ЭКОНОМИЯ ПАМЯТИ": "MEMORY SAVED",
+        "выбрано {n} / {m}": "{n} / {m} selected",
+        "Сколько стеков сейчас отмечено из всех.":
+            "How many stacks are checked out of all.",
+        "включено {en}": "{en} on",
+        "выключится {dis}": "{dis} off",
+        "показано {n} из {total}": "showing {n} of {total}",
+        "ничего не найдено": "nothing found",
+        "Запустить · −{dis}": "Launch · −{dis}",
+        "Запустить (голый режим)": "Launch (bare mode)",
+        "голый режим": "bare mode",
+        "все расширения выключены": "all extensions off",
+        "нет списка расширений": "no extension list",
+        "считаю расширения…": "counting extensions…",
+        "замерено {mb} МБ": "measured {mb} MB",
+        "реально · оценка ~{saved}": "actual · est. ~{saved}",
+        # сегментированный фильтр установленных/неустановленных
+        "Все": "All",
+        "Установленные": "Installed",
+        "Не установленные": "Not installed",
+        "Все ({n})": "All ({n})",
+        "Установленные ({n})": "Installed ({n})",
+        "Не установленные ({n})": "Not installed ({n})",
     }
 }
 

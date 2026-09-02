@@ -44,7 +44,9 @@ from .core import (
 from .cli import _launcher_invocation
 from .i18n import _, get_language, set_language
 from .updates import RELEASES_URL
-from .gui_widgets import CategoryCard, _card, _hline, _wrap
+from .gui_widgets import (
+    CategoryCard, FlowLayout, _card, _hline, _wrap, set_switch_palette,
+)
 from .gui_workers import ExtLoader, Installer, MemProbe, ToolchainInstaller, UpdateCheck
 from .theme import PALETTES, apply_titlebar, build_qss
 from . import toolchains as _tc
@@ -104,7 +106,7 @@ def run_gui():
         """Диалог со списком плагинов стека: описания + установка/удаление."""
         dlg = QDialog(parent)
         dlg.setWindowTitle(f'Стек: {cat.get("title", key)}')
-        dlg.resize(620, 640)
+        dlg.resize(820, 660)
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(18, 18, 18, 16); lay.setSpacing(12)
 
@@ -407,7 +409,7 @@ def run_gui():
         def __init__(self):
             super().__init__()
             self.setWindowTitle(f"VS Code Launcher {__version__} — переключатель нагрузки")
-            self.resize(760, 820)
+            self.resize(1040, 860)   # с запасом под 2 колонки карточек
             self.setMinimumSize(680, 560)
             # Стартуем из кэша (мгновенно), свежий список догружаем в фоне.
             cache = cfg.get("installed_cache", {})
@@ -427,10 +429,13 @@ def run_gui():
             if self._theme not in PALETTES:
                 self._theme = "dark"
             self._pal = PALETTES[self._theme]
+            set_switch_palette(self._pal)   # цвета тумблеров под тему
             self._build_ui()
             self._restore()
             self._maybe_auto_suggest()   # #1: если папка подставилась из «недавних»
             self._update_summary()
+            # Первая раскладка карточек-сетки, когда окно получит реальную ширину.
+            QTimer.singleShot(0, self._relayout_cards)
             self._start_ext_load()
             self._probe_memory()
             self._start_update_check()   # #8
@@ -448,9 +453,12 @@ def run_gui():
         def _toggle_theme(self):
             self._theme = "light" if self._theme == "dark" else "dark"
             self._pal = PALETTES[self._theme]
+            set_switch_palette(self._pal)   # тумблеры перекрашиваем под новую тему
             QApplication.instance().setStyleSheet(build_qss(self._pal))
             apply_titlebar(self, self._theme == "dark")
             self._update_theme_btn()
+            for card in self.cat_checks.values():   # перерисовать тумблеры
+                card.cb.update()
             cfg["theme"] = self._theme
             save_config(cfg)
 
@@ -629,7 +637,7 @@ def run_gui():
             if getattr(self, "_loader", None) is not None and self._loader.isRunning():
                 return
             if not self._loaded:
-                self.summary.setText("Считаю расширения…")
+                self._set_hero("…", "", _("считаю расширения…"), "")
             self.b_run.setEnabled(False)
             self._loader = ExtLoader(code_cli)
             self._loader.loaded.connect(self._on_installed)
@@ -642,6 +650,11 @@ def run_gui():
                 exts = cats["categories"][key]["extensions"]
                 card.set_installed(sum(1 for e in exts if e.lower() in inst_set))
             self._refresh_unknown()
+            # Список установленных мог измениться — обновим счётчики сегментов и
+            # перечитаем фильтр (карточка могла перейти в другую группу).
+            self._update_seg_counts()
+            if hasattr(self, "seg_btns"):
+                self._filter_cards(self.search_edit.text())
 
         def _on_installed(self, ids: list, source: str):
             self.b_run.setEnabled(bool(code_cli))
@@ -747,6 +760,7 @@ def run_gui():
             # адаптивным при любой высоте.
             scroll = QScrollArea(); scroll.setWidgetResizable(True)
             scroll.setFrameShape(QFrame.Shape.NoFrame)
+            self._scroll = scroll
             content = QWidget(); cv = QVBoxLayout(content)
             cv.setContentsMargins(0, 0, 6, 0); cv.setSpacing(12)
 
@@ -777,7 +791,11 @@ def run_gui():
             sec_row = QHBoxLayout(); sec_row.setSpacing(8)
             sec = QLabel(_("СТЕКИ РАСШИРЕНИЙ"))
             sec.setObjectName("Section")
-            sec_row.addWidget(sec); sec_row.addStretch()
+            sec_row.addWidget(sec)
+            self.sel_count = QLabel(); self.sel_count.setObjectName("SelCount")
+            self.sel_count.setToolTip(_("Сколько стеков сейчас отмечено из всех."))
+            sec_row.addWidget(self.sel_count)
+            sec_row.addStretch()
             b_tools = QPushButton(_("Языки и инструменты…")); b_tools.setObjectName("Ghost")
             b_tools.setCursor(Qt.CursorShape.PointingHandCursor)
             b_tools.setToolTip(_("Установить компиляторы и SDK (C/C++, Java, Go, Rust…) "
@@ -813,6 +831,30 @@ def run_gui():
             self.search_edit.textChanged.connect(self._filter_cards)
             cv.addWidget(self.search_edit)
 
+            # Сегментированный фильтр: разделяем установленные и неустановленные
+            # стеки. Установленные — то, чем реально управляешь память в этой
+            # сессии; неустановленные — что можно доставить. Работает вместе с
+            # поиском (пересечение условий).
+            filt_row = QHBoxLayout(); filt_row.setSpacing(8)
+            seg = QFrame(); seg.setObjectName("Segmented")
+            sl = QHBoxLayout(seg); sl.setContentsMargins(3, 3, 3, 3); sl.setSpacing(3)
+            self._inst_filter = "all"
+            self.seg_btns = {}
+            for fkey, flabel in (("all", _("Все")),
+                                 ("installed", _("Установленные")),
+                                 ("missing", _("Не установленные"))):
+                sb = QPushButton(flabel); sb.setObjectName("SegBtn")
+                sb.setCheckable(True); sb.setCursor(Qt.CursorShape.PointingHandCursor)
+                sb.clicked.connect(lambda _=False, k=fkey: self._set_inst_filter(k))
+                sl.addWidget(sb)
+                self.seg_btns[fkey] = sb
+            self.seg_btns["all"].setChecked(True)
+            filt_row.addWidget(seg)
+            filt_row.addStretch()
+            self.search_status = QLabel(); self.search_status.setObjectName("CatNote")
+            filt_row.addWidget(self.search_status)
+            cv.addLayout(filt_row)
+
             installed_set = set(self.installed)
             # Сначала установленные стеки (по ним и есть что выключать), внутри —
             # тяжёлые вверх (максимум экономии). Неустановленные сборки — ниже.
@@ -823,6 +865,10 @@ def run_gui():
                     0 if any(e.lower() in installed_set for e in kv[1]["extensions"]) else 1,
                     weight_rank.get(WEIGHT.get(kv[0], "light"), 2),
                     kv[1].get("title", kv[0]).lower()))
+            # Карточки — в отзывчивую сетку-флоу: на широком окне 2–3 колонки,
+            # на узком — одна. Меньше скролла, горизонталь не пустует.
+            self.cards_host = QWidget()
+            self._cards_flow = FlowLayout(self.cards_host, margin=0, spacing=10)
             for key, cat in ordered:
                 exts = cat["extensions"]
                 inst = sum(1 for e in exts if e.lower() in installed_set)
@@ -830,7 +876,9 @@ def run_gui():
                     key, cat, inst, len(exts), self._update_summary,
                     lambda _=False, k=key, c=cat: show_details(self, k, c, set(self.installed)))
                 self.cat_checks[key] = card
-                cv.addWidget(card)
+                self._cards_flow.addWidget(card)
+            cv.addWidget(self.cards_host)
+            self._update_seg_counts()
 
             self.unknown_btn = QPushButton(); self.unknown_btn.setObjectName("Ghost")
             self.unknown_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -967,12 +1015,40 @@ def run_gui():
             scroll.setWidget(content)
             root.addWidget(scroll, 1)
 
-            root.addWidget(_hline())
-            self.summary = QLabel(); self.summary.setObjectName("Summary")
-            self.summary.setWordWrap(True)
-            root.addWidget(self.summary)
-            bar = QHBoxLayout(); bar.setSpacing(10)
-            bar.addStretch()
+            # Hero-панель экономии: слева крупное число сэкономленных МБ, справа
+            # чипы (включено/выключено/замер) и действия. Ключевая ценность —
+            # экономия памяти — теперь читается с одного взгляда.
+            action_card = QFrame(); action_card.setObjectName("SavingsCard")
+            acv = QVBoxLayout(action_card)
+            acv.setContentsMargins(18, 12, 16, 12); acv.setSpacing(10)
+
+            # Ряд 1: крупное число экономии + подпись + чипы статистики.
+            row1 = QHBoxLayout(); row1.setSpacing(14)
+            hero = QHBoxLayout(); hero.setSpacing(4)
+            self.savings_num = QLabel("—"); self.savings_num.setObjectName("SavingsNumber")
+            self.savings_unit = QLabel(_("МБ")); self.savings_unit.setObjectName("SavingsUnit")
+            self.savings_unit.setAlignment(Qt.AlignmentFlag.AlignBottom)
+            hero.addWidget(self.savings_num)
+            hero.addWidget(self.savings_unit, 0, Qt.AlignmentFlag.AlignBottom)
+            hero_box = QVBoxLayout(); hero_box.setSpacing(0)
+            cap = QLabel(_("ЭКОНОМИЯ ПАМЯТИ")); cap.setObjectName("SavingsCaption")
+            hero_box.addLayout(hero); hero_box.addWidget(cap)
+            row1.addLayout(hero_box)
+            vsep = QFrame(); vsep.setObjectName("HLine"); vsep.setFixedWidth(1)
+            vsep.setFixedHeight(44)
+            row1.addWidget(vsep)
+            self.stat_en = QLabel(); self.stat_en.setObjectName("Stat")
+            self.stat_dis = QLabel(); self.stat_dis.setObjectName("StatAccent")
+            self.stat_extra = QLabel(); self.stat_extra.setObjectName("Stat")
+            self.stat_extra.setVisible(False)
+            row1.addWidget(self.stat_en); row1.addWidget(self.stat_dis)
+            row1.addWidget(self.stat_extra)
+            row1.addStretch()
+            acv.addLayout(row1)
+
+            # Ряд 2: действия справа — вторичные «призрачные», основная акцентная.
+            row2 = QHBoxLayout(); row2.setSpacing(10)
+            row2.addStretch()
             b_diff = QPushButton(_("Что выключится")); b_diff.setObjectName("Ghost")
             b_diff.setToolTip(_("Показать список расширений, которые будут выключены"))
             b_diff.clicked.connect(self._show_diff)
@@ -980,8 +1056,12 @@ def run_gui():
             b_cmd.clicked.connect(self._show_cmd)
             self.b_run = QPushButton(_("Запустить VS Code")); self.b_run.setObjectName("Accent")
             self.b_run.clicked.connect(self._run)
-            bar.addWidget(b_diff); bar.addWidget(b_cmd); bar.addWidget(self.b_run)
-            root.addLayout(bar)
+            row2.addWidget(b_diff); row2.addWidget(b_cmd); row2.addWidget(self.b_run)
+            acv.addLayout(row2)
+            root.addWidget(action_card)
+            # Держим скрытый self.summary для обратной совместимости (код, что
+            # писал в него текст статуса, продолжает работать без падений).
+            self.summary = QLabel(); self.summary.setVisible(False)
 
             self.log = QPlainTextEdit(); self.log.setObjectName("Log")
             self.log.setReadOnly(True); self.log.setMaximumHeight(90)
@@ -998,10 +1078,77 @@ def run_gui():
                 if cb.isVisible():
                     cb.setChecked(state)
 
+        def _set_inst_filter(self, key: str):
+            """Переключить сегмент Все/Установленные/Не установленные."""
+            self._inst_filter = key
+            for k, b in self.seg_btns.items():
+                b.setChecked(k == key)
+            self._filter_cards(self.search_edit.text())
+
+        def _update_seg_counts(self):
+            """Показать в подписях сегментов, сколько стеков установлено/нет."""
+            if not hasattr(self, "seg_btns"):
+                return
+            total = len(self.cat_checks)
+            inst = sum(1 for c in self.cat_checks.values() if c.is_installed())
+            self.seg_btns["all"].setText(_("Все ({n})").format(n=total))
+            self.seg_btns["installed"].setText(_("Установленные ({n})").format(n=inst))
+            self.seg_btns["missing"].setText(
+                _("Не установленные ({n})").format(n=total - inst))
+
+        def _card_passes_filter(self, card) -> bool:
+            f = getattr(self, "_inst_filter", "all")
+            if f == "installed":
+                return card.is_installed()
+            if f == "missing":
+                return not card.is_installed()
+            return True
+
         def _filter_cards(self, text: str = ""):
             q = (text or "").strip().lower()
+            shown = 0
             for card in self.cat_checks.values():
-                card.setVisible(q in card.search_text)
+                vis = (q in card.search_text) and self._card_passes_filter(card)
+                card.setVisible(vis)
+                shown += 1 if vis else 0
+            # Пересобрать сетку без «дыр» от скрытых карточек.
+            if hasattr(self, "_cards_flow"):
+                self._cards_flow.invalidate()
+                self.cards_host.updateGeometry()
+            # Счётчик результатов: видно, что фильтр/поиск реально сработали.
+            if hasattr(self, "search_status"):
+                total = len(self.cat_checks)
+                filtered = q or getattr(self, "_inst_filter", "all") != "all"
+                if not filtered:
+                    self.search_status.setText("")
+                elif shown:
+                    self.search_status.setText(
+                        _("показано {n} из {total}").format(n=shown, total=total))
+                else:
+                    self.search_status.setText(_("ничего не найдено"))
+
+        def _relayout_cards(self):
+            """Подобрать ширину карточек под окно: 1–3 колонки по порогам ширины,
+            карточки в строке равной ширины и заполняют её без рваного края."""
+            if not hasattr(self, "cards_host"):
+                return
+            avail = self.cards_host.width()
+            if avail <= 0:
+                return
+            spacing = 10
+            cols = 3 if avail >= 1080 else 2 if avail >= 720 else 1
+            # −2 на колонку: гарантия, что ряд действительно вмещает cols карточек
+            # (иначе округление/скроллбар роняют последнюю на новую строку, и
+            # половина ширины пустует). Ширину не опускаем ниже разумного минимума.
+            w = max(280, (avail - spacing * (cols - 1)) // cols - 2)
+            for card in self.cat_checks.values():
+                card.setFixedWidth(w)
+            self._cards_flow.invalidate()
+            self.cards_host.updateGeometry()
+
+        def resizeEvent(self, e):
+            super().resizeEvent(e)
+            self._relayout_cards()
 
         def _disabled_list(self) -> list[str]:
             return compute_disabled(self.installed, ext_index, self._selected(),
@@ -1404,30 +1551,50 @@ def run_gui():
             lay.addLayout(bar)
             dlg.exec()
 
+        def _update_selcount(self):
+            """Чип «выбрано N / M» в шапке секции стеков."""
+            if hasattr(self, "sel_count"):
+                self.sel_count.setText(_("выбрано {n} / {m}").format(
+                    n=len(self._selected()), m=len(self.cat_checks)))
+
+        def _set_hero(self, number, unit, en_txt, dis_txt, extra_txt=""):
+            self.savings_num.setText(str(number))
+            self.savings_unit.setText(unit)
+            self.stat_en.setText(en_txt); self.stat_en.setVisible(bool(en_txt))
+            self.stat_dis.setText(dis_txt); self.stat_dis.setVisible(bool(dis_txt))
+            self.stat_extra.setText(extra_txt); self.stat_extra.setVisible(bool(extra_txt))
+
         def _update_summary(self):
+            self._update_selcount()
             if self._bare():
-                self.summary.setText(
-                    _("Голый режим: все расширения выключены (--disable-extensions)."))
+                self._set_hero("MAX", "", _("голый режим"),
+                               _("все расширения выключены"))
+                self.b_run.setText(_("Запустить (голый режим)"))
                 return
             if not self.installed:
-                self.summary.setText(_("Список расширений не получен (нет CLI?)."))
+                self._set_hero("—", "", _("нет списка расширений"), "")
+                self.b_run.setText(_("Запустить VS Code"))
                 return
             dis = self._disabled_list()
             en = len(self.installed) - len(dis)
             saved = estimate_saved_mb(dis, ext_index)
-            text = _("Включено {en}, выключено {dis} — экономия ~{saved} МБ").format(
-                en=en, dis=len(dis), saved=saved)
-            # #6: если этот набор уже запускали — показываем фактический замер.
+            # Фактические замеры, если этот набор уже запускали (#6/#2).
             sig = selection_signature(self._selected(), self._bare())
-            fp = lookup_footprint(cfg, sig)
-            if fp:
-                text += _(" · замерено ранее: {mb} МБ").format(mb=fp["mb"])
-            # #2: если есть базлайн «всё включено», показываем фактическую
-            # экономию этого набора (замер − замер), а не только оценку.
+            extra = ""
             sav = measured_savings_mb(cfg, sig)
+            fp = lookup_footprint(cfg, sig)
             if sav:
-                text += _(" · реально сэкономлено ~{mb} МБ").format(mb=sav)
-            self.summary.setText(text)
+                self._set_hero(sav, _("МБ"),
+                               _("включено {en}").format(en=en),
+                               _("выключится {dis}").format(dis=len(dis)),
+                               _("реально · оценка ~{saved}").format(saved=saved))
+            else:
+                extra = _("замерено {mb} МБ").format(mb=fp["mb"]) if fp else ""
+                self._set_hero(saved, _("МБ"),
+                               _("включено {en}").format(en=en),
+                               _("выключится {dis}").format(dis=len(dis)), extra)
+            self.b_run.setText(_("Запустить · −{dis}").format(dis=len(dis))
+                               if dis else _("Запустить VS Code"))
 
         def _cmd_kwargs(self) -> dict:
             return {
