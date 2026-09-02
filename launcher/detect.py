@@ -87,7 +87,7 @@ def detect_stacks(folder, available: set[str] | None = None,
 
     found: set[str] = set()
     seen = 0
-    for dirpath, dirnames, filenames in os.walk(root):
+    for _dirpath, dirnames, filenames in os.walk(root):
         # `.git` в списке каталогов — верный признак git-проекта; отмечаем
         # до того, как выкинем его из обхода.
         if ".git" in dirnames:

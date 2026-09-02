@@ -11,6 +11,22 @@ on:
   workflow_dispatch:
 
 jobs:
+  lint:
+    # Линт и типы платформонезависимы — гоняем на быстром ubuntu без PyQt6.
+    # ruff проверяет стиль/импорты, mypy — типы (gui-модули исключены в конфиге).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install linters
+        run: pip install "ruff>=0.6" "mypy>=1.11"
+      - name: Ruff (style + imports)
+        run: ruff check launcher tests
+      - name: Mypy (types)
+        run: mypy
+
   test:
     # Windows-раннер: приложение Windows-only (winget, реестр, code.cmd,
     # семантика путей C:\...). На Linux тесты PATH/папок падают не по делу —

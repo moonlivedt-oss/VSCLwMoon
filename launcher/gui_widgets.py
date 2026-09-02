@@ -5,7 +5,7 @@ CategoryCard — кликабельная карточка стека, сама�
 Три _card/_hline/_wrap — микро-фабрики, чтобы не повторять
 setObjectName и setSizePolicy повсюду.
 """
-from PyQt6.QtCore import QPoint, QRect, QSize, Qt
+from PyQt6.QtCore import QRect, QSize, Qt
 from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import (
     QCheckBox, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLayout,
