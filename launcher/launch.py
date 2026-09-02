@@ -10,10 +10,31 @@ from .safety import safe_arg, valid_ext_id
 from .vscode import code_image_name
 
 
+def required_by_enabled(enabled: set[str],
+                        dep_map: dict[str, set[str]]) -> set[str]:
+    """Транзитивное замыкание зависимостей включённого набора (#1).
+
+    Для каждого включённого расширения собираем всё, от чего оно зависит
+    (extensionDependencies + extensionPack, см. manifests.build_dependency_map),
+    и зависимости зависимостей — чтобы получить полный список того, что обязано
+    остаться включённым. Циклы в графе не зацикливают обход: идём только по
+    ещё не добавленным."""
+    result: set[str] = set()
+    stack = list(enabled)
+    while stack:
+        cur = stack.pop()
+        for dep in dep_map.get(cur, ()):
+            if dep not in result:
+                result.add(dep)
+                stack.append(dep)
+    return result
+
+
 def compute_disabled(installed: list[str], ext_index: dict[str, str],
                      selected_cats: set[str],
                      force_disable: set[str] | None = None,
-                     force_enable: set[str] | None = None) -> list[str]:
+                     force_enable: set[str] | None = None,
+                     dep_map: dict[str, set[str]] | None = None) -> list[str]:
     """Выключаем расширения из невыбранных категорий. always_on и всё,
     чего нет в карте, остаётся включённым (безопасный дефолт).
 
@@ -21,7 +42,13 @@ def compute_disabled(installed: list[str], ext_index: dict[str, str],
     перекрывают решение по стеку:
     - force_enable — всегда держать включённым, даже если стек выключен;
     - force_disable — всегда выключать, даже если стек включён (в т.ч. always_on).
-    force_enable имеет приоритет над force_disable, если id попал в оба набора."""
+    force_enable имеет приоритет над force_disable, если id попал в оба набора.
+
+    dep_map (#1) — карта зависимостей расширений (id -> от кого зависит). Если
+    задана, из списка на выключение вытаскиваются те, от кого зависит хоть одно
+    оставшееся включённым расширение: иначе VS Code тихо не активировал бы
+    включённый плагин из-за погашенной зависимости. Явный force_disable сильнее
+    защиты по зависимости — это осознанный выбор пользователя."""
     fe = {e.lower() for e in (force_enable or ())}
     fd = {e.lower() for e in (force_disable or ())}
     disabled = []
@@ -36,7 +63,29 @@ def compute_disabled(installed: list[str], ext_index: dict[str, str],
             continue
         if cat not in selected_cats:
             disabled.append(ext)
+
+    if dep_map:
+        disabled = _keep_dependencies_enabled(installed, disabled, fd, dep_map)
     return disabled
+
+
+def _keep_dependencies_enabled(installed: list[str], disabled: list[str],
+                               force_disable: set[str],
+                               dep_map: dict[str, set[str]]) -> list[str]:
+    """Убрать из `disabled` те расширения, что нужны включённому набору как
+    зависимость (#1). Итерируем до неподвижной точки: вытащенная зависимость
+    сама включается и может «спасти» свою зависимость. force_disable не спасаем
+    — пользователь выключил его явно."""
+    disabled_set = set(disabled)
+    installed_set = set(installed)
+    while True:
+        enabled_set = installed_set - disabled_set
+        needed = required_by_enabled(enabled_set, dep_map) & installed_set
+        rescue = {d for d in disabled_set if d in needed and d not in force_disable}
+        if not rescue:
+            break
+        disabled_set -= rescue
+    return [d for d in disabled if d in disabled_set]
 
 
 def disabled_by_category(disabled: list[str],
@@ -65,9 +114,8 @@ def selection_signature(enabled_keys, bare: bool = False) -> str:
 def estimate_saved_mb(disabled: list[str], ext_index: dict[str, str]) -> int:
     """Оценка освобождаемой памяти: каждую выключаемую категорию считаем
     один раз и только если у неё реально выключается установленное расширение."""
-    cats_off = {ext_index.get(e) for e in disabled}
-    cats_off.discard(None)
-    cats_off.discard("always_on")
+    cats_off = {cat for e in disabled
+                if (cat := ext_index.get(e)) is not None and cat != "always_on"}
     return sum(WEIGHT_MB.get(WEIGHT.get(c, "light"), 30) for c in cats_off)
 
 

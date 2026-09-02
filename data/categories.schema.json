@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/moonlivedt-oss/VSCLwMoon/blob/main/data/categories.schema.json",
+  "title": "VS Code Launcher — карта стеков расширений",
+  "description": "Схема для data/categories.json. Даёт автодополнение и проверку прямо в редакторе. Всё, чего нет в карте, лаунчер оставляет включённым (безопасный дефолт).",
+  "type": "object",
+  "required": ["always_on", "categories"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Ссылка на эту схему (относительный путь ./categories.schema.json)."
+    },
+    "_comment": {
+      "type": "string",
+      "description": "Свободный комментарий; лаунчер его игнорирует."
+    },
+    "always_on": {
+      "type": "object",
+      "description": "Ядро: расширения, которые грузятся ВСЕГДА (галочками не выключаются).",
+      "required": ["extensions"],
+      "properties": {
+        "title": { "type": "string" },
+        "note": { "type": "string" },
+        "extensions": { "$ref": "#/$defs/extensionList" }
+      },
+      "additionalProperties": false
+    },
+    "categories": {
+      "type": "object",
+      "description": "Стеки, включаемые галочками. Ключ — короткий id стека (python, cpp, …).",
+      "propertyNames": {
+        "pattern": "^[a-z0-9_]+$",
+        "description": "Ключ стека: строчные латинские буквы, цифры и подчёркивание."
+      },
+      "additionalProperties": {
+        "type": "object",
+        "required": ["title", "extensions"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Человеко-читаемое имя стека (показывается на карточке)."
+          },
+          "note": {
+            "type": "string",
+            "description": "Пояснение под именем: чем стек тяжёл, когда его выключать."
+          },
+          "extensions": { "$ref": "#/$defs/extensionList" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "extensionList": {
+      "type": "array",
+      "description": "id расширений вида publisher.name (в нижнем регистре, как в 'code --list-extensions').",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*\\.[A-Za-z0-9][A-Za-z0-9._-]*$"
+      },
+      "uniqueItems": true
+    }
+  }
+}
