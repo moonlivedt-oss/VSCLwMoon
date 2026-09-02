@@ -167,6 +167,15 @@ QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 
 QFrame#HLine {{ background: {p["border"]}; border: none; max-height: 1px; }}
+
+QProgressBar#InstallBar {{
+    background: {p["track"]}; border: none; border-radius: 4px;
+}}
+QProgressBar#InstallBar::chunk {{
+    border-radius: 4px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 {p["accent"]}, stop:1 {p["accent_hover"]});
+}}
 """
 
 

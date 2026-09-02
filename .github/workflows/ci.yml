@@ -21,10 +21,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install dev deps
-        run: pip install -r requirements-dev.txt
+      - name: Install deps (project + dev extras)
+        run: pip install .[dev]
       - name: Run tests
-        run: python -m pytest -q
+        run: python -m pytest
 
   build:
     # Собираем exe только на тег vX.Y.Z (после успешных тестов).
@@ -38,12 +38,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'   # exe собираем на той же версии, что у автора
-      - name: Install deps
-        run: |
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
+      - name: Install deps (project + dev extras)
+        run: pip install .[dev]
       - name: Build exe
-        run: pyinstaller VSCodeLauncher.spec --noconfirm
+        run: pyinstaller packaging/VSCodeLauncher.spec --noconfirm
       - name: SHA256 checksum
         run: (Get-FileHash dist/VSCodeLauncher.exe -Algorithm SHA256).Hash | Out-File -Encoding ascii dist/VSCodeLauncher.exe.sha256
       - name: Upload artifact

@@ -1,0 +1,36 @@
+[project]
+name = "vscode-launcher"
+version = "1.1.0"
+description = "Переключатель нагрузки расширений VS Code — открывает редактор только с нужными стеками, тяжёлые языковые серверы не грузятся (экономия ОЗУ). Ничего в базе VS Code не меняется."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+
+# Зависимость для запуска GUI. Единственная — всё остальное из stdlib.
+dependencies = [
+    "PyQt6>=6.6",
+]
+
+[project.optional-dependencies]
+# Инструменты разработки: pip install .[dev]
+dev = [
+    "pytest>=8.0",
+    "pyinstaller>=6.0",
+]
+
+[project.scripts]
+# Консольная точка входа CLI-режима (тихий запуск без GUI).
+vscode-launcher = "launcher.cli:cli_main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Проект — приложение, а не библиотека: пакуем сам пакет launcher/,
+# точка входа vscode_launcher.py лежит в корне и запускается напрямую.
+packages = ["launcher"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
