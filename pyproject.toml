@@ -16,6 +16,8 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pyinstaller>=6.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
 ]
 
 [project.scripts]
@@ -34,3 +36,40 @@ packages = ["launcher"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.ruff]
+# Приложение под Windows/Python 3.12+. Держим линт строгим, но без шума на
+# осознанных решениях (см. per-file-ignores и lint.ignore).
+target-version = "py312"
+line-length = 100
+extend-exclude = ["build", "dist", "packaging"]
+
+[tool.ruff.lint]
+# E/F — pyflakes+pycodestyle, UP — модернизация, B — багоопасные конструкции,
+# C4 — comprehensions. Сортировку импортов (I) намеренно НЕ включаем: у проекта
+# компактный стиль импортов, isort переформатировал бы их по всему репо.
+select = ["E", "F", "UP", "B", "C4"]
+ignore = [
+    "E501",   # длину строк держим глазами; без авто-переносов в русских комментариях
+    "E701",   # осознанный стиль: короткие if/for в одну строку
+    "E702",   # осознанный стиль: связанные короткие операторы через ';'
+    "UP009",  # заголовки '# -*- coding: utf-8 -*-' оставляем намеренно
+    "B008",   # вызовы в дефолтах аргументов у нас не опасны
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Фасад намеренно реэкспортирует имена (F401) и держит os/subprocess для monkeypatch.
+"launcher/core.py" = ["F401"]
+
+[tool.mypy]
+# Мягкий старт: проверяем свой пакет, сторонние стабы не требуем. Ужесточать
+# можно постепенно (disallow_untyped_defs и т.п.), не блокируя разработку.
+python_version = "3.12"
+files = ["launcher"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+# GUI-модуль завязан на PyQt6 без стабов — исключаем из типизации, логика
+# покрыта в других модулях и тестах.
+exclude = ["launcher/gui\\.py$", "launcher/gui_widgets\\.py$", "launcher/gui_workers\\.py$"]

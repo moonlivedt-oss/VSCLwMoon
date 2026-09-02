@@ -26,7 +26,8 @@ PALETTE = PALETTE_DARK   # тема по умолчанию / обратная �
 def _mix(c1, c2, t):
     a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
     b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
-    r, g, bl = (max(0, min(255, round(x + (y - x) * t))) for x, y in zip(a, b))
+    r, g, bl = (max(0, min(255, round(x + (y - x) * t)))
+                for x, y in zip(a, b, strict=True))
     return f"#{r:02x}{g:02x}{bl:02x}"
 
 
