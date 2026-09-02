@@ -27,6 +27,7 @@ from .config import load_config
 from .launch import (
     build_launch_args, build_launch_command, compute_disabled, estimate_saved_mb,
 )
+from .manifests import build_dependency_map, read_extension_manifests
 from .presets import build_shortcut_cmd, normalize_preset, preset_stacks
 from .vscode import (
     kill_vscode, launch_detached, load_installed, resolve_code_cli,
@@ -122,6 +123,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="добавить в PATH уже установленный на диске компилятор (без загрузки)")
     p.add_argument("--include-optional", action="store_true",
                    help="с --install/--upgrade-toolchain: и дополнительные пакеты (CMake/Ninja/Clang)")
+    p.add_argument("--doctor", action="store_true",
+                   help="проверить окружение: тулчейны с версиями, здоровье PATH, JAVA_HOME (#8)")
+    p.add_argument("--outdated", action="store_true",
+                   help="показать тулчейны, для которых доступно обновление (winget upgrade) (#5)")
     return p
 
 
@@ -188,10 +193,12 @@ def _make_shortcut(args, cfg: dict) -> int:
 
 def _list_toolchains(as_json: bool) -> int:
     """Показать каталог тулчейнов: ключ, что ставит, установлено ли."""
-    rows = []
+    rows: list[dict] = []
     for key in _tc.toolchain_keys():
         tc = _tc.get_toolchain(key)
-        pkgs = []
+        if tc is None:
+            continue
+        pkgs: list[dict] = []
         for st in _tc.toolchain_status(key):
             pkg = st["package"]
             pkgs.append({"id": pkg.winget_id, "title": pkg.title,
@@ -219,6 +226,50 @@ def _list_toolchains(as_json: bool) -> int:
     print("Установить:        --install-toolchain КЛЮЧ [--include-optional]")
     print("Обновить/удалить:  --upgrade-toolchain КЛЮЧ | --uninstall-toolchain КЛЮЧ")
     print("Настроить VS Code: --configure-vscode cpp   |   уже есть: --add-existing cpp")
+    print("Проверить:         --doctor (окружение)   |   --outdated (обновления)")
+    return 0
+
+
+def _doctor(as_json: bool) -> int:
+    """#8: отчёт об окружении — тулчейны с версиями, здоровье PATH, JAVA_HOME."""
+    rep = _tc.environment_report()
+    if as_json:
+        print(_json.dumps(rep, ensure_ascii=False, indent=2))
+        return 0
+    print("winget:", rep.get("winget") or "не найден")
+    tools = rep.get("tools", [])
+    print(f"Установленные тулчейны ({len(tools)}):")
+    for t in tools:
+        print(f"  ✓ {t['title']} — {t.get('version') or ''}")
+    jh = rep.get("java_home", {})
+    if jh.get("set"):
+        print("JAVA_HOME:", jh.get("path"),
+              "" if jh.get("ok") else f"({jh.get('reason')})")
+    else:
+        print("JAVA_HOME: не задан")
+    ph = rep.get("path", {})
+    print(f"PATH: {ph.get('count', 0)} записей, длина {ph.get('length', 0)}")
+    if ph.get("duplicates"):
+        print(f"  дубликаты: {len(ph['duplicates'])}")
+    if ph.get("missing"):
+        print(f"  несуществующие каталоги: {len(ph['missing'])}")
+    return 0
+
+
+def _outdated(as_json: bool) -> int:
+    """#5: тулчейны, для которых winget видит обновление."""
+    rows = _tc.outdated_packages()
+    if as_json:
+        print(_json.dumps(
+            [{"key": r["key"], "id": r["package"].winget_id, "version": r["version"]}
+             for r in rows], ensure_ascii=False, indent=2))
+        return 0
+    if not rows:
+        print("Обновлений для тулчейнов не найдено (или winget недоступен).")
+        return 0
+    print(f"Доступны обновления ({len(rows)}):")
+    for r in rows:
+        print(f"  ↑ {r['key']}: {r['package'].title} (сейчас {r['version'] or '?'})")
     return 0
 
 
@@ -387,7 +438,7 @@ def cli_main(argv: list[str] | None = None) -> int:
     # переводим stdout в UTF-8, если можем (Python 3.7+). Тихо игнорируем,
     # если поток не поддерживает reconfigure (перенаправление в файл и т.п.).
     try:
-        sys.stdout.reconfigure(encoding="utf-8")   # type: ignore[attr-defined]
+        sys.stdout.reconfigure(encoding="utf-8")   # type: ignore[union-attr]
     except Exception:
         pass
     args = build_parser().parse_args(argv)
@@ -410,6 +461,10 @@ def cli_main(argv: list[str] | None = None) -> int:
         return _add_existing(args.add_existing, out)
     if args.configure_vscode:
         return _configure_vscode(args.configure_vscode, cfg, out)
+    if args.doctor:
+        return _doctor(args.json)
+    if args.outdated:
+        return _outdated(args.json)
 
     if args.list_presets:
         presets = cfg.get("presets", {})
@@ -424,7 +479,7 @@ def cli_main(argv: list[str] | None = None) -> int:
     cats, cats_err = load_categories()
     if cats_err and not quiet:
         print("categories.json:", cats_err)
-    ext_index = build_ext_index(cats)
+    ext_index = build_ext_index(cats, cfg.get("extra_categories"))  # #6: оверлей раскладки
     valid_keys = set(cats.get("categories", {}))
     code_cli = resolve_code_cli({**cfg, **({"code_cli": args.code_cli} if args.code_cli else {})})
 
@@ -444,8 +499,9 @@ def cli_main(argv: list[str] | None = None) -> int:
     ov = cfg.get("overrides", {})
     force_disable = set(ov.get("disable", []))
     force_enable = set(ov.get("enable", []))
+    dep_map = build_dependency_map(read_extension_manifests(code_cli))
     disabled = compute_disabled(installed, ext_index, selected,
-                                force_disable, force_enable)
+                                force_disable, force_enable, dep_map=dep_map)
     saved = estimate_saved_mb(disabled, ext_index)
     cmd = build_launch_command(code_cli or "code", disabled, opts["folder"],
                                opts["new_window"], opts["kill"], profile=opts["profile"],

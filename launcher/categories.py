@@ -43,9 +43,9 @@ def load_categories() -> tuple[dict, str]:
     """Читает карту категорий. Возвращает (данные, ошибка). При проблеме —
     безопасная пустая структура и текст ошибки для показа в окне, чтобы
     битый или отсутствующий categories.json не ронял приложение."""
-    empty = {"always_on": {"extensions": []}, "categories": {}}
+    empty: dict = {"always_on": {"extensions": []}, "categories": {}}
     try:
-        with open(CATEGORIES_FILE, "r", encoding="utf-8-sig") as f:  # терпим BOM
+        with open(CATEGORIES_FILE, encoding="utf-8-sig") as f:  # терпим BOM
             data = json.load(f)
     except FileNotFoundError:
         return empty, f"Не найден {CATEGORIES_FILE.name} — стеки не загружены."
@@ -96,16 +96,29 @@ def load_recommended() -> dict:
     return {}
 
 
-def build_ext_index(cats: dict) -> dict[str, str]:
+def build_ext_index(cats: dict,
+                    overlay: dict[str, str] | None = None) -> dict[str, str]:
     """id -> ключ категории ('always_on' или ключ из categories).
     При дубликатах побеждает последнее упоминание; find_duplicate_extensions
-    возвращает такие расширения для явного предупреждения."""
+    возвращает такие расширения для явного предупреждения.
+
+    overlay (#6) — пользовательская раскладка незнакомых расширений из мастера
+    (cfg['extra_categories'], {id: ключ}). Применяется НЕразрушающе: только для
+    id, которых ещё нет в карте, и только для существующих ключей категорий —
+    сама categories.json остаётся нетронутой, а ручная правка карты всегда
+    важнее оверлея."""
     idx = {}
     for e in cats.get("always_on", {}).get("extensions", []):
         idx[e.lower()] = "always_on"
     for key, cat in cats.get("categories", {}).items():
         for e in cat.get("extensions", []):
             idx[e.lower()] = key
+    if overlay:
+        valid = set(cats.get("categories", {}))
+        for ext_id, key in overlay.items():
+            low = str(ext_id).lower()
+            if low not in idx and key in valid:
+                idx[low] = key
     return idx
 
 
@@ -127,9 +140,8 @@ def find_duplicate_extensions(cats: dict) -> dict[str, list[str]]:
 def categories_present(installed: list[str], ext_index: dict[str, str]) -> set[str]:
     """Категории, у которых есть хотя бы одно установленное расширение
     (без always_on) — для рекомендаций settings.json."""
-    present = {ext_index.get(e) for e in installed}
-    present.discard(None)
-    present.discard("always_on")
+    present = {cat for e in installed
+               if (cat := ext_index.get(e)) is not None and cat != "always_on"}
     return present
 
 

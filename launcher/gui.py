@@ -14,6 +14,7 @@ descriptions, log, duplicates), поэтому живут вместе.
 """
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -30,24 +31,29 @@ from . import __version__
 from .core import (
     ICON_FILE, LOGO_FILE, WEIGHT, WEIGHT_HELP, WEIGHT_LABEL, WEIGHT_MB,
     apply_settings, build_ext_index, build_launch_args, build_launch_command,
-    build_shortcut_cmd, categories_present, code_image_name, compute_disabled,
-    detect_recommended_stacks, detect_stacks,
-    disabled_by_category, estimate_saved_mb, find_code_cli,
-    find_duplicate_extensions, kill_vscode, launch_detached, load_categories,
-    load_config, load_descriptions, load_recommended, lookup_baseline,
+    build_dependency_map, build_shortcut_cmd, categories_present,
+    code_image_name, compute_disabled,
+    detect_recommended_stacks, detect_stacks, read_extension_manifests,
+    disabled_by_category, estimate_saved_mb,
+    find_duplicate_extensions, kill_vscode, launch_detached, list_code_installs,
+    load_categories,
+    load_config, load_descriptions, load_recommended,
     lookup_footprint, marketplace_url, measured_savings_mb, normalize_preset,
-    preset_stacks, read_installed_from_disk, recall_folder_stacks,
+    preset_stacks, profile_file_content, read_installed_from_disk, recall_folder_stacks,
     recommended_for, record_baseline, record_footprint, remember_folder_stacks,
     resolve_code_cli, save_config, selection_signature, setup_logging,
-    vscode_process_count, vscode_user_settings_path, load_installed,
+    suggest_categories, vscode_process_count, vscode_user_settings_path, load_installed,
 )
 from .cli import _launcher_invocation
 from .i18n import _, get_language, set_language
-from .updates import RELEASES_URL
+from .updates import RELEASES_URL, build_update_swap_bat
 from .gui_widgets import (
     CategoryCard, FlowLayout, _card, _hline, _wrap, set_switch_palette,
 )
-from .gui_workers import ExtLoader, Installer, MemProbe, ToolchainInstaller, UpdateCheck
+from .gui_workers import (
+    ElevatedInstaller, ExtLoader, FnWorker, Installer, MemProbe,
+    ToolchainInstaller, UpdateCheck, UpdateDownloader,
+)
 from .theme import PALETTES, apply_titlebar, build_qss
 from . import toolchains as _tc
 
@@ -57,9 +63,11 @@ from . import toolchains as _tc
 def run_gui():
     log = setup_logging()
     cats, cats_err = load_categories()
-    ext_index = build_ext_index(cats)
     duplicates = find_duplicate_extensions(cats)
     cfg = load_config()
+    # #6: оверлей раскладки незнакомых расширений (мастер) — сливается в индекс
+    # неразрушающе; сама categories.json не трогается.
+    ext_index = build_ext_index(cats, cfg.get("extra_categories"))
     # #13: путь к CLI можно задать вручную в конфиге (портативная/нестандартная
     # сборка) — resolve_code_cli учитывает его, иначе ищет как раньше.
     code_cli = resolve_code_cli(cfg)
@@ -421,6 +429,7 @@ def run_gui():
             ov = cfg.get("overrides", {})
             self._force_disable = {e.lower() for e in ov.get("disable", [])}
             self._force_enable = {e.lower() for e in ov.get("enable", [])}
+            self._dep_map = None              # #1: карта зависимостей (ленивая, кэш)
             self._pending_record_sig = None   # #6: подпись выбора для замера после запуска
             self._pending_is_baseline = False # #2: следующий замер — базлайн «всё вкл»
             self._suggested_keys: set[str] = set()   # #1: что предложил автодетект
@@ -476,7 +485,8 @@ def run_gui():
             if n:
                 self.mem_lbl.setText(
                     _("VS Code сейчас: {mb} МБ, {n} процессов").format(mb=mb, n=n))
-                self.mem_lbl.setToolTip(_("Суммарный working set всех процессов VS Code"))
+                self.mem_lbl.setToolTip(_("Private working set всех процессов VS Code "
+                                          "(неразделяемая, реально освобождаемая память)"))
             else:
                 self.mem_lbl.setText(_("VS Code сейчас не запущен"))
                 self.mem_lbl.setToolTip("")
@@ -496,6 +506,56 @@ def run_gui():
                 save_config(cfg)
                 self._update_summary()
 
+        # --- выбор установки VS Code (#18) --------------------------------
+        def _choose_code_cli(self):
+            """#18: выбрать, какой VS Code запускать — стабильную/Insiders/
+            портативную. Показываем найденные установки + «Обзор…» (указать
+            code.cmd/Code.exe вручную) + «Авто» (сбросить на автопоиск). Выбор
+            сохраняется в cfg['code_cli'] и применяется НА ЛЕТУ: переопределяем
+            замыкание code_cli и перечитываем расширения/память — без
+            перезапуска окна."""
+            nonlocal code_cli
+            installs = list_code_installs()
+            AUTO = _("Авто (автопоиск)")
+            BROWSE = _("Обзор… (указать путь вручную)")
+            items = [f"{label}  —  {path}" for label, path in installs]
+            items += [AUTO, BROWSE]
+            cur = code_cli or _("не найден")
+            choice, ok = QInputDialog.getItem(
+                self, _("Установка VS Code"),
+                _("Сейчас: {cur}\n\nВыбери установку:").format(cur=cur),
+                items, 0, False)
+            if not ok:
+                return
+            new_path = None            # None -> авто (сброс)
+            if choice == BROWSE:
+                picked, _filt = QFileDialog.getOpenFileName(
+                    self, _("Выбери code.cmd или Code.exe"), "",
+                    "VS Code CLI (code.cmd code-insiders.cmd Code.exe);;Все файлы (*.*)")
+                if not picked:
+                    return
+                new_path = picked
+            elif choice == AUTO:
+                new_path = None
+            else:
+                idx = items.index(choice)
+                new_path = installs[idx][1]
+
+            if new_path:
+                cfg["code_cli"] = new_path
+            else:
+                cfg.pop("code_cli", None)
+            save_config(cfg)
+
+            code_cli = resolve_code_cli(cfg)   # переопределяем замыкание
+            self._dep_map = None               # #1: другой VS Code — другой набор
+            self.b_run.setEnabled(bool(code_cli))
+            self.log.appendPlainText(
+                _("VS Code CLI: {cli}").format(cli=code_cli or _("не найден")))
+            self._loaded = False
+            self._start_ext_load()             # перечитать расширения нового VS Code
+            self._probe_memory()               # и его память
+
         # --- проверка обновлений (#8) -------------------------------------
         def _start_update_check(self):
             if not cfg.get("check_updates", True):
@@ -507,9 +567,84 @@ def run_gui():
         def _on_update(self, ver: str):
             if not ver:
                 return
-            self.update_bar.setText(
-                _("Доступна новая версия {ver} — открыть страницу релизов").format(ver=ver))
+            self._update_tag = ver
+            # #10: у собранного exe предлагаем скачать и обновиться на месте;
+            # из исходников — просто открыть страницу релизов (обновляться нечему).
+            if getattr(sys, "frozen", False):
+                self.update_bar.setText(
+                    _("Доступна новая версия {ver} — скачать и установить").format(ver=ver))
+            else:
+                self.update_bar.setText(
+                    _("Доступна новая версия {ver} — открыть страницу релизов").format(ver=ver))
             self.update_bar.setVisible(True)
+
+        def _on_update_clicked(self):
+            """#10: клик по баннеру. Из исходников открываем страницу релизов.
+            Для собранного exe — скачиваем новую версию, сверяем SHA256 и
+            применяем через .bat-своп (запущенный exe заменить нельзя, поэтому
+            своп ждёт закрытия, меняет файл и перезапускает)."""
+            if not getattr(sys, "frozen", False):
+                QDesktopServices.openUrl(QUrl(RELEASES_URL))
+                return
+            tag = getattr(self, "_update_tag", "")
+            if getattr(self, "_dl", None) is not None and self._dl.isRunning():
+                return
+            if QMessageBox.question(
+                    self, _("Обновление"),
+                    _("Скачать и установить {ver}? Лаунчер закроется и "
+                      "обновится сам.").format(ver=tag),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                return
+            exe = Path(sys.executable)
+            dest = exe.with_name(f"{exe.stem}-{tag}.new.exe")
+            self.update_bar.setEnabled(False)
+            self.update_bar.setText(_("Скачиваю обновление…"))
+            self._dl = UpdateDownloader(dest)
+            self._dl.progress.connect(self._on_dl_progress)
+            self._dl.done.connect(self._on_dl_done)
+            self._dl.start()
+
+        def _on_dl_progress(self, got: int, total: int):
+            if total > 0:
+                pct = int(got * 100 / total)
+                self.update_bar.setText(_("Скачиваю обновление… {pct}%").format(pct=pct))
+            else:
+                self.update_bar.setText(
+                    _("Скачиваю обновление… {mb} МБ").format(mb=got // (1024 * 1024)))
+
+        def _on_dl_done(self, ok: bool, msg: str, dest: str):
+            self.update_bar.setEnabled(True)
+            tag = getattr(self, "_update_tag", "")
+            self.update_bar.setText(
+                _("Доступна новая версия {ver} — скачать и установить").format(ver=tag))
+            if not ok:
+                QMessageBox.warning(self, _("Обновление"), msg)
+                return
+            try:
+                old_exe = sys.executable
+                image = Path(old_exe).name
+                bat = build_update_swap_bat(old_exe, dest, image)
+                bat_path = Path(dest).with_name(Path(dest).stem + ".swap.bat")
+                bat_path.write_text(bat, encoding="utf-8")
+            except Exception as e:
+                QMessageBox.warning(self, _("Обновление"),
+                                    _("Не удалось подготовить обновление: {e}").format(e=e))
+                return
+            if QMessageBox.question(
+                    self, _("Готово"),
+                    msg + "\n\n" + _("Перезапустить сейчас, чтобы применить обновление?"),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes) != QMessageBox.StandardButton.Yes:
+                return
+            DETACHED = 0x00000008 | 0x00000200
+            try:
+                subprocess.Popen([os.environ.get("COMSPEC", "cmd.exe"), "/c",
+                                  str(bat_path)], creationflags=DETACHED, close_fds=True)
+            except Exception as e:
+                QMessageBox.critical(self, _("Обновление"), str(e))
+                return
+            QApplication.quit()
 
         # --- автоопределение стеков по папке (#1) -------------------------
         def _suggest_for_folder(self, folder: str):
@@ -645,10 +780,13 @@ def run_gui():
 
         def _apply_installed(self, ids: list):
             self.installed = ids
-            inst_set = set(ids)
+            self._dep_map = None   # #1: набор расширений сменился — перечитать граф
             for key, card in self.cat_checks.items():
-                exts = cats["categories"][key]["extensions"]
-                card.set_installed(sum(1 for e in exts if e.lower() in inst_set))
+                # Считаем через ext_index — так в счётчик карточки попадают и
+                # расширения, разложенные мастером (#6, оверлей), а не только
+                # перечисленные в categories.json напрямую.
+                card.set_installed(sum(1 for e in ids
+                                       if ext_index.get(e.lower()) == key))
             self._refresh_unknown()
             # Список установленных мог измениться — обновим счётчики сегментов и
             # перечитаем фильтр (карточка могла перейти в другую группу).
@@ -707,8 +845,7 @@ def run_gui():
             self.update_bar.setObjectName("Accent")
             self.update_bar.setCursor(Qt.CursorShape.PointingHandCursor)
             self.update_bar.setVisible(False)
-            self.update_bar.clicked.connect(
-                lambda: QDesktopServices.openUrl(QUrl(RELEASES_URL)))
+            self.update_bar.clicked.connect(self._on_update_clicked)
             root.addWidget(self.update_bar)
 
             if not code_cli:
@@ -750,7 +887,14 @@ def run_gui():
             mem_ref = QPushButton(_("Обновить")); mem_ref.setObjectName("Ghost")
             mem_ref.setToolTip(_("Обновить замер памяти запущенного VS Code"))
             mem_ref.clicked.connect(self._probe_memory)
+            code_btn = QPushButton(_("VS Code…")); code_btn.setObjectName("Ghost")
+            code_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            code_btn.setToolTip(_("Выбрать установку VS Code (стабильная/Insiders/"
+                                  "портативная) — если автопоиск нашёл не ту или "
+                                  "не нашёл вовсе."))
+            code_btn.clicked.connect(self._choose_code_cli)
             mem_row.addWidget(self.mem_lbl); mem_row.addStretch()
+            mem_row.addWidget(code_btn)
             mem_row.addWidget(self.lang_btn)
             mem_row.addWidget(self.theme_btn); mem_row.addWidget(mem_ref)
             root.addLayout(mem_row)
@@ -784,8 +928,15 @@ def run_gui():
             b_short.setToolTip(_("Создать .cmd-файл, открывающий VS Code с выбранным "
                                  "пресетом одним двойным кликом (без окна лаунчера)"))
             b_short.clicked.connect(self._make_shortcut)
+            b_prof = QPushButton(_("Профиль…")); b_prof.setObjectName("Ghost")
+            b_prof.setToolTip(_("Экспортировать текущий выбор стеков как нативный "
+                                "профиль VS Code (.code-profile). Импортируется через "
+                                "«Profiles: Import Profile…» — постоянный профиль "
+                                "ровно с включёнными расширениями."))
+            b_prof.clicked.connect(self._export_profile)
             pre.addWidget(b_save); pre.addWidget(b_del)
             pre.addWidget(b_exp); pre.addWidget(b_imp); pre.addWidget(b_short)
+            pre.addWidget(b_prof)
             cv.addWidget(pre_card)
 
             sec_row = QHBoxLayout(); sec_row.setSpacing(8)
@@ -886,7 +1037,17 @@ def run_gui():
                                         "data/categories.json — лаунчер всегда оставляет "
                                         "их включёнными")
             self.unknown_btn.clicked.connect(self._show_unknown)
-            urow = QHBoxLayout(); urow.addWidget(self.unknown_btn); urow.addStretch()
+            # #6: мастер авто-раскладки незнакомых расширений по стекам.
+            self.classify_btn = QPushButton(); self.classify_btn.setObjectName("Ghost")
+            self.classify_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.classify_btn.setToolTip(_("Автоматически разложить незнакомые "
+                                           "расширения по стекам (по их манифесту). "
+                                           "Ничего не навязывается — ты подтверждаешь "
+                                           "раскладку; categories.json не меняется."))
+            self.classify_btn.clicked.connect(self._classify_wizard)
+            self.classify_btn.setVisible(False)
+            urow = QHBoxLayout(); urow.addWidget(self.unknown_btn)
+            urow.addWidget(self.classify_btn); urow.addStretch()
             cv.addLayout(urow)
             self._refresh_unknown()
 
@@ -1150,9 +1311,24 @@ def run_gui():
             super().resizeEvent(e)
             self._relayout_cards()
 
+        def _get_dep_map(self) -> dict:
+            """Карта зависимостей расширений для #1. Строится один раз (читает
+            ~100 небольших package.json, десятки мс) и кэшируется до смены
+            набора установленных расширений. Ошибку чтения глушим в пустую
+            карту — защита по зависимостям тогда просто выключена, поведение
+            откатывается к прежнему."""
+            if self._dep_map is None:
+                try:
+                    self._dep_map = build_dependency_map(
+                        read_extension_manifests(code_cli))
+                except Exception:
+                    self._dep_map = {}
+            return self._dep_map
+
         def _disabled_list(self) -> list[str]:
             return compute_disabled(self.installed, ext_index, self._selected(),
-                                    self._force_disable, self._force_enable)
+                                    self._force_disable, self._force_enable,
+                                    dep_map=self._get_dep_map())
 
         def _bare(self) -> bool:
             return getattr(self, "bare_cb", None) is not None and self.bare_cb.isChecked()
@@ -1165,6 +1341,91 @@ def run_gui():
             unk = self._unknown()
             self.unknown_btn.setText(f"Не в карте: {len(unk)} — показать")
             self.unknown_btn.setVisible(bool(unk))
+            # #6: кнопку мастера показываем, когда есть что раскладывать; сами
+            # предложения считаем лениво (при клике), чтобы не читать манифесты
+            # на каждый refresh.
+            if getattr(self, "classify_btn", None) is not None:
+                self.classify_btn.setText(_("Разложить по стекам (авто)"))
+                self.classify_btn.setVisible(bool(unk))
+
+        def _classify_wizard(self):
+            """#6: мастер авто-раскладки незнакомых расширений по стекам.
+
+            Угадывает стек по манифесту (classify), показывает диалог с
+            чекбоксами и выбором стека. Принятое пишется в оверлей
+            cfg['extra_categories'] и сливается в ext_index — categories.json
+            не трогается, всё обратимо. Ничего не навязывается: по умолчанию
+            галочки стоят, но пользователь решает."""
+            nonlocal ext_index
+            if not self._unknown():
+                QMessageBox.information(self, _("Раскладка"),
+                                        _("Незнакомых расширений нет."))
+                return
+            valid_keys = set(cats.get("categories", {}))
+            try:
+                manifests = read_extension_manifests(code_cli)
+            except Exception:
+                manifests = {}
+            suggestions = suggest_categories(self.installed, ext_index, manifests,
+                                             available=valid_keys)
+            if not suggestions:
+                QMessageBox.information(
+                    self, _("Раскладка"),
+                    _("Не удалось уверенно определить стек ни для одного "
+                      "незнакомого расширения. Разложи вручную в "
+                      "data/categories.json."))
+                return
+
+            dlg = QDialog(self); dlg.setWindowTitle(_("Разложить по стекам"))
+            dlg.resize(580, 540)
+            lay = QVBoxLayout(dlg)
+            lay.addWidget(_wrap(QLabel(_(
+                "Предлагаю раскладку {n} расширений. Сними галочку, чтобы "
+                "пропустить; стек можно поменять. Твоя categories.json не "
+                "меняется — раскладка хранится отдельно и обратима.").format(
+                    n=len(suggestions)))))
+            key_titles = [(k, cats["categories"][k].get("title", k))
+                          for k in sorted(valid_keys)]
+            keys_order = [k for k, _t in key_titles]
+            scroll = QScrollArea(); scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            host = QWidget(); hv = QVBoxLayout(host); hv.setSpacing(6)
+            rows = []
+            for ext_id, key in sorted(suggestions.items()):
+                line = QHBoxLayout()
+                cb = QCheckBox(ext_id); cb.setChecked(True)
+                combo = QComboBox()
+                for k, title in key_titles:
+                    combo.addItem(title, k)
+                if key in keys_order:
+                    combo.setCurrentIndex(keys_order.index(key))
+                line.addWidget(cb, 1); line.addWidget(combo, 0)
+                holder = QWidget(); holder.setLayout(line); hv.addWidget(holder)
+                rows.append((cb, combo))
+            hv.addStretch()
+            scroll.setWidget(host); lay.addWidget(scroll, 1)
+            bar = QHBoxLayout(); bar.addStretch()
+            cancel = QPushButton(_("Отмена")); cancel.setObjectName("Ghost")
+            cancel.clicked.connect(dlg.reject)
+            accept = QPushButton(_("Принять отмеченные")); accept.setObjectName("Accent")
+            accept.clicked.connect(dlg.accept)
+            bar.addWidget(cancel); bar.addWidget(accept); lay.addLayout(bar)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+
+            approved = {cb.text(): combo.currentData() for cb, combo in rows
+                        if cb.isChecked() and combo.currentData()}
+            if not approved:
+                return
+            overlay = cfg.setdefault("extra_categories", {})
+            overlay.update(approved)
+            save_config(cfg)
+            ext_index = build_ext_index(cats, overlay)   # переопределяем замыкание
+            self._dep_map = None
+            self._apply_installed(self.installed)   # пересчитать счётчики/фильтр/unknown
+            self._update_summary()
+            self.log.appendPlainText(
+                _("Разложено расширений: {n}").format(n=len(approved)))
 
         def _show_toolchains(self, target=None):
             """Диалог языковых тулчейнов: установка, обновление, удаление, проверка.
@@ -1257,6 +1518,41 @@ def run_gui():
                 (QMessageBox.information if ok else QMessageBox.warning)(
                     dlg, _("Настройка VS Code"), msg)
 
+            def _resolve_version(pkg):
+                """#4: подставить выбранную в комбобоксе версию пакета."""
+                r = rows.get(pkg.winget_id)
+                combo = r.get("ver_combo") if r else None
+                if combo is not None and combo.currentData():
+                    return pkg.with_version(combo.currentData())
+                return pkg
+
+            def _start_elevated(resolved_pkg, orig_pkg):
+                """#10: повторить установку с правами администратора (в фоне —
+                elevated winget ждёт UAC и может идти минуты)."""
+                if state["busy"]:
+                    return
+                lock_actions(True)
+                status_lbl.setText(_("Установка с правами администратора…"))
+                status_lbl.setVisible(True)
+                prog_bar.setRange(0, 0); prog_bar.setValue(0); prog_bar.setVisible(True)
+
+                def _edone(ok, m):
+                    if not state["open"]:
+                        return
+                    prog_bar.setVisible(False); lock_actions(False)
+                    status_lbl.setText((m or "").splitlines()[0] if m
+                                       else (_("Готово") if ok else _("Ошибка")))
+                    if ok and orig_pkg is not None:
+                        refresh_pkg_row(orig_pkg, True, None, just=True)
+                    elif not ok:
+                        QMessageBox.warning(dlg, _("Не удалось выполнить"),
+                                            (m or "")[:600])
+                w = ElevatedInstaller(resolved_pkg)
+                w.done.connect(_edone)
+                w.finished.connect(lambda x=w: self._reap_installer(x))
+                self._install_threads.append(w)
+                w.start()
+
             def start_winget(pkgs, action):
                 """action: install | upgrade | uninstall. Один воркер за раз."""
                 if state["busy"] or not wg_ok:
@@ -1272,11 +1568,31 @@ def run_gui():
                     q_title, q_verb = _("Обновить через winget?"), _("Обновляю")
                 if not pkgs:
                     return
+                # #4: применяем выбранную версию (только install — upgrade/uninstall
+                # работают с уже установленным). orig_by_rid ведёт от id, с которым
+                # реально пошли в winget, к исходному пакету (для обновления строки).
+                if action == "install":
+                    resolved = [_resolve_version(p) for p in pkgs]
+                    orig_by_rid = {rp.winget_id: op
+                                   for op, rp in zip(pkgs, resolved, strict=True)}
+                    pkgs = resolved
+                else:
+                    orig_by_rid = {p.winget_id: p for p in pkgs}
                 names = ", ".join(p.title for p in pkgs)
+                # #7: предупреждение, если для языка стоит менеджер версий.
+                warn_txt = ""
+                if action == "install":
+                    orig_ids = {op.winget_id for op in orig_by_rid.values()}
+                    keys = {k for k in _tc.toolchain_keys()
+                            for pp in _tc.get_toolchain(k).packages
+                            if pp.winget_id in orig_ids}
+                    warns = [w for w in (_tc.manager_warning_for(k) for k in keys) if w]
+                    if warns:
+                        warn_txt = "\n\n⚠ " + "\n⚠ ".join(warns)
                 if QMessageBox.question(
                         dlg, q_title,
                         _("Пакеты:\n\n{names}\n\nЭто может занять несколько минут. "
-                          "Продолжить?").format(names=names),
+                          "Продолжить?").format(names=names) + warn_txt,
                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                         QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
                     return
@@ -1290,12 +1606,31 @@ def run_gui():
                     if not state["open"]:
                         return
                     done[0] += 1
-                    pkg = next(p for p in pkgs if p.winget_id == wid)
+                    resolved_pkg = next((p for p in pkgs if p.winget_id == wid), None)
+                    orig_pkg = orig_by_rid.get(wid, resolved_pkg)   # #4: строку по исходному
                     if ok:
-                        refresh_pkg_row(pkg, action != "uninstall", None, just=True)
+                        if orig_pkg is not None:
+                            refresh_pkg_row(orig_pkg, action != "uninstall", None, just=True)
                     else:
                         fails.append((wid, msg or ""))
                         if not bulk:
+                            # #10: ошибка из-за прав администратора — предложить повтор elevated.
+                            need_admin = "администратор" in (msg or "").lower()
+                            if (need_admin and action == "install"
+                                    and resolved_pkg is not None
+                                    and QMessageBox.question(
+                                        dlg, _("Нужны права администратора"),
+                                        (msg or "")[:400] + "\n\n"
+                                        + _("Повторить установку с правами "
+                                            "администратора?"),
+                                        QMessageBox.StandardButton.Yes
+                                        | QMessageBox.StandardButton.No,
+                                        QMessageBox.StandardButton.Yes)
+                                    == QMessageBox.StandardButton.Yes):
+                                QTimer.singleShot(
+                                    0, lambda rp=resolved_pkg, op=orig_pkg:
+                                    _start_elevated(rp, op))
+                                return
                             QMessageBox.warning(dlg, _("Не удалось выполнить"),
                                                 f"{wid}\n\n{(msg or '')[:600]}")
 
@@ -1390,6 +1725,18 @@ def run_gui():
                     prow.addWidget(pn, 1)
                     tag = QLabel(); tag.setObjectName("Woff")
                     prow.addWidget(tag, 0, Qt.AlignmentFlag.AlignVCenter)
+                    # #4: выбор версии для пакетов, у которых есть варианты.
+                    ver_combo = None
+                    if pkg.versions:
+                        ver_combo = QComboBox()
+                        for vid, vtitle in pkg.versions:
+                            ver_combo.addItem(vtitle, vid)
+                        # по умолчанию — winget_id пакета (первый подходящий).
+                        idx = next((i for i, (vid, _t) in enumerate(pkg.versions)
+                                    if vid == pkg.winget_id), 0)
+                        ver_combo.setCurrentIndex(idx)
+                        ver_combo.setToolTip(_("Версия для установки/обновления"))
+                        prow.addWidget(ver_combo, 0, Qt.AlignmentFlag.AlignVCenter)
                     ib = mk_btn(_("Установить"), "Ghost",
                                 lambda _=False, p=pkg: start_winget([p], "install"),
                                 _("winget install --id {id}").format(id=pkg.winget_id)
@@ -1410,7 +1757,8 @@ def run_gui():
                     for b in (ib, ap, vf, up, un):
                         prow.addWidget(b, 0, Qt.AlignmentFlag.AlignVCenter)
                     rows[pkg.winget_id] = {"tag": tag, "install": ib, "addpath": ap,
-                                           "verify": vf, "upgrade": up, "uninstall": un}
+                                           "verify": vf, "upgrade": up, "uninstall": un,
+                                           "ver_combo": ver_combo, "pkg": pkg}
                     refresh_pkg_row(pkg, st["installed"], st["version"])
                     cl.addLayout(prow)
                 vb.addWidget(card)
@@ -1418,11 +1766,72 @@ def run_gui():
             scroll.setWidget(holder)
             lay.addWidget(scroll, 1)
 
+            def do_check_updates():
+                """#5: спросить winget, что из наших тулчейнов можно обновить, и
+                отметить такие пакеты в списке."""
+                if state["busy"] or not wg_ok:
+                    return
+                lock_actions(True)
+                status_lbl.setText(_("Проверяю обновления…")); status_lbl.setVisible(True)
+                w = FnWorker(_tc.list_upgradable_ids)
+
+                def _d(res):
+                    if not state["open"]:
+                        return
+                    lock_actions(False)
+                    if not isinstance(res, set):
+                        status_lbl.setText(_("Не удалось проверить обновления"))
+                        return
+                    n = 0
+                    for _wid, r in rows.items():
+                        pkg = r.get("pkg")
+                        ids = {pkg.winget_id, *(v for v, _t in pkg.versions)} if pkg else set()
+                        if ids & res and _tc.package_installed(pkg):
+                            r["tag"].setText(_("доступно обновление ↑"))
+                            r["tag"].setObjectName("Wmedium")
+                            r["tag"].style().unpolish(r["tag"]); r["tag"].style().polish(r["tag"])
+                            n += 1
+                    status_lbl.setText(_("Доступно обновлений: {n}").format(n=n))
+                    status_lbl.setVisible(True)
+                w.done.connect(_d)
+                w.finished.connect(lambda x=w: self._reap_installer(x))
+                self._install_threads.append(w); w.start()
+
+            def do_doctor():
+                """#8: собрать отчёт об окружении в фоне и показать его."""
+                if state["busy"]:
+                    return
+                lock_actions(True)
+                status_lbl.setText(_("Проверяю окружение…")); status_lbl.setVisible(True)
+                w = FnWorker(_tc.environment_report)
+
+                def _d(res):
+                    if not state["open"]:
+                        return
+                    lock_actions(False); status_lbl.setVisible(False)
+                    if not isinstance(res, dict):
+                        QMessageBox.warning(dlg, _("Проверка окружения"),
+                                            _("Не удалось собрать отчёт."))
+                        return
+                    self._show_doctor_report(res)
+                w.done.connect(_d)
+                w.finished.connect(lambda x=w: self._reap_installer(x))
+                self._install_threads.append(w); w.start()
+
             bar = QHBoxLayout()
             bar.addWidget(status_lbl)
             bar.addWidget(prog_bar, 0, Qt.AlignmentFlag.AlignVCenter)
             bar.addWidget(cancel_btn)
             bar.addStretch()
+            doctor_btn = mk_btn(_("Проверить окружение"), "Ghost", do_doctor,
+                                _("Отчёт: установленные тулчейны и версии, здоровье "
+                                  "PATH (дубли/мёртвые записи), JAVA_HOME."))
+            bar.addWidget(doctor_btn)
+            if wg_ok:
+                upd_btn = mk_btn(_("Проверить обновления"), "Ghost", do_check_updates,
+                                 _("Спросить winget, для каких тулчейнов доступно "
+                                   "обновление, и отметить их."))
+                bar.addWidget(upd_btn)
             close = QPushButton(_("Закрыть")); close.setObjectName("Accent")
             close.clicked.connect(dlg.accept)
             bar.addWidget(close)
@@ -1431,6 +1840,54 @@ def run_gui():
             # Прокрутка к нужному тулчейну (из подсказки в главном окне).
             if target and target in card_of:
                 QTimer.singleShot(0, lambda: scroll.ensureWidgetVisible(card_of[target]))
+            dlg.exec()
+
+        def _show_doctor_report(self, rep: dict):
+            """#8: показать отчёт environment_report в читаемом виде."""
+            dlg = QDialog(self); dlg.setWindowTitle(_("Проверка окружения"))
+            dlg.resize(640, 620)
+            lay = QVBoxLayout(dlg); lay.setContentsMargins(18, 18, 18, 16); lay.setSpacing(10)
+            title = QLabel(_("Проверка окружения")); title.setObjectName("Title")
+            lay.addWidget(title)
+
+            lines: list[str] = []
+            lines.append(_("winget: {v}").format(v=rep.get("winget") or _("не найден")))
+            lines.append("")
+            tools = rep.get("tools", [])
+            lines.append(_("Установленные тулчейны ({n}):").format(n=len(tools)))
+            for t in tools:
+                lines.append(f"  ✓ {t['title']}  —  {t.get('version') or ''}")
+            if not tools:
+                lines.append("  —")
+            lines.append("")
+            jh = rep.get("java_home", {})
+            if jh.get("set"):
+                mark = "✓ " if jh.get("ok") else "✗ "
+                extra = f"  ({jh.get('reason')})" if not jh.get("ok") else ""
+                lines.append(f"{mark}JAVA_HOME: {jh.get('path')}{extra}")
+            else:
+                lines.append(_("JAVA_HOME не задан."))
+            lines.append("")
+            ph = rep.get("path", {})
+            lines.append(_("PATH: {n} записей, длина {l} символов").format(
+                n=ph.get("count", 0), l=ph.get("length", 0)))
+            dups = ph.get("duplicates", [])
+            miss = ph.get("missing", [])
+            if dups:
+                lines.append(_("  Дубликаты ({n}):").format(n=len(dups)))
+                lines += [f"    • {d}" for d in dups[:12]]
+            if miss:
+                lines.append(_("  Несуществующие каталоги ({n}):").format(n=len(miss)))
+                lines += [f"    • {d}" for d in miss[:12]]
+            if not dups and not miss:
+                lines.append(_("  PATH в порядке: дублей и мёртвых записей не найдено."))
+
+            box = QPlainTextEdit("\n".join(lines)); box.setReadOnly(True)
+            lay.addWidget(box, 1)
+            b = QHBoxLayout(); b.addStretch()
+            close = QPushButton(_("Закрыть")); close.setObjectName("Accent")
+            close.clicked.connect(dlg.accept)
+            b.addWidget(close); lay.addLayout(b)
             dlg.exec()
 
         def _show_duplicates(self):
@@ -1895,6 +2352,42 @@ def run_gui():
                     _("Ярлык создан: {path}").format(path=path))
             except Exception as e:
                 QMessageBox.critical(self, _("Ошибка"), str(e))
+
+        def _export_profile(self):
+            """#4: сохранить текущий выбор как нативный профиль VS Code
+            (.code-profile). В профиль кладём ВКЛючённые расширения — тот же
+            набор, что остался бы включённым при запуске через лаунчер, только
+            в виде постоянного профиля, а не флагов --disable-extension."""
+            if not self.installed:
+                QMessageBox.information(self, _("Профиль VS Code"),
+                                        _("Список расширений ещё не загружен."))
+                return
+            disabled = set(self._disabled_list())
+            enabled = [e for e in self.installed if e not in disabled]
+            keys = sorted(self._selected())
+            default_name = "stacks-" + ("-".join(keys) if keys else "core")
+            path, _filt = QFileDialog.getSaveFileName(
+                self, _("Экспорт профиля VS Code"),
+                f"{default_name}.code-profile",
+                "VS Code Profile (*.code-profile)")
+            if not path:
+                return
+            if not path.lower().endswith(".code-profile"):
+                path += ".code-profile"
+            try:
+                manifests = read_extension_manifests(code_cli)
+                content = profile_file_content(Path(path).stem, enabled, manifests)
+                Path(path).write_text(content, encoding="utf-8")
+                self.log.appendPlainText(
+                    _("Профиль VS Code сохранён ({n} расш.): {path}").format(
+                        n=len(enabled), path=path))
+                QMessageBox.information(
+                    self, _("Профиль VS Code"),
+                    _("Готово. В VS Code открой палитру команд и выполни "
+                      "«Profiles: Import Profile…», затем выбери этот файл.\n\n"
+                      "Расширений в профиле: {n}").format(n=len(enabled)))
+            except Exception as e:
+                QMessageBox.critical(self, _("Ошибка экспорта профиля"), str(e))
 
         def _restore(self):
             last = set(cfg.get("last_selected", []))
