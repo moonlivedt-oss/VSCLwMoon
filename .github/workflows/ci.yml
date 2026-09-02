@@ -12,7 +12,10 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Windows-раннер: приложение Windows-only (winget, реестр, code.cmd,
+    # семантика путей C:\...). На Linux тесты PATH/папок падают не по делу —
+    # os.pathsep=':' и нет нормализации '\'/регистра. Тестируем там, где живём.
+    runs-on: windows-latest
     strategy:
       matrix:
         python-version: ['3.12', '3.14']   # 3.12 = CI baseline, 3.14 = как у автора
