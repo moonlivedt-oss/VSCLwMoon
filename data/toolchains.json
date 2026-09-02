@@ -1,0 +1,248 @@
+{
+  "$schema": "./toolchains.schema.json",
+  "_comment": "Каталог языковых тулчейнов для установки через winget. Правь под себя: id проверяй командой 'winget search <имя>'. Ключ тулчейна, совпадающий с ключом стека из categories.json (python, cpp, php…), связывает 'в проекте обнаружен язык' с 'поставить его инструмент'; ключи без стека (deno, bun, zig) просто доступны к установке. versions — список вариантов версии для выбора в UI (#4); первый обычно и есть winget_id по умолчанию.",
+  "toolchains": {
+    "python": {
+      "title": "Python",
+      "note": "Интерпретатор Python и pip.",
+      "packages": [
+        {
+          "winget_id": "Python.Python.3.13",
+          "title": "Python 3.13",
+          "probe": ["python", "pip"],
+          "note": "Сам прописывает PATH при установке.",
+          "versions": [
+            {"winget_id": "Python.Python.3.14", "title": "Python 3.14"},
+            {"winget_id": "Python.Python.3.13", "title": "Python 3.13"},
+            {"winget_id": "Python.Python.3.12", "title": "Python 3.12"},
+            {"winget_id": "Python.Python.3.11", "title": "Python 3.11"}
+          ]
+        }
+      ]
+    },
+    "cpp": {
+      "title": "C / C++",
+      "note": "Компилятор GCC (MinGW-w64), отладчик GDB и make; опционально CMake, Ninja, Clang.",
+      "packages": [
+        {
+          "winget_id": "BrechtSanders.WinLibs.POSIX.UCRT",
+          "title": "MinGW-w64 (GCC/G++/GDB/make)",
+          "probe": ["g++", "gcc", "gdb"],
+          "note": "Архивная сборка WinLibs — PATH пропишет сам лаунчер. Даёт компилятор, отладчик и mingw32-make.",
+          "provides": ["gcc", "g++", "gdb", "mingw32-make", "gfortran"]
+        },
+        {
+          "winget_id": "Kitware.CMake",
+          "title": "CMake",
+          "probe": ["cmake"],
+          "optional": true,
+          "note": "Система сборки для крупных C/C++ проектов."
+        },
+        {
+          "winget_id": "Ninja-build.Ninja",
+          "title": "Ninja",
+          "probe": ["ninja"],
+          "optional": true,
+          "note": "Быстрый генератор сборки — часто в паре с CMake."
+        },
+        {
+          "winget_id": "LLVM.LLVM",
+          "title": "LLVM / Clang",
+          "probe": ["clang", "clang++"],
+          "optional": true,
+          "note": "Альтернативный компилятор Clang.",
+          "provides": ["clang", "clang++", "clang-format", "lldb"]
+        }
+      ]
+    },
+    "java": {
+      "title": "Java (JDK)",
+      "note": "OpenJDK (Eclipse Temurin): java и javac.",
+      "packages": [
+        {
+          "winget_id": "EclipseAdoptium.Temurin.21.JDK",
+          "title": "Temurin JDK 21 (LTS)",
+          "probe": ["java", "javac"],
+          "note": "LTS-сборка OpenJDK. Прописывает JAVA_HOME и PATH.",
+          "versions": [
+            {"winget_id": "EclipseAdoptium.Temurin.21.JDK", "title": "Temurin JDK 21 (LTS)"},
+            {"winget_id": "EclipseAdoptium.Temurin.17.JDK", "title": "Temurin JDK 17 (LTS)"}
+          ]
+        }
+      ]
+    },
+    "go": {
+      "title": "Go",
+      "note": "Компилятор и тулчейн Go.",
+      "packages": [
+        {
+          "winget_id": "GoLang.Go",
+          "title": "Go",
+          "probe": ["go"],
+          "note": "Сам прописывает PATH при установке."
+        }
+      ]
+    },
+    "rust": {
+      "title": "Rust",
+      "note": "Rustup ставит компилятор rustc и пакетный менеджер cargo.",
+      "packages": [
+        {
+          "winget_id": "Rustlang.Rustup",
+          "title": "Rustup (rustc + cargo)",
+          "probe": ["cargo", "rustc"],
+          "note": "Через rustup обновляется и переключается вся цепочка Rust."
+        }
+      ]
+    },
+    "dotnet": {
+      "title": ".NET",
+      "note": "SDK для C#/F#: команда dotnet.",
+      "packages": [
+        {
+          "winget_id": "Microsoft.DotNet.SDK.9",
+          "title": ".NET SDK 9",
+          "probe": ["dotnet"],
+          "note": "Сам прописывает PATH при установке.",
+          "versions": [
+            {"winget_id": "Microsoft.DotNet.SDK.9", "title": ".NET SDK 9"},
+            {"winget_id": "Microsoft.DotNet.SDK.8", "title": ".NET SDK 8 (LTS)"}
+          ]
+        }
+      ]
+    },
+    "web": {
+      "title": "Node.js",
+      "note": "Node.js и npm — для веб- и JS/TS-проектов.",
+      "packages": [
+        {
+          "winget_id": "OpenJS.NodeJS.LTS",
+          "title": "Node.js LTS",
+          "probe": ["node", "npm"],
+          "note": "Сам прописывает PATH при установке.",
+          "versions": [
+            {"winget_id": "OpenJS.NodeJS.LTS", "title": "Node.js LTS"},
+            {"winget_id": "OpenJS.NodeJS", "title": "Node.js Current"}
+          ]
+        }
+      ]
+    },
+    "ruby": {
+      "title": "Ruby",
+      "note": "Интерпретатор Ruby и gem.",
+      "packages": [
+        {
+          "winget_id": "RubyInstallerTeam.Ruby.3.4",
+          "title": "Ruby 3.4",
+          "probe": ["ruby", "gem"],
+          "note": "Сам прописывает PATH при установке.",
+          "versions": [
+            {"winget_id": "RubyInstallerTeam.Ruby.3.4", "title": "Ruby 3.4"},
+            {"winget_id": "RubyInstallerTeam.Ruby.3.3", "title": "Ruby 3.3"}
+          ]
+        }
+      ]
+    },
+    "php": {
+      "title": "PHP",
+      "note": "Интерпретатор PHP CLI.",
+      "packages": [
+        {
+          "winget_id": "PHP.PHP.8.4",
+          "title": "PHP 8.4",
+          "probe": ["php"],
+          "note": "Проверь PATH после установки: некоторые сборки PHP его не прописывают.",
+          "path_hints": ["C:\\tools\\php", "C:\\php"],
+          "versions": [
+            {"winget_id": "PHP.PHP.8.4", "title": "PHP 8.4"},
+            {"winget_id": "PHP.PHP.8.3", "title": "PHP 8.3"}
+          ]
+        }
+      ]
+    },
+    "terraform": {
+      "title": "Terraform",
+      "note": "HashiCorp Terraform — инфраструктура как код.",
+      "packages": [
+        {
+          "winget_id": "Hashicorp.Terraform",
+          "title": "Terraform",
+          "probe": ["terraform"],
+          "note": "Сам прописывает PATH при установке."
+        }
+      ]
+    },
+    "docker": {
+      "title": "Docker",
+      "note": "Docker Desktop — движок и CLI для контейнеров.",
+      "packages": [
+        {
+          "winget_id": "Docker.DockerDesktop",
+          "title": "Docker Desktop",
+          "probe": ["docker"],
+          "note": "Полноценный Docker Desktop (движок + CLI). Крупный пакет; в больших организациях может требовать лицензию."
+        }
+      ]
+    },
+    "lua": {
+      "title": "Lua",
+      "note": "Интерпретатор Lua.",
+      "packages": [
+        {
+          "winget_id": "DEVCOM.Lua",
+          "title": "Lua",
+          "probe": ["lua"],
+          "note": "Проверь PATH после установки."
+        }
+      ]
+    },
+    "deno": {
+      "title": "Deno",
+      "note": "Deno — безопасный рантайм для JS/TS (альтернатива Node).",
+      "packages": [
+        {
+          "winget_id": "DenoLand.Deno",
+          "title": "Deno",
+          "probe": ["deno"],
+          "note": "Сам прописывает PATH при установке."
+        }
+      ]
+    },
+    "bun": {
+      "title": "Bun",
+      "note": "Bun — быстрый рантайм и пакетный менеджер для JS/TS.",
+      "packages": [
+        {
+          "winget_id": "Oven-sh.Bun",
+          "title": "Bun",
+          "probe": ["bun"],
+          "note": "Сам прописывает PATH при установке."
+        }
+      ]
+    },
+    "zig": {
+      "title": "Zig",
+      "note": "Zig — системный язык программирования и его компилятор.",
+      "packages": [
+        {
+          "winget_id": "zig.zig",
+          "title": "Zig",
+          "probe": ["zig"],
+          "note": "Архивная сборка — PATH может прописать сам лаунчер."
+        }
+      ]
+    },
+    "git": {
+      "title": "Git",
+      "note": "Система контроля версий — нужна и самой VS Code.",
+      "packages": [
+        {
+          "winget_id": "Git.Git",
+          "title": "Git for Windows",
+          "probe": ["git"],
+          "note": "Сам прописывает PATH при установке."
+        }
+      ]
+    }
+  }
+}
