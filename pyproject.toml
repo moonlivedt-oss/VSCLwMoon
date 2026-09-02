@@ -1,6 +1,6 @@
 [project]
 name = "vscode-launcher"
-version = "1.1.0"
+version = "1.2.0"
 description = "Переключатель нагрузки расширений VS Code — открывает редактор только с нужными стеками, тяжёлые языковые серверы не грузятся (экономия ОЗУ). Ничего в базе VS Code не меняется."
 readme = "README.md"
 license = { file = "LICENSE" }
