@@ -58,6 +58,7 @@ def migrate_config(cfg: dict) -> dict:
     cfg.setdefault("last_selected", [])
     cfg.setdefault("kill_first", True)
     cfg.setdefault("folder_stacks", {})   # #1: выбор стеков, привязанный к папке
+    cfg.setdefault("extra_categories", {})  # #6: раскладка незнакомых расширений из мастера
     # Пресеты исторически хранились как список ключей стеков; теперь значение
     # может быть и словарём {stacks, folder, kill, ...} (#4). Обе формы валидны,
     # normalize_preset разбирает любую — здесь ничего конвертировать не нужно.
