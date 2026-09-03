@@ -316,8 +316,10 @@ VSCodeLauncher/
     VSCodeLauncher.spec    конфиг сборки PyInstaller
     version_info.txt       свойства exe (версия, описание, автор)
   docs/
-    screenshot-dark.png    скриншоты для README
+    screenshot-dark.png    скриншоты для README (тёмная/светлая)
     screenshot-light.png
+    toolchains.png         диалог «Языки и инструменты»
+    what-disables.png      диалог «Что выключится»
   tests/
     test_core.py           тесты чистой логики (pytest)
   LICENSE
@@ -334,8 +336,12 @@ VSCodeLauncher/
 
 <table>
 <tr>
-<td width="50%"><img src="docs/screenshot-dark.png" alt="Тёмная тема" width="100%"><br><div align="center"><sub>Тёмная тема — Catppuccin Mocha</sub></div></td>
-<td width="50%"><img src="docs/screenshot-light.png" alt="Светлая тема" width="100%"><br><div align="center"><sub>Светлая тема — Catppuccin Latte</sub></div></td>
+<td width="50%"><img src="docs/screenshot-dark.png" alt="Тёмная тема" width="100%"><br><div align="center"><sub>Тёмная тема — сетка стеков и панель экономии памяти</sub></div></td>
+<td width="50%"><img src="docs/screenshot-light.png" alt="Светлая тема" width="100%"><br><div align="center"><sub>Светлая тема — тот же экран</sub></div></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/toolchains.png" alt="Языки и инструменты" width="100%"><br><div align="center"><sub>«Языки и инструменты» — установка тулчейнов и правка PATH через winget</sub></div></td>
+<td width="50%"><img src="docs/what-disables.png" alt="Что будет выключено" width="100%"><br><div align="center"><sub>«Что выключится» — точный список отключаемых расширений</sub></div></td>
 </tr>
 </table>
 
