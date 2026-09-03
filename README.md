@@ -6,7 +6,7 @@
 
 Галочки по категориям → лаунчер добавляет `--disable-extension` для всего лишнего → редактор стартует лёгким. Эффект полностью обратим.
 
-![version](https://img.shields.io/badge/version-1.2.0-blue)
+![version](https://img.shields.io/badge/version-1.3.0-blue)
 ![python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)
 ![PyQt6](https://img.shields.io/badge/GUI-PyQt6-41CD52?logo=qt&logoColor=white)
 ![platform](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows&logoColor=white)
