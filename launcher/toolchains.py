@@ -19,6 +19,7 @@ id из НАШЕГО каталога, дополнительно пропуще
 Пользовательский ввод в аргументы winget не попадает. Подпроцессы — списком
 аргументов и с CREATE_NO_WINDOW (GUI без консоли не должен мигать окном cmd).
 """
+
 from __future__ import annotations
 
 import logging
@@ -57,6 +58,7 @@ class Package:
     дополнение (например, CMake рядом с компилятором), не входит в набор
     «поставить всё» по умолчанию, но доступен явной кнопкой.
     """
+
     winget_id: str
     title: str
     probe: tuple[str, ...]
@@ -71,6 +73,12 @@ class Package:
     # Варианты версии для выбора в UI (#4): ((winget_id, метка), ...). Первый
     # обычно совпадает с winget_id по умолчанию. Пусто — версия одна.
     versions: tuple[tuple[str, str], ...] = ()
+    # Команда-подтверждение установки: наличия probe в PATH бывает мало. Пример —
+    # .NET: `dotnet.exe` кладут и рантаймы (Docker, приложения), но без SDK
+    # `dotnet build` не работает. Тогда verify_cmd=("--list-sdks",): пакет считаем
+    # установленным, только если запуск `probe[0] --list-sdks` вернул код 0 и
+    # непустой stdout. Пусто — проверяем как раньше, лишь по наличию в PATH.
+    verify_cmd: tuple[str, ...] = ()
 
     def tools(self) -> tuple[str, ...]:
         """Все инструменты пакета: provides, если задан, иначе probe."""
@@ -81,6 +89,7 @@ class Package:
         списка versions — возвращаем как есть (не даём подменить на произвольное).
         title подставляем из versions, чтобы UI/лог показывали выбранную версию."""
         import dataclasses
+
         for vid, vtitle in self.versions:
             if vid == winget_id:
                 return dataclasses.replace(self, winget_id=vid, title=vtitle)
@@ -89,7 +98,7 @@ class Package:
 
 @dataclass(frozen=True)
 class Toolchain:
-    key: str            # совпадает с ключом стека
+    key: str  # совпадает с ключом стека
     title: str
     note: str
     packages: tuple[Package, ...] = field(default_factory=tuple)
@@ -105,13 +114,28 @@ class Toolchain:
 # каталога. Полный каталог — в JSON; здесь только самое необходимое.
 _FALLBACK_TOOLCHAINS: dict[str, Toolchain] = {
     "python": Toolchain(
-        "python", "Python", "Интерпретатор Python и pip.",
-        (Package("Python.Python.3.13", "Python 3.13", ("python", "pip"),
-                 note="Сам прописывает PATH при установке."),)),
+        "python",
+        "Python",
+        "Интерпретатор Python и pip.",
+        (
+            Package(
+                "Python.Python.3.13",
+                "Python 3.13",
+                ("python", "pip"),
+                note="Сам прописывает PATH при установке.",
+            ),
+        ),
+    ),
     "git": Toolchain(
-        "git", "Git", "Система контроля версий — нужна и самой VS Code.",
-        (Package("Git.Git", "Git for Windows", ("git",),
-                 note="Сам прописывает PATH при установке."),)),
+        "git",
+        "Git",
+        "Система контроля версий — нужна и самой VS Code.",
+        (
+            Package(
+                "Git.Git", "Git for Windows", ("git",), note="Сам прописывает PATH при установке."
+            ),
+        ),
+    ),
 }
 
 
@@ -124,8 +148,7 @@ def _package_from_dict(d: dict) -> Package | None:
     probe = d.get("probe")
     if not isinstance(wid, str) or not valid_winget_id(wid):
         return None
-    if (not isinstance(probe, list) or not probe
-            or not all(isinstance(e, str) and e for e in probe)):
+    if not isinstance(probe, list) or not probe or not all(isinstance(e, str) and e for e in probe):
         return None
 
     def _strs(key: str) -> tuple[str, ...]:
@@ -133,9 +156,12 @@ def _package_from_dict(d: dict) -> Package | None:
         return tuple(x for x in v if isinstance(x, str)) if isinstance(v, list) else ()
 
     versions: list[tuple[str, str]] = []
-    for v in (d.get("versions") or ()):
-        if (isinstance(v, dict) and isinstance(v.get("winget_id"), str)
-                and valid_winget_id(v["winget_id"])):
+    for v in d.get("versions") or ():
+        if (
+            isinstance(v, dict)
+            and isinstance(v.get("winget_id"), str)
+            and valid_winget_id(v["winget_id"])
+        ):
             versions.append((v["winget_id"], str(v.get("title") or v["winget_id"])))
     return Package(
         winget_id=wid,
@@ -147,6 +173,7 @@ def _package_from_dict(d: dict) -> Package | None:
         version_arg=str(d.get("version_arg") or "--version"),
         provides=_strs("provides"),
         versions=tuple(versions),
+        verify_cmd=_strs("verify_cmd"),
     )
 
 
@@ -157,6 +184,7 @@ def load_toolchains() -> dict[str, Toolchain]:
     import json
 
     from .paths import TOOLCHAINS_FILE
+
     try:
         data = json.loads(TOOLCHAINS_FILE.read_text(encoding="utf-8-sig"))
     except Exception as e:
@@ -170,12 +198,16 @@ def load_toolchains() -> dict[str, Toolchain]:
     for key, tc_raw in chains_raw.items():
         if not isinstance(tc_raw, dict):
             continue
-        pkgs = [p for p in (_package_from_dict(x) for x in tc_raw.get("packages") or ())
-                if p is not None]
+        pkgs = [
+            p
+            for p in (_package_from_dict(x) for x in tc_raw.get("packages") or ())
+            if p is not None
+        ]
         if not pkgs:
             continue
-        out[key] = Toolchain(key, str(tc_raw.get("title") or key),
-                             str(tc_raw.get("note") or ""), tuple(pkgs))
+        out[key] = Toolchain(
+            key, str(tc_raw.get("title") or key), str(tc_raw.get("note") or ""), tuple(pkgs)
+        )
     return out or dict(_FALLBACK_TOOLCHAINS)
 
 
@@ -216,9 +248,15 @@ def winget_version() -> str | None:
     wg = winget_path()
     if wg:
         try:
-            out = subprocess.run([wg, "--version"], capture_output=True, text=True,
-                                 encoding="utf-8", errors="replace", timeout=15,
-                                 creationflags=_NO_WINDOW)
+            out = subprocess.run(
+                [wg, "--version"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                creationflags=_NO_WINDOW,
+            )
             ver = (out.stdout or "").strip() or None
         except Exception:
             ver = None
@@ -243,6 +281,7 @@ def winget_supports_disable_interactivity() -> bool:
 
 # --- определение, что уже стоит --------------------------------------------
 
+
 def probe_version(exe: str) -> str | None:
     """Короткая строка версии инструмента `exe` или None, если его нет в PATH.
 
@@ -250,32 +289,81 @@ def probe_version(exe: str) -> str | None:
     затем спрашиваем версию. Любой сбой запуска трактуем как «нет»."""
     if not exe or which(exe) is None:
         return None
+    # Разные инструменты понимают разный флаг: `go` хочет `version` (а на
+    # `--version` ругается «flag provided but not defined»), `dotnet` — тоже
+    # `--version`, но на голое `version` пишет ошибку. Поэтому предпочитаем
+    # вариант с кодом возврата 0; ответ упавшей команды (её текст ошибки)
+    # держим лишь как запасной, если ни один флаг не отработал успешно.
+    fallback: str | None = None
     for arg in ("--version", "version"):
         try:
             out = subprocess.run(
-                [exe, arg], capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=15, creationflags=_NO_WINDOW)
+                [exe, arg],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                creationflags=_NO_WINDOW,
+            )
         except Exception:
             continue
         text = ((out.stdout or "") + " " + (out.stderr or "")).strip()
-        if text:
-            return text.splitlines()[0].strip()[:120]
-    return "установлен"   # в PATH есть, но версию не отдал — этого достаточно
+        if not text:
+            continue
+        line = text.splitlines()[0].strip()[:120]
+        if out.returncode == 0:
+            return line  # успешный ответ — берём сразу
+        if fallback is None:
+            fallback = line  # неуспешный — запомним на крайний случай
+    if fallback is not None:
+        return fallback
+    return "установлен"  # в PATH есть, но версию не отдал — этого достаточно
+
+
+def _verify_cmd_ok(pkg: Package) -> bool:
+    """Запустить команду-подтверждение пакета (verify_cmd) на его probe[0] и
+    проверить, что она вернула код 0 и непустой stdout. Для случаев, когда
+    probe в PATH есть, но инструмент неполон (.NET: рантайм без SDK)."""
+    if not pkg.verify_cmd or not pkg.probe:
+        return True
+    exe = pkg.probe[0]
+    if which(exe) is None:
+        return False
+    try:
+        out = subprocess.run(
+            [exe, *pkg.verify_cmd],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            creationflags=_NO_WINDOW,
+        )
+    except Exception:
+        return False
+    return out.returncode == 0 and bool((out.stdout or "").strip())
 
 
 def package_installed(pkg: Package) -> bool:
-    """Пакет считаем установленным, если ЛЮБОЙ его probe-бинарь виден в PATH."""
-    return any(which(exe) is not None for exe in pkg.probe)
+    """Пакет считаем установленным, если ЛЮБОЙ его probe-бинарь виден в PATH.
+    Если задан verify_cmd — дополнительно требуем, чтобы команда-подтверждение
+    отработала (наличия мультиплексора вроде dotnet.exe без SDK недостаточно)."""
+    if not any(which(exe) is not None for exe in pkg.probe):
+        return False
+    return _verify_cmd_ok(pkg)
 
 
 def package_status(pkg: Package) -> dict:
     """{'installed': bool, 'version': str|None} — для строки в UI/CLI."""
+    if not package_installed(pkg):
+        return {"installed": False, "version": None}
     ver = None
     for exe in pkg.probe:
         ver = probe_version(exe)
         if ver:
             break
-    return {"installed": ver is not None, "version": ver}
+    return {"installed": True, "version": ver}
 
 
 def verify_package(pkg: Package) -> tuple[bool, str]:
@@ -294,10 +382,15 @@ def verify_package(pkg: Package) -> tuple[bool, str]:
 # существующему диску — MSYS2 нередко стоит не на C:. Нужны, чтобы предложить
 # «у вас уже есть компилятор, просто он не в PATH», не качая второй раз.
 _DISK_SCAN_RELATIVE: tuple[str, ...] = (
-    r"msys64\ucrt64\bin", r"msys64\mingw64\bin", r"msys64\mingw32\bin",
-    r"mingw64\bin", r"mingw32\bin", r"MinGW\bin",
+    r"msys64\ucrt64\bin",
+    r"msys64\mingw64\bin",
+    r"msys64\mingw32\bin",
+    r"mingw64\bin",
+    r"mingw32\bin",
+    r"MinGW\bin",
     r"ProgramData\mingw64\mingw64\bin",
-    r"Program Files\LLVM\bin", r"Program Files\CMake\bin",
+    r"Program Files\LLVM\bin",
+    r"Program Files\CMake\bin",
     r"Program Files\Git\bin",
 )
 
@@ -316,8 +409,7 @@ def _disk_scan_roots() -> list[str]:
 
 
 # Обратная совместимость: некоторые вызовы/тесты ждут кортеж корней на C:.
-_DISK_SCAN_ROOTS: tuple[str, ...] = tuple(
-    "C:\\" + rel for rel in _DISK_SCAN_RELATIVE)
+_DISK_SCAN_ROOTS: tuple[str, ...] = tuple("C:\\" + rel for rel in _DISK_SCAN_RELATIVE)
 
 
 def find_tool_on_disk(pkg: Package, extra_roots: tuple[str, ...] = ()) -> str | None:
@@ -347,11 +439,11 @@ def find_tool_on_disk(pkg: Package, extra_roots: tuple[str, ...] = ()) -> str | 
 _WINGET_CODE_HINTS: dict[int, str] = {
     -1978335215: "Пакет не найден в источнике winget.",
     -1978335212: "Не найден подходящий установщик (возможно, нужна другая "
-                 "разрядность или область установки).",
+    "разрядность или область установки).",
     -1978335189: "Обновление не требуется — уже установлена актуальная версия.",
     -1978335162: "Установка отменена пользователем.",
     -1978334967: "Установщик требует прав администратора (machine-scope). "
-                 "Согласитесь на запрос UAC или поставьте в user-scope.",
+    "Согласитесь на запрос UAC или поставьте в user-scope.",
     -1978335135: "Уже установлено.",
 }
 
@@ -397,8 +489,8 @@ def missing_required(key: str) -> list[Package]:
 # успех (инструмент на месте), а не ошибка.
 _WINGET_OK_CODES = {
     0,
-    -1978335189,   # 0x8A15002B APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE
-    -1978335135,   # 0x8A150061 no applicable installer / already installed
+    -1978335189,  # 0x8A15002B APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE
+    -1978335135,  # 0x8A150061 no applicable installer / already installed
 }
 
 
@@ -425,26 +517,42 @@ def install_package_elevated(pkg: Package, scope: str = "machine") -> tuple[bool
     проверенным id; пользовательский ввод сюда не попадает."""
     wg = winget_path()
     if wg is None:
-        return False, ("winget не найден. Установите «App Installer» из Microsoft "
-                       "Store — он входит в состав Windows 10/11.")
+        return False, (
+            "winget не найден. Установите «App Installer» из Microsoft "
+            "Store — он входит в состав Windows 10/11."
+        )
     if not valid_winget_id(pkg.winget_id):
         return False, f"Недопустимый id пакета: {pkg.winget_id!r}"
-    inner = ["install", "--id", pkg.winget_id, "--exact",
-             "--accept-source-agreements", "--accept-package-agreements",
-             "--source", "winget"]
+    inner = [
+        "install",
+        "--id",
+        pkg.winget_id,
+        "--exact",
+        "--accept-source-agreements",
+        "--accept-package-agreements",
+        "--source",
+        "winget",
+    ]
     if scope in ("user", "machine"):
         inner += ["--scope", scope]
     # Массив аргументов PowerShell: каждый в одинарных кавычках с экранированием.
     ps_args = ", ".join("'" + a.replace("'", "''") + "'" for a in inner)
-    ps = (f"try {{ $p = Start-Process -FilePath '{wg.replace(chr(39), chr(39) * 2)}' "
-          f"-ArgumentList {ps_args} -Verb RunAs -Wait -PassThru; exit $p.ExitCode }} "
-          f"catch {{ exit 1223 }}")   # 1223 = ERROR_CANCELLED (UAC отклонён)
+    ps = (
+        f"try {{ $p = Start-Process -FilePath '{wg.replace(chr(39), chr(39) * 2)}' "
+        f"-ArgumentList {ps_args} -Verb RunAs -Wait -PassThru; exit $p.ExitCode }} "
+        f"catch {{ exit 1223 }}"
+    )  # 1223 = ERROR_CANCELLED (UAC отклонён)
     log.info("winget install %s (elevated, scope=%s)", pkg.winget_id, scope)
     try:
         out = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=1800, creationflags=_NO_WINDOW)
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=1800,
+            creationflags=_NO_WINDOW,
+        )
     except subprocess.TimeoutExpired:
         return False, "Операция не уложилась в 30 минут и была прервана."
     except Exception as e:
@@ -479,8 +587,7 @@ def uninstall_package(pkg: Package) -> tuple[bool, str]:
     return ok, text
 
 
-def _run_winget(action: str, pkg: Package, scope: str | None,
-                repair: bool) -> tuple[bool, str]:
+def _run_winget(action: str, pkg: Package, scope: str | None, repair: bool) -> tuple[bool, str]:
     """Общий вызов winget для install/upgrade/uninstall.
 
     Возвращает (успех, вывод). Подпроцесс — списком аргументов и с
@@ -488,14 +595,24 @@ def _run_winget(action: str, pkg: Package, scope: str | None,
     Ошибку переводим в человеческую строку через explain_winget_code."""
     wg = winget_path()
     if wg is None:
-        return False, ("winget не найден. Установите «App Installer» из Microsoft "
-                       "Store — он входит в состав Windows 10/11.")
+        return False, (
+            "winget не найден. Установите «App Installer» из Microsoft "
+            "Store — он входит в состав Windows 10/11."
+        )
     if not valid_winget_id(pkg.winget_id):
         return False, f"Недопустимый id пакета: {pkg.winget_id!r}"
 
-    args = [wg, action, "--id", pkg.winget_id, "--exact",
-            "--accept-source-agreements", "--source", "winget"]
-    if winget_supports_disable_interactivity():   # #9: только на winget ≥ 1.4
+    args = [
+        wg,
+        action,
+        "--id",
+        pkg.winget_id,
+        "--exact",
+        "--accept-source-agreements",
+        "--source",
+        "winget",
+    ]
+    if winget_supports_disable_interactivity():  # #9: только на winget ≥ 1.4
         args.append("--disable-interactivity")
     if action in ("install", "upgrade"):
         args += ["--accept-package-agreements"]
@@ -504,8 +621,14 @@ def _run_winget(action: str, pkg: Package, scope: str | None,
     log.info("winget %s %s (scope=%s)", action, pkg.winget_id, scope)
     try:
         out = subprocess.run(
-            args, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=1800, creationflags=_NO_WINDOW)
+            args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=1800,
+            creationflags=_NO_WINDOW,
+        )
     except subprocess.TimeoutExpired:
         log.warning("winget %s %s: таймаут", action, pkg.winget_id)
         return False, "Операция не уложилась в 30 минут и была прервана."
@@ -529,8 +652,7 @@ def _run_winget(action: str, pkg: Package, scope: str | None,
                 log.info("%s", note)
     else:
         reason = explain_winget_code(out.returncode, text)
-        log.warning("winget %s %s: код %s — %s", action, pkg.winget_id,
-                    out.returncode, reason)
+        log.warning("winget %s %s: код %s — %s", action, pkg.winget_id, out.returncode, reason)
         text = (f"{reason}\n\n{text}").strip() if text else reason
     return ok, text
 
@@ -563,8 +685,8 @@ def find_bin_dir_for(pkg: Package, max_entries: int = 40000) -> str | None:
         # Сначала подкаталоги, где в имени встречается id пакета — так мы почти
         # сразу попадаем в нужную ветку и не обходим соседние пакеты.
         subdirs = sorted(
-            (p for p in root.iterdir() if p.is_dir()),
-            key=lambda p: id_hint not in p.name.lower())
+            (p for p in root.iterdir() if p.is_dir()), key=lambda p: id_hint not in p.name.lower()
+        )
         for sub in subdirs:
             for dirpath, _dirs, filenames in os.walk(sub):
                 low = {f.lower() for f in filenames}
@@ -604,6 +726,7 @@ def repair_path_for(pkg: Package) -> str:
 
 # --- связь тулчейна с настройками VS Code (чтобы C++ реально заработал) ------
 
+
 def _compiler_path(exe: str) -> str | None:
     """Полный путь к компилятору `exe` (например g++) — в PATH или на диске.
     Нужен, чтобы прописать его в C_Cpp.default.compilerPath."""
@@ -622,18 +745,32 @@ def settings_for_toolchain(key: str) -> dict:
     расширение сразу знало, где компилятор, и IntelliSense/сборка заработали
     без ручной правки. Пусто, если инструмент не найден (нечего прописывать).
 
-    Пока осмысленно для C/C++: C_Cpp.default.compilerPath + разумные стандарты.
+    Осмысленно для C/C++ (путь к компилятору) и Python (путь к интерпретатору).
     Для остальных языков расширения находят тулчейн по PATH сами."""
     if key == "cpp":
-        gpp = _compiler_path("g++") or _compiler_path("clang++")
+        # Предпочитаем g++, иначе clang++. Режим IntelliSense должен совпадать с
+        # выбранным компилятором: для clang — windows-clang-x64, иначе расширение
+        # применит неверную модель препроцессора/интринсиков.
+        gpp = _compiler_path("g++")
+        mode = "windows-gcc-x64"
+        if not gpp:
+            gpp = _compiler_path("clang++")
+            mode = "windows-clang-x64"
         if not gpp:
             return {}
         return {
             "C_Cpp.default.compilerPath": gpp,
             "C_Cpp.default.cStandard": "c17",
             "C_Cpp.default.cppStandard": "c++20",
-            "C_Cpp.default.intelliSenseMode": "windows-gcc-x64",
+            "C_Cpp.default.intelliSenseMode": mode,
         }
+    if key == "python":
+        # Расширение Python само ищет интерпретаторы, но явный путь избавляет от
+        # «Select Interpreter» на первом запуске и фиксирует нужный python.
+        py = which("python") or which("python3")
+        if not py:
+            return {}
+        return {"python.defaultInterpreterPath": py}
     return {}
 
 
@@ -647,6 +784,7 @@ def configure_vscode_for(key: str, code_cli: str | None) -> tuple[bool, str]:
         return False, "Нечего настраивать: инструмент не найден в PATH/на диске."
     from .vscode import vscode_user_settings_path
     from .settings_apply import apply_settings
+
     path = vscode_user_settings_path(code_cli)
     if path is None:
         return False, "Не удалось определить путь к settings.json VS Code."
@@ -656,6 +794,7 @@ def configure_vscode_for(key: str, code_cli: str | None) -> tuple[bool, str]:
 
 
 # --- связь с автоопределением стека по папке проекта ------------------------
+
 
 def toolchain_for_stack(stack_key: str) -> Toolchain | None:
     """Тулчейн, соответствующий ключу стека (совпадает по ключу)."""
@@ -672,6 +811,7 @@ def missing_toolchains_for(folder: str) -> list[str]:
     if not folder:
         return []
     from .detect import detect_stacks
+
     stacks = detect_stacks(folder, available=set(TOOLCHAINS))
     return [k for k in stacks if missing_required(k)]
 
@@ -684,9 +824,11 @@ def missing_toolchains_for(folder: str) -> list[str]:
 
 # ключ тулчейна -> кортежи (имя менеджера, exe для which, env-переменная).
 _LANG_MANAGERS: dict[str, tuple[tuple[str, str, str], ...]] = {
-    "web": (("nvm-windows", "nvm", "NVM_HOME"),
-            ("fnm", "fnm", "FNM_DIR"),
-            ("Volta", "volta", "VOLTA_HOME")),
+    "web": (
+        ("nvm-windows", "nvm", "NVM_HOME"),
+        ("fnm", "fnm", "FNM_DIR"),
+        ("Volta", "volta", "VOLTA_HOME"),
+    ),
     "python": (("pyenv-win", "pyenv", "PYENV"),),
 }
 
@@ -702,8 +844,9 @@ def _manager_present(exe: str, env_var: str) -> bool:
 def detected_managers_for(key: str) -> list[str]:
     """Имена установленных менеджеров версий, управляющих языком тулчейна `key`
     (#7). Пусто — конфликта нет."""
-    return [name for name, exe, env_var in _LANG_MANAGERS.get(key, ())
-            if _manager_present(exe, env_var)]
+    return [
+        name for name, exe, env_var in _LANG_MANAGERS.get(key, ()) if _manager_present(exe, env_var)
+    ]
 
 
 def manager_warning_for(key: str) -> str:
@@ -712,12 +855,15 @@ def manager_warning_for(key: str) -> str:
     names = detected_managers_for(key)
     if not names:
         return ""
-    return ("Обнаружен менеджер версий: " + ", ".join(names) + ". "
-            "Установка через winget может конфликтовать с ним за PATH — "
-            "возможно, версию лучше ставить средствами самого менеджера.")
+    return (
+        "Обнаружен менеджер версий: " + ", ".join(names) + ". "
+        "Установка через winget может конфликтовать с ним за PATH — "
+        "возможно, версию лучше ставить средствами самого менеджера."
+    )
 
 
 # --- что обновить (#5) -----------------------------------------------------
+
 
 def _catalog_known_ids() -> set[str]:
     """Все winget-id из каталога, включая варианты версий — по ним ищем в выводе
@@ -744,8 +890,15 @@ def list_upgradable_ids(timeout: float = 120) -> set[str]:
     if winget_supports_disable_interactivity():
         args.append("--disable-interactivity")
     try:
-        out = subprocess.run(args, capture_output=True, text=True, encoding="utf-8",
-                             errors="replace", timeout=timeout, creationflags=_NO_WINDOW)
+        out = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            creationflags=_NO_WINDOW,
+        )
     except Exception:
         return set()
     known = _catalog_known_ids()
@@ -767,12 +920,12 @@ def outdated_packages(upgradable: set[str] | None = None) -> list[dict]:
     for key, chain in TOOLCHAINS.items():
         for pkg in chain.packages:
             if pkg.winget_id in upgradable and package_installed(pkg):
-                rows.append({"key": key, "package": pkg,
-                             "version": package_status(pkg)["version"]})
+                rows.append({"key": key, "package": pkg, "version": package_status(pkg)["version"]})
     return rows
 
 
 # --- доктор окружения (#8) --------------------------------------------------
+
 
 def _java_home_health() -> dict:
     """Проверка JAVA_HOME: задан ли и указывает ли на JDK (есть bin\\java.exe)."""
@@ -782,8 +935,83 @@ def _java_home_health() -> dict:
     java_exe = Path(jh) / "bin" / "java.exe"
     if java_exe.exists():
         return {"set": True, "ok": True, "path": jh, "reason": ""}
-    return {"set": True, "ok": False, "path": jh,
-            "reason": "указывает не на JDK (нет bin\\java.exe)"}
+    return {
+        "set": True,
+        "ok": False,
+        "path": jh,
+        "reason": "указывает не на JDK (нет bin\\java.exe)",
+    }
+
+
+def find_jdk_home() -> str | None:
+    """Каталог установленного JDK (значение для JAVA_HOME) или None.
+
+    Сначала — по `javac` в PATH: он лежит в <JDK>\\bin, значит home — родитель
+    каталога bin (javac, а не java: JRE тоже даёт java.exe, но без компилятора —
+    для сборки нужен именно JDK). Затем — типовые каталоги установки Temurin/
+    других OpenJDK на всех дисках, самая свежая версия первой."""
+    javac = which("javac")
+    if javac:
+        home = Path(javac).resolve().parent.parent
+        if (home / "bin" / "java.exe").exists():
+            return str(home)
+    patterns = (
+        r"Program Files\Eclipse Adoptium",
+        r"Program Files\Java",
+        r"Program Files\Microsoft\jdk",
+        r"Program Files\Amazon Corretto",
+        r"Program Files\Zulu",
+    )
+    candidates: list[Path] = []
+    for letter in "CDEFGH":
+        drive = f"{letter}:\\"
+        if not os.path.isdir(drive):
+            continue
+        for rel in patterns:
+            base = Path(drive + rel)
+            if not base.is_dir():
+                continue
+            for sub in base.iterdir():
+                if sub.is_dir() and (sub / "bin" / "javac.exe").exists():
+                    candidates.append(sub)
+    if candidates:
+        # Свежую версию — вперёд: сортируем по имени каталога в обратном порядке
+        # (jdk-21 > jdk-17), этого достаточно для типовых схем именования.
+        candidates.sort(key=lambda p: p.name, reverse=True)
+        return str(candidates[0])
+    return None
+
+
+def repair_java_home() -> tuple[bool, str]:
+    """Настроить JAVA_HOME, если он не задан или указывает не на JDK (#8 → фикс).
+
+    Находит установленный JDK (find_jdk_home) и прописывает JAVA_HOME в
+    пользовательские переменные окружения (без прав администратора). Многие
+    Java-инструменты (Maven, Gradle, некоторые расширения) читают именно
+    JAVA_HOME, а не PATH. Если JDK найден дисковым сканом и его `bin` ещё не в
+    PATH — дописываем и его, иначе `java`/`javac` из терминала не запустятся.
+    Возвращает (изменили_ли, сообщение)."""
+    health = _java_home_health()
+    if health["ok"]:
+        return False, f"JAVA_HOME уже настроен верно: {health['path']}"
+    home = find_jdk_home()
+    if not home:
+        return False, (
+            "JDK не найден. Сначала установите его "
+            "(тулчейн «Java») — тогда JAVA_HOME можно будет прописать."
+        )
+    ok, msg = env_path.set_user_env_var("JAVA_HOME", home)
+    if ok:
+        log.info("JAVA_HOME установлен: %s", home)
+    # JDK мог быть найден мимо PATH (дисковый скан) — тогда bin ещё не виден.
+    bindir = str(Path(home) / "bin")
+    if not env_path.is_on_path(bindir):
+        added, amsg = env_path.add_to_user_path(bindir)
+        if added:
+            ok = True
+            msg = f"{msg}\n{amsg}" if msg else amsg
+            log.info("JDK bin добавлен в PATH: %s", bindir)
+    return ok, msg
 
 
 def environment_report() -> dict:
@@ -795,19 +1023,41 @@ def environment_report() -> dict:
         for pkg in chain.packages:
             st = package_status(pkg)
             if st["installed"]:
-                tools.append({"key": key, "title": pkg.title,
-                              "version": st["version"]})
-    return {"tools": tools, "path": env_path.path_health(),
-            "java_home": _java_home_health(),
-            "winget": winget_version()}
+                tools.append({"key": key, "title": pkg.title, "version": st["version"]})
+    return {
+        "tools": tools,
+        "path": env_path.path_health(),
+        # Раздельно user/machine (#3): чистка касается только пользовательского
+        # PATH, системный требует прав администратора — покажем это явно.
+        "path_user": env_path.path_health(env_path.read_user_path()),
+        "path_machine": env_path.path_health(env_path.read_machine_path()),
+        "java_home": _java_home_health(),
+        "winget": winget_version(),
+    }
 
 
 # --- сводка (для CLI/selftest/UI) ------------------------------------------
+
+
+def catalog_path_hints() -> tuple[str, ...]:
+    """Все path_hints из каталога тулчейнов — резервные каталоги `bin`, которые
+    чистка PATH не должна удалять как «мёртвые» (архивная сборка ещё не
+    распакована / инструмент поставят позже). Передаётся в clean_*_path как keep."""
+    hints: list[str] = []
+    for chain in TOOLCHAINS.values():
+        for pkg in chain.packages:
+            hints.extend(pkg.path_hints)
+    return tuple(dict.fromkeys(hints))  # уникальные, порядок сохранён
+
 
 def toolchain_summary() -> dict:
     """Короткая сводка по всем тулчейнам: сколько всего, сколько с полностью
     установленными обязательными пакетами, список недостающих ключей."""
     total = len(TOOLCHAINS)
     missing = [k for k in TOOLCHAINS if missing_required(k)]
-    return {"total": total, "ready": total - len(missing),
-            "missing": missing, "winget": winget_available()}
+    return {
+        "total": total,
+        "ready": total - len(missing),
+        "missing": missing,
+        "winget": winget_available(),
+    }

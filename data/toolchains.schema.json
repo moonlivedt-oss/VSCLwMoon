@@ -75,6 +75,11 @@
             },
             "additionalProperties": false
           }
+        },
+        "verify_cmd": {
+          "type": "array",
+          "description": "Аргументы команды-подтверждения на probe[0] (напр. [\"--list-sdks\"] для .NET): пакет установлен, только если она вернула код 0 и непустой вывод. Нужно, когда probe в PATH есть, а инструмент неполон (рантайм .NET без SDK).",
+          "items": { "type": "string" }
         }
       },
       "additionalProperties": false
