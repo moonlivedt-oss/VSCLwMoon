@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Обновления версий GitHub Actions в .github/workflows (checkout, setup-python,
+  # upload-artifact, action-gh-release). Раз в неделю, чтобы CI не отставал от
+  # актуальных экшенов и их фиксов безопасности.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"
+
+  # Обновления Python-зависимостей из pyproject.toml (PyQt6 и dev-инструменты).
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"
+    labels:
+      - "dependencies"

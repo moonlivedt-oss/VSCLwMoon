@@ -10,6 +10,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Новый пуш в ту же ветку/PR отменяет ещё не завершившийся прогон — не тратим
+# раннеры на устаревшие коммиты (сборку по тегу не трогаем — у неё свой ref).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
   lint:
     # Линт и типы платформонезависимы — гоняем на быстром ubuntu без PyQt6.
@@ -20,6 +26,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install linters
         run: pip install "ruff>=0.6" "mypy>=1.11"
       - name: Ruff (style + imports)
@@ -40,6 +48,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install deps (project + dev extras)
         run: pip install .[dev]
       - name: Run tests
@@ -57,6 +67,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'   # exe собираем на той же версии, что у автора
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install deps (project + dev extras)
         run: pip install .[dev]
       - name: Build exe
