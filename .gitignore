@@ -16,6 +16,9 @@ launcher_config.json
 launcher_config.json.*.tmp
 launcher.log
 launcher.log.*
+# Бэкапы PATH, которые лаунчер пишет рядом с конфигом перед чисткой.
+path_backup_*.txt
+machine_path_backup_*.txt
 
 # ОС / редакторы
 Thumbs.db

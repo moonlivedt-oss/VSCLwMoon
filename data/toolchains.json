@@ -60,11 +60,12 @@
       "note": "OpenJDK (Eclipse Temurin): java и javac.",
       "packages": [
         {
-          "winget_id": "EclipseAdoptium.Temurin.21.JDK",
-          "title": "Temurin JDK 21 (LTS)",
+          "winget_id": "EclipseAdoptium.Temurin.25.JDK",
+          "title": "Temurin JDK 25 (LTS)",
           "probe": ["java", "javac"],
-          "note": "LTS-сборка OpenJDK. Прописывает JAVA_HOME и PATH.",
+          "note": "LTS-сборка OpenJDK. Лаунчер выставит JAVA_HOME после установки.",
           "versions": [
+            {"winget_id": "EclipseAdoptium.Temurin.25.JDK", "title": "Temurin JDK 25 (LTS)"},
             {"winget_id": "EclipseAdoptium.Temurin.21.JDK", "title": "Temurin JDK 21 (LTS)"},
             {"winget_id": "EclipseAdoptium.Temurin.17.JDK", "title": "Temurin JDK 17 (LTS)"}
           ]
@@ -104,6 +105,7 @@
           "title": ".NET SDK 9",
           "probe": ["dotnet"],
           "note": "Сам прописывает PATH при установке.",
+          "verify_cmd": ["--list-sdks"],
           "versions": [
             {"winget_id": "Microsoft.DotNet.SDK.9", "title": ".NET SDK 9"},
             {"winget_id": "Microsoft.DotNet.SDK.8", "title": ".NET SDK 8 (LTS)"}
@@ -229,6 +231,42 @@
           "title": "Zig",
           "probe": ["zig"],
           "note": "Архивная сборка — PATH может прописать сам лаунчер."
+        }
+      ]
+    },
+    "dart": {
+      "title": "Dart",
+      "note": "Dart SDK — язык и инструменты (в т.ч. основа Flutter).",
+      "packages": [
+        {
+          "winget_id": "Google.DartSDK",
+          "title": "Dart SDK",
+          "probe": ["dart"],
+          "note": "Проверь PATH после установки — при необходимости добавь каталог bin."
+        }
+      ]
+    },
+    "julia": {
+      "title": "Julia",
+      "note": "Julia — язык для научных и численных вычислений.",
+      "packages": [
+        {
+          "winget_id": "Julialang.Julia",
+          "title": "Julia",
+          "probe": ["julia"],
+          "note": "Сам прописывает PATH при установке."
+        }
+      ]
+    },
+    "swift": {
+      "title": "Swift",
+      "note": "Swift toolchain — компилятор и менеджер пакетов Swift для Windows.",
+      "packages": [
+        {
+          "winget_id": "Swift.Toolchain",
+          "title": "Swift",
+          "probe": ["swift"],
+          "note": "Крупный пакет. Может требовать компоненты Visual Studio."
         }
       ]
     },

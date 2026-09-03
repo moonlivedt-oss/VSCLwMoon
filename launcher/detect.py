@@ -10,6 +10,7 @@
 поэтому здесь можно детектировать щедро: стек без установленных плагинов
 всё равно не будет предложен.
 """
+
 from __future__ import annotations
 
 import os
@@ -17,39 +18,82 @@ from pathlib import Path
 
 # Точное имя файла в корне/подпапке -> ключ стека.
 FILENAME_MARKERS: dict[str, str] = {
-    "requirements.txt": "python", "pyproject.toml": "python", "pipfile": "python",
-    "setup.py": "python", "setup.cfg": "python", "poetry.lock": "python",
+    "requirements.txt": "python",
+    "pyproject.toml": "python",
+    "pipfile": "python",
+    "setup.py": "python",
+    "setup.cfg": "python",
+    "poetry.lock": "python",
     "environment.yml": "python",
-    "package.json": "web", "tsconfig.json": "web", "jsconfig.json": "web",
-    "go.mod": "go", "go.sum": "go",
-    "cargo.toml": "rust", "cargo.lock": "rust",
-    "pom.xml": "java", "build.gradle": "java", "build.gradle.kts": "java",
+    "package.json": "web",
+    "tsconfig.json": "web",
+    "jsconfig.json": "web",
+    "go.mod": "go",
+    "go.sum": "go",
+    "cargo.toml": "rust",
+    "cargo.lock": "rust",
+    "pom.xml": "java",
+    "build.gradle": "java",
+    "build.gradle.kts": "java",
     "settings.gradle": "java",
-    "dockerfile": "docker", "docker-compose.yml": "docker",
-    "docker-compose.yaml": "docker", "compose.yml": "docker",
-    "compose.yaml": "docker", ".dockerignore": "docker",
+    "dockerfile": "docker",
+    "docker-compose.yml": "docker",
+    "docker-compose.yaml": "docker",
+    "compose.yml": "docker",
+    "compose.yaml": "docker",
+    ".dockerignore": "docker",
     "composer.json": "php",
-    "gemfile": "ruby", "gemfile.lock": "ruby",
-    "cmakelists.txt": "cpp", "meson.build": "cpp",
+    "gemfile": "ruby",
+    "gemfile.lock": "ruby",
+    "pubspec.yaml": "dart",
+    "pubspec.yml": "dart",
+    "package.swift": "swift",
+    "cmakelists.txt": "cpp",
+    "meson.build": "cpp",
     "svelte.config.js": "svelte_astro",
-    "azure-pipelines.yml": "azure", "azure-pipelines.yaml": "azure",
+    "azure-pipelines.yml": "azure",
+    "azure-pipelines.yaml": "azure",
 }
 
 # Расширение файла (в нижнем регистре, с точкой) -> ключ стека.
 SUFFIX_MARKERS: dict[str, str] = {
     ".py": "python",
-    ".ts": "web", ".tsx": "web", ".jsx": "web", ".vue": "web",
-    ".cs": "dotnet", ".csproj": "dotnet", ".sln": "dotnet",
-    ".rs": "rust", ".go": "go", ".java": "java", ".kt": "java",
-    ".cpp": "cpp", ".cxx": "cpp", ".cc": "cpp", ".hpp": "cpp",
-    ".hh": "cpp", ".c": "cpp", ".h": "cpp",
-    ".php": "php", ".rb": "ruby", ".lua": "lua", ".sql": "sql",
-    ".md": "markdown", ".markdown": "markdown",
-    ".ps1": "powershell", ".psm1": "powershell",
-    ".graphql": "graphql", ".gql": "graphql",
-    ".tf": "terraform", ".tfvars": "terraform",
+    ".ts": "web",
+    ".tsx": "web",
+    ".jsx": "web",
+    ".vue": "web",
+    ".cs": "dotnet",
+    ".csproj": "dotnet",
+    ".sln": "dotnet",
+    ".rs": "rust",
+    ".go": "go",
+    ".java": "java",
+    ".kt": "java",
+    ".cpp": "cpp",
+    ".cxx": "cpp",
+    ".cc": "cpp",
+    ".hpp": "cpp",
+    ".hh": "cpp",
+    ".c": "cpp",
+    ".h": "cpp",
+    ".php": "php",
+    ".rb": "ruby",
+    ".lua": "lua",
+    ".sql": "sql",
+    ".dart": "dart",
+    ".jl": "julia",
+    ".swift": "swift",
+    ".md": "markdown",
+    ".markdown": "markdown",
+    ".ps1": "powershell",
+    ".psm1": "powershell",
+    ".graphql": "graphql",
+    ".gql": "graphql",
+    ".tf": "terraform",
+    ".tfvars": "terraform",
     ".ipynb": "data",
-    ".svelte": "svelte_astro", ".astro": "svelte_astro",
+    ".svelte": "svelte_astro",
+    ".astro": "svelte_astro",
 }
 
 # Имя файла начинается с... -> ключ стека (для config-файлов с суффиксом версии).
@@ -61,16 +105,37 @@ PREFIX_MARKERS: tuple[tuple[str, str], ...] = (
 )
 
 # Каталоги, которые не открывают ничего нового, но раздувают обход.
-PRUNE_DIRS: frozenset[str] = frozenset({
-    ".git", "node_modules", ".venv", "venv", "env", "__pycache__",
-    "dist", "build", "out", "target", ".next", ".nuxt", "vendor",
-    "bin", "obj", ".idea", ".vscode", "coverage", ".mypy_cache",
-    ".pytest_cache", ".gradle", ".tox", "site-packages", ".terraform",
-})
+PRUNE_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        "node_modules",
+        ".venv",
+        "venv",
+        "env",
+        "__pycache__",
+        "dist",
+        "build",
+        "out",
+        "target",
+        ".next",
+        ".nuxt",
+        "vendor",
+        "bin",
+        "obj",
+        ".idea",
+        ".vscode",
+        "coverage",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".gradle",
+        ".tox",
+        "site-packages",
+        ".terraform",
+    }
+)
 
 
-def detect_stacks(folder, available: set[str] | None = None,
-                  max_entries: int = 4000) -> set[str]:
+def detect_stacks(folder, available: set[str] | None = None, max_entries: int = 4000) -> set[str]:
     """Ключи стеков, подходящих проекту в `folder`.
 
     Обход прунит тяжёлые каталоги и останавливается после `max_entries`
@@ -122,11 +187,13 @@ def _loads_jsonc(text: str):
     файлы VS Code часто с комментариями. Сначала честный json, при неудаче —
     грубая чистка комментариев и повтор. None, если не разобралось."""
     import json
+
     try:
         return json.loads(text)
     except Exception:
         pass
     import re
+
     no_block = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
     no_line = re.sub(r"(^|\s)//[^\n]*", "", no_block)
     no_trail = re.sub(r",(\s*[}\]])", r"\1", no_line)

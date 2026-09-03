@@ -16,6 +16,7 @@ r"""Тихий режим запуска без GUI (#10, расширен #4/#5
 Коды возврата: 0 — успех/dry-run; 2 — ошибка использования (нет CLI VS Code,
 неизвестный пресет для ярлыка); 3 — процесс VS Code не удалось запустить.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -25,12 +26,18 @@ import sys
 from .categories import WEIGHT, WEIGHT_LABEL, build_ext_index, load_categories
 from .config import load_config
 from .launch import (
-    build_launch_args, build_launch_command, compute_disabled, estimate_saved_mb,
+    build_launch_args,
+    build_launch_command,
+    compute_disabled,
+    estimate_saved_mb,
 )
 from .manifests import build_dependency_map, read_extension_manifests
 from .presets import build_shortcut_cmd, normalize_preset, preset_stacks
 from .vscode import (
-    kill_vscode, launch_detached, load_installed, resolve_code_cli,
+    kill_vscode,
+    launch_detached,
+    load_installed,
+    resolve_code_cli,
 )
 from . import toolchains as _tc
 
@@ -78,55 +85,134 @@ def _merge_options(args, cfg: dict) -> dict:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="vscode_launcher",
-        description="Запуск VS Code с выбранным набором стеков расширений.")
-    p.add_argument("--stacks", metavar="a,b,c",
-                   help="ключи стеков через запятую (как в data/categories.json)")
+        prog="vscode_launcher", description="Запуск VS Code с выбранным набором стеков расширений."
+    )
+    p.add_argument(
+        "--stacks", metavar="a,b,c", help="ключи стеков через запятую (как в data/categories.json)"
+    )
     p.add_argument("--preset", metavar="ИМЯ", help="имя сохранённого пресета")
     p.add_argument("--folder", metavar="ПУТЬ", default="", help="папка проекта")
     p.add_argument("--profile", metavar="ИМЯ", default="", help="профиль VS Code")
-    p.add_argument("--bare", action="store_true",
-                   help="голый режим: полностью без расширений")
+    p.add_argument("--bare", action="store_true", help="голый режим: полностью без расширений")
     p.add_argument("--gpu-off", action="store_true", help="--disable-gpu")
-    p.add_argument("--kill", action="store_true",
-                   help="жёстко закрыть VS Code перед стартом (память освободится)")
-    p.add_argument("--no-new-window", action="store_true",
-                   help="не форсировать новое окно")
-    p.add_argument("--code-cli", metavar="ПУТЬ", default="",
-                   help="путь к code.cmd/Code.exe (портативная/нестандартная сборка)")
-    p.add_argument("--run", action="store_true",
-                   help="действительно запустить (без флага — dry-run: только показать команду)")
-    p.add_argument("--json", action="store_true",
-                   help="машиночитаемый вывод (для скриптов)")
-    p.add_argument("--quiet", action="store_true",
-                   help="без пояснительного вывода (для ярлыков)")
-    p.add_argument("--list-presets", action="store_true",
-                   help="показать сохранённые пресеты и выйти")
-    p.add_argument("--list-stacks", action="store_true",
-                   help="показать доступные стеки (ключ, нагрузка, установлено) и выйти")
-    p.add_argument("--make-shortcut", metavar="ПУТЬ", default="",
-                   help="создать .cmd-ярлык, открывающий VS Code с пресетом (--preset)")
-    p.add_argument("--list-toolchains", action="store_true",
-                   help="показать доступные языковые тулчейны и выйти")
-    p.add_argument("--toolchain-status", metavar="КЛЮЧ", nargs="?",
-                   const="*", default=None,
-                   help="статус тулчейна (напр. cpp); без значения — по всем")
-    p.add_argument("--install-toolchain", metavar="КЛЮЧ", default="",
-                   help="установить тулчейн через winget (напр. cpp) и прописать PATH")
-    p.add_argument("--upgrade-toolchain", metavar="КЛЮЧ", default="",
-                   help="обновить установленные пакеты тулчейна через winget upgrade")
-    p.add_argument("--uninstall-toolchain", metavar="КЛЮЧ", default="",
-                   help="удалить пакеты тулчейна через winget и очистить PATH")
-    p.add_argument("--configure-vscode", metavar="КЛЮЧ", default="",
-                   help="прописать компилятор тулчейна в settings.json VS Code (сейчас cpp)")
-    p.add_argument("--add-existing", metavar="КЛЮЧ", default="",
-                   help="добавить в PATH уже установленный на диске компилятор (без загрузки)")
-    p.add_argument("--include-optional", action="store_true",
-                   help="с --install/--upgrade-toolchain: и дополнительные пакеты (CMake/Ninja/Clang)")
-    p.add_argument("--doctor", action="store_true",
-                   help="проверить окружение: тулчейны с версиями, здоровье PATH, JAVA_HOME (#8)")
-    p.add_argument("--outdated", action="store_true",
-                   help="показать тулчейны, для которых доступно обновление (winget upgrade) (#5)")
+    p.add_argument(
+        "--kill",
+        action="store_true",
+        help="жёстко закрыть VS Code перед стартом (память освободится)",
+    )
+    p.add_argument("--no-new-window", action="store_true", help="не форсировать новое окно")
+    p.add_argument(
+        "--code-cli",
+        metavar="ПУТЬ",
+        default="",
+        help="путь к code.cmd/Code.exe (портативная/нестандартная сборка)",
+    )
+    p.add_argument(
+        "--run",
+        action="store_true",
+        help="действительно запустить (без флага — dry-run: только показать команду)",
+    )
+    p.add_argument("--json", action="store_true", help="машиночитаемый вывод (для скриптов)")
+    p.add_argument("--quiet", action="store_true", help="без пояснительного вывода (для ярлыков)")
+    p.add_argument(
+        "--list-presets", action="store_true", help="показать сохранённые пресеты и выйти"
+    )
+    p.add_argument(
+        "--list-stacks",
+        action="store_true",
+        help="показать доступные стеки (ключ, нагрузка, установлено) и выйти",
+    )
+    p.add_argument(
+        "--make-shortcut",
+        metavar="ПУТЬ",
+        default="",
+        help="создать .cmd-ярлык, открывающий VS Code с пресетом (--preset)",
+    )
+    p.add_argument(
+        "--list-toolchains",
+        action="store_true",
+        help="показать доступные языковые тулчейны и выйти",
+    )
+    p.add_argument(
+        "--toolchain-status",
+        metavar="КЛЮЧ",
+        nargs="?",
+        const="*",
+        default=None,
+        help="статус тулчейна (напр. cpp); без значения — по всем",
+    )
+    p.add_argument(
+        "--install-toolchain",
+        metavar="КЛЮЧ",
+        default="",
+        help="установить тулчейн через winget (напр. cpp) и прописать PATH",
+    )
+    p.add_argument(
+        "--upgrade-toolchain",
+        metavar="КЛЮЧ",
+        default="",
+        help="обновить установленные пакеты тулчейна через winget upgrade",
+    )
+    p.add_argument(
+        "--uninstall-toolchain",
+        metavar="КЛЮЧ",
+        default="",
+        help="удалить пакеты тулчейна через winget и очистить PATH",
+    )
+    p.add_argument(
+        "--configure-vscode",
+        metavar="КЛЮЧ",
+        default="",
+        help="прописать тулчейн в settings.json VS Code (cpp: компилятор, python: интерпретатор)",
+    )
+    p.add_argument(
+        "--add-existing",
+        metavar="КЛЮЧ",
+        default="",
+        help="добавить в PATH уже установленный на диске компилятор (без загрузки)",
+    )
+    p.add_argument(
+        "--include-optional",
+        action="store_true",
+        help="с --install/--upgrade-toolchain: и дополнительные пакеты (CMake/Ninja/Clang)",
+    )
+    p.add_argument(
+        "--doctor",
+        action="store_true",
+        help="проверить окружение: тулчейны с версиями, здоровье PATH, JAVA_HOME (#8)",
+    )
+    p.add_argument(
+        "--outdated",
+        action="store_true",
+        help="показать тулчейны, для которых доступно обновление (winget upgrade) (#5)",
+    )
+    p.add_argument(
+        "--clean-path",
+        action="store_true",
+        help="убрать из пользовательского PATH дубли и мёртвые записи "
+        "(по умолчанию — предпросмотр; примени флагом --yes)",
+    )
+    p.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="с --clean-path: применить изменения без подтверждения",
+    )
+    p.add_argument(
+        "--keep-dead",
+        action="store_true",
+        help="с --clean-path: убрать только дубли, мёртвые записи оставить",
+    )
+    p.add_argument(
+        "--machine",
+        action="store_true",
+        help="с --clean-path: чистить СИСТЕМНЫЙ PATH (нужны права админа; поднимется UAC)",
+    )
+    p.add_argument(
+        "--fix-java-home",
+        action="store_true",
+        help="найти установленный JDK и прописать JAVA_HOME (без прав админа)",
+    )
     return p
 
 
@@ -137,11 +223,13 @@ def _launcher_invocation() -> list[str]:
     if getattr(sys, "frozen", False):
         return [sys.executable]
     from pathlib import Path
+
     py = sys.executable
     pyw = str(Path(py).with_name("pythonw.exe"))
     if Path(pyw).exists():
         py = pyw
     from .paths import ROOT
+
     return [py, str(ROOT / "vscode_launcher.py")]
 
 
@@ -152,9 +240,15 @@ def _list_stacks(cats: dict, installed: list[str], ext_index: dict, as_json: boo
         exts = cat.get("extensions", [])
         n_inst = sum(1 for e in exts if e.lower() in inst)
         weight = WEIGHT.get(key, "light")
-        rows.append({"key": key, "title": cat.get("title", key),
-                     "weight": weight, "extensions": len(exts),
-                     "installed": n_inst})
+        rows.append(
+            {
+                "key": key,
+                "title": cat.get("title", key),
+                "weight": weight,
+                "extensions": len(exts),
+                "installed": n_inst,
+            }
+        )
     if as_json:
         print(_json.dumps(rows, ensure_ascii=False, indent=2))
         return 0
@@ -164,8 +258,10 @@ def _list_stacks(cats: dict, installed: list[str], ext_index: dict, as_json: boo
     print("Доступные стеки:")
     for r in rows:
         label = WEIGHT_LABEL.get(r["weight"], r["weight"])
-        print(f"  {r['key']:<14} [{label:<8}] "
-              f"установлено {r['installed']}/{r['extensions']}  — {r['title']}")
+        print(
+            f"  {r['key']:<14} [{label:<8}] "
+            f"установлено {r['installed']}/{r['extensions']}  — {r['title']}"
+        )
     return 0
 
 
@@ -179,6 +275,7 @@ def _make_shortcut(args, cfg: dict) -> int:
     body = build_shortcut_cmd(_launcher_invocation(), args.preset)
     try:
         from pathlib import Path
+
         path = Path(args.make_shortcut)
         if path.suffix.lower() != ".cmd":
             path = path.with_suffix(".cmd")
@@ -186,8 +283,7 @@ def _make_shortcut(args, cfg: dict) -> int:
     except Exception as e:
         print("Не удалось записать ярлык:", e)
         return 2
-    print(f"Ярлык создан: {path}  (двойной клик открывает VS Code с пресетом "
-          f"{args.preset!r}).")
+    print(f"Ярлык создан: {path}  (двойной клик открывает VS Code с пресетом {args.preset!r}).")
     return 0
 
 
@@ -201,11 +297,16 @@ def _list_toolchains(as_json: bool) -> int:
         pkgs: list[dict] = []
         for st in _tc.toolchain_status(key):
             pkg = st["package"]
-            pkgs.append({"id": pkg.winget_id, "title": pkg.title,
-                         "optional": pkg.optional, "installed": st["installed"],
-                         "version": st["version"]})
-        rows.append({"key": key, "title": tc.title, "note": tc.note,
-                     "packages": pkgs})
+            pkgs.append(
+                {
+                    "id": pkg.winget_id,
+                    "title": pkg.title,
+                    "optional": pkg.optional,
+                    "installed": st["installed"],
+                    "version": st["version"],
+                }
+            )
+        rows.append({"key": key, "title": tc.title, "note": tc.note, "packages": pkgs})
     if as_json:
         print(_json.dumps(rows, ensure_ascii=False, indent=2))
         return 0
@@ -214,8 +315,10 @@ def _list_toolchains(as_json: bool) -> int:
         print("! winget не найден — установка недоступна (установите «App Installer»).")
     else:
         print(f"winget: {_tc.winget_version() or 'найден'}")
-    print(f"Готовы: {summ['ready']}/{summ['total']} тулчейнов. "
-          f"Доступные (ключ совпадает с ключом стека):")
+    print(
+        f"Готовы: {summ['ready']}/{summ['total']} тулчейнов. "
+        f"Доступные (ключ совпадает с ключом стека):"
+    )
     for r in rows:
         done = sum(1 for p in r["packages"] if p["installed"] and not p["optional"])
         req = sum(1 for p in r["packages"] if not p["optional"])
@@ -225,8 +328,9 @@ def _list_toolchains(as_json: bool) -> int:
     print("\nСтатус подробнее:  --toolchain-status [КЛЮЧ]")
     print("Установить:        --install-toolchain КЛЮЧ [--include-optional]")
     print("Обновить/удалить:  --upgrade-toolchain КЛЮЧ | --uninstall-toolchain КЛЮЧ")
-    print("Настроить VS Code: --configure-vscode cpp   |   уже есть: --add-existing cpp")
+    print("Настроить VS Code: --configure-vscode cpp|python  |  уже есть: --add-existing cpp")
     print("Проверить:         --doctor (окружение)   |   --outdated (обновления)")
+    print("Починить:          --clean-path [--machine] [--yes]  |  --fix-java-home")
     return 0
 
 
@@ -243,26 +347,100 @@ def _doctor(as_json: bool) -> int:
         print(f"  ✓ {t['title']} — {t.get('version') or ''}")
     jh = rep.get("java_home", {})
     if jh.get("set"):
-        print("JAVA_HOME:", jh.get("path"),
-              "" if jh.get("ok") else f"({jh.get('reason')})")
+        print("JAVA_HOME:", jh.get("path"), "" if jh.get("ok") else f"({jh.get('reason')})")
+        java_broken = not jh.get("ok")
     else:
         print("JAVA_HOME: не задан")
+        java_broken = True
     ph = rep.get("path", {})
+    pu = rep.get("path_user", {})
+    pm = rep.get("path_machine", {})
     print(f"PATH: {ph.get('count', 0)} записей, длина {ph.get('length', 0)}")
-    if ph.get("duplicates"):
-        print(f"  дубликаты: {len(ph['duplicates'])}")
-    if ph.get("missing"):
-        print(f"  несуществующие каталоги: {len(ph['missing'])}")
+    # Раздельно (#3): чистка user не требует прав, machine — требует.
+    print(
+        f"  пользовательский: дублей {len(pu.get('duplicates', []))}, "
+        f"мёртвых {len(pu.get('missing', []))}"
+    )
+    print(
+        f"  системный: дублей {len(pm.get('duplicates', []))}, "
+        f"мёртвых {len(pm.get('missing', []))} (правится только с правами админа)"
+    )
+    if pu.get("duplicates") or pu.get("missing"):
+        print("  → почистить свой PATH: --clean-path (предпросмотр) / --clean-path --yes")
+    if pm.get("duplicates") or pm.get("missing"):
+        print("  → почистить системный PATH: --clean-path --machine --yes (UAC)")
+    if java_broken and _tc.find_jdk_home():
+        print("  → прописать JAVA_HOME: --fix-java-home")
     return 0
+
+
+def _clean_path(apply: bool, keep_dead: bool, machine: bool, as_json: bool) -> int:
+    """#8 → действие: убрать из PATH дубли и мёртвые записи. Без --yes — только
+    предпросмотр. По умолчанию — пользовательский PATH; с --machine — системный
+    (нужны права администратора, при их отсутствии поднимается UAC). Резервные
+    каталоги тулчейнов (их path_hints) не трогаем."""
+    keep = _tc.catalog_path_hints()
+    if machine:
+        res = _tc.env_path.clean_machine_path(
+            remove_missing=not keep_dead, dry_run=not apply, keep=keep
+        )
+        scope = "системного"
+    else:
+        res = _tc.env_path.clean_user_path(
+            remove_missing=not keep_dead, dry_run=not apply, keep=keep
+        )
+        scope = "пользовательского"
+    if as_json:
+        print(_json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+    dupes = res["removed_duplicates"]
+    dead = res["removed_missing"]
+    if machine and res.get("needs_elevation") and apply:
+        print("Нужны права администратора — появится запрос UAC…")
+    if not res["removed"]:
+        print(res["message"])
+        return 0
+    print(
+        ("Применено. " if res["applied"] else f"Предпросмотр {scope} PATH (примени с --yes). ")
+        + res["message"]
+    )
+    if dupes:
+        print(f"  Дубликаты ({len(dupes)}):")
+        for d in dupes:
+            print(f"    − {d}")
+    if dead:
+        print(f"  Мёртвые записи ({len(dead)}):")
+        for d in dead:
+            print(f"    − {d}")
+    if not res["applied"] and res["removed"]:
+        print("\nНичего не изменено. Повтори с --yes, чтобы применить.")
+    return 0 if res["applied"] or not apply else 1
+
+
+def _fix_java_home(as_json: bool) -> int:
+    """Найти JDK и прописать JAVA_HOME."""
+    ok, msg = _tc.repair_java_home()
+    if as_json:
+        print(_json.dumps({"ok": ok, "message": msg}, ensure_ascii=False, indent=2))
+        return 0
+    print(("✓ " if ok else "— ") + msg)
+    return 0 if ok else 1
 
 
 def _outdated(as_json: bool) -> int:
     """#5: тулчейны, для которых winget видит обновление."""
     rows = _tc.outdated_packages()
     if as_json:
-        print(_json.dumps(
-            [{"key": r["key"], "id": r["package"].winget_id, "version": r["version"]}
-             for r in rows], ensure_ascii=False, indent=2))
+        print(
+            _json.dumps(
+                [
+                    {"key": r["key"], "id": r["package"].winget_id, "version": r["version"]}
+                    for r in rows
+                ],
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
     if not rows:
         print("Обновлений для тулчейнов не найдено (или winget недоступен).")
@@ -280,8 +458,10 @@ def _toolchain_status(key: str, as_json: bool) -> int:
             print(_json.dumps(_tc.toolchain_summary(), ensure_ascii=False, indent=2))
             return 0
         summ = _tc.toolchain_summary()
-        print(f"Готовы: {summ['ready']}/{summ['total']}. "
-              f"Не хватает: {', '.join(summ['missing']) or '—'}")
+        print(
+            f"Готовы: {summ['ready']}/{summ['total']}. "
+            f"Не хватает: {', '.join(summ['missing']) or '—'}"
+        )
         for k in _tc.toolchain_keys():
             _toolchain_status(k, False)
             print()
@@ -292,10 +472,21 @@ def _toolchain_status(key: str, as_json: bool) -> int:
         return 2
     rows = _tc.toolchain_status(key)
     if as_json:
-        print(_json.dumps(
-            [{"id": r["package"].winget_id, "optional": r["package"].optional,
-              "installed": r["installed"], "version": r["version"]} for r in rows],
-            ensure_ascii=False, indent=2))
+        print(
+            _json.dumps(
+                [
+                    {
+                        "id": r["package"].winget_id,
+                        "optional": r["package"].optional,
+                        "installed": r["installed"],
+                        "version": r["version"],
+                    }
+                    for r in rows
+                ],
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
     print(f"Тулчейн {key} — {tc.title}: {tc.note}")
     for r in rows:
@@ -317,8 +508,11 @@ def _install_toolchain(key: str, include_optional: bool, out) -> int:
     if not _tc.winget_available():
         print("Ошибка: winget не найден. Установите «App Installer» из Microsoft Store.")
         return 2
-    todo = [p for p in tc.packages
-            if (include_optional or not p.optional) and not _tc.package_installed(p)]
+    todo = [
+        p
+        for p in tc.packages
+        if (include_optional or not p.optional) and not _tc.package_installed(p)
+    ]
     if not todo:
         out(f"Тулчейн {key} уже установлен — ставить нечего.")
         return 0
@@ -353,8 +547,9 @@ def _upgrade_toolchain(key: str, include_optional: bool, out) -> int:
     if not _tc.winget_available():
         print("Ошибка: winget не найден.")
         return 2
-    todo = [p for p in tc.packages
-            if (include_optional or not p.optional) and _tc.package_installed(p)]
+    todo = [
+        p for p in tc.packages if (include_optional or not p.optional) and _tc.package_installed(p)
+    ]
     if not todo:
         out(f"Тулчейн {key}: обновлять нечего (ничего не установлено).")
         return 0
@@ -438,7 +633,7 @@ def cli_main(argv: list[str] | None = None) -> int:
     # переводим stdout в UTF-8, если можем (Python 3.7+). Тихо игнорируем,
     # если поток не поддерживает reconfigure (перенаправление в файл и т.п.).
     try:
-        sys.stdout.reconfigure(encoding="utf-8")   # type: ignore[union-attr]
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
     except Exception:
         pass
     args = build_parser().parse_args(argv)
@@ -465,6 +660,10 @@ def cli_main(argv: list[str] | None = None) -> int:
         return _doctor(args.json)
     if args.outdated:
         return _outdated(args.json)
+    if args.clean_path:
+        return _clean_path(args.yes, args.keep_dead, args.machine, args.json)
+    if args.fix_java_home:
+        return _fix_java_home(args.json)
 
     if args.list_presets:
         presets = cfg.get("presets", {})
@@ -500,26 +699,49 @@ def cli_main(argv: list[str] | None = None) -> int:
     force_disable = set(ov.get("disable", []))
     force_enable = set(ov.get("enable", []))
     dep_map = build_dependency_map(read_extension_manifests(code_cli))
-    disabled = compute_disabled(installed, ext_index, selected,
-                                force_disable, force_enable, dep_map=dep_map)
+    disabled = compute_disabled(
+        installed, ext_index, selected, force_disable, force_enable, dep_map=dep_map
+    )
     saved = estimate_saved_mb(disabled, ext_index)
-    cmd = build_launch_command(code_cli or "code", disabled, opts["folder"],
-                               opts["new_window"], opts["kill"], profile=opts["profile"],
-                               disable_gpu=opts["gpu_off"], bare=opts["bare"])
+    cmd = build_launch_command(
+        code_cli or "code",
+        disabled,
+        opts["folder"],
+        opts["new_window"],
+        opts["kill"],
+        profile=opts["profile"],
+        disable_gpu=opts["gpu_off"],
+        bare=opts["bare"],
+    )
 
     if args.json:
-        print(_json.dumps({
-            "code_cli": code_cli, "installed": len(installed), "source": source,
-            "selected": sorted(selected), "disabled": sorted(disabled),
-            "disabled_count": len(disabled), "estimated_saved_mb": saved,
-            "bare": opts["bare"], "folder": opts["folder"], "command": cmd,
-            "will_run": bool(args.run and code_cli),
-        }, ensure_ascii=False, indent=2))
+        print(
+            _json.dumps(
+                {
+                    "code_cli": code_cli,
+                    "installed": len(installed),
+                    "source": source,
+                    "selected": sorted(selected),
+                    "disabled": sorted(disabled),
+                    "disabled_count": len(disabled),
+                    "estimated_saved_mb": saved,
+                    "bare": opts["bare"],
+                    "folder": opts["folder"],
+                    "command": cmd,
+                    "will_run": bool(args.run and code_cli),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     else:
         out(f"CLI: {code_cli or 'не найден'} | расширений: {len(installed)} ({source})")
         out(f"выбранные стеки: {', '.join(sorted(selected)) or '(только ядро)'}")
-        out(f"будет выключено: {len(disabled)} (~{saved} МБ)"
-            if not opts["bare"] else "голый режим: все расширения выключены")
+        out(
+            f"будет выключено: {len(disabled)} (~{saved} МБ)"
+            if not opts["bare"]
+            else "голый режим: все расширения выключены"
+        )
         out("команда:", cmd)
 
     if not args.run:
@@ -532,9 +754,15 @@ def cli_main(argv: list[str] | None = None) -> int:
 
     if opts["kill"]:
         kill_vscode(code_cli)
-    launch_args = build_launch_args(disabled, opts["folder"], opts["new_window"],
-                                    opts["kill"], profile=opts["profile"],
-                                    disable_gpu=opts["gpu_off"], bare=opts["bare"])
+    launch_args = build_launch_args(
+        disabled,
+        opts["folder"],
+        opts["new_window"],
+        opts["kill"],
+        profile=opts["profile"],
+        disable_gpu=opts["gpu_off"],
+        bare=opts["bare"],
+    )
     try:
         launch_detached(code_cli, launch_args)
     except Exception as e:
