@@ -65,6 +65,10 @@ ignore = [
 # Мягкий старт: проверяем свой пакет, сторонние стабы не требуем. Ужесточать
 # можно постепенно (disallow_untyped_defs и т.п.), не блокируя разработку.
 python_version = "3.12"
+# Приложение Windows-only: winreg и ctypes.windll существуют только на win32.
+# Без этого mypy на Linux-раннере CI считает их атрибуты отсутствующими
+# (winreg.OpenKey, ctypes.windll и т.п.) и падает 29 ошибками.
+platform = "win32"
 files = ["launcher"]
 ignore_missing_imports = true
 warn_unused_ignores = true
