@@ -11,6 +11,9 @@
 ![PyQt6](https://img.shields.io/badge/GUI-PyQt6-41CD52?logo=qt&logoColor=white)
 ![platform](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows&logoColor=white)
 ![license](https://img.shields.io/badge/license-MIT-green)
+[![CI](https://github.com/moonlivedt-oss/VSCLwMoon/actions/workflows/ci.yml/badge.svg)](https://github.com/moonlivedt-oss/VSCLwMoon/actions/workflows/ci.yml)
+
+История изменений — в [CHANGELOG.md](CHANGELOG.md).
 
 ![VS Code Launcher](docs/screenshot-dark.png)
 
