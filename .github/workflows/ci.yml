@@ -83,7 +83,7 @@ jobs:
             dist/VSCodeLauncher.exe
             dist/VSCodeLauncher.exe.sha256
       - name: Attach to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true   # авто-описание релиза из коммитов/PR
           files: |
