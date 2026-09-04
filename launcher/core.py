@@ -41,6 +41,7 @@ from .config import (
     CONFIG_VERSION, load_config, lookup_baseline, lookup_footprint,
     measured_savings_mb, migrate_config, recall_folder_stacks, record_baseline,
     record_footprint, remember_folder_stacks, save_config, setup_logging,
+    set_folder_auto, is_folder_auto, folder_auto_stacks,
 )
 from .detect import detect_recommended_stacks, detect_stacks
 from .presets import (
@@ -95,6 +96,7 @@ __all__ = [
     "CONFIG_VERSION", "record_footprint", "lookup_footprint",
     "remember_folder_stacks", "recall_folder_stacks",
     "record_baseline", "lookup_baseline", "measured_savings_mb",
+    "set_folder_auto", "is_folder_auto", "folder_auto_stacks",
     # detect (#1, #3)
     "detect_stacks", "detect_recommended_stacks",
     # presets / лаунч-профили (#4, #5)

@@ -58,6 +58,7 @@ def migrate_config(cfg: dict) -> dict:
     cfg.setdefault("last_selected", [])
     cfg.setdefault("kill_first", True)
     cfg.setdefault("folder_stacks", {})   # #1: выбор стеков, привязанный к папке
+    cfg.setdefault("folder_auto", [])     # #1+: папки, для которых набор применяется без вопроса
     cfg.setdefault("extra_categories", {})  # #6: раскладка незнакомых расширений из мастера
     # Пресеты исторически хранились как список ключей стеков; теперь значение
     # может быть и словарём {stacks, folder, kill, ...} (#4). Обе формы валидны,
@@ -70,8 +71,10 @@ def load_config() -> dict:
     if CONFIG_FILE.exists():
         try:
             return migrate_config(json.loads(CONFIG_FILE.read_text(encoding="utf-8-sig")))
-        except Exception:
-            pass
+        except Exception as e:
+            # Битый конфиг — не роняем запуск, откат на дефолты. Но след в лог:
+            # иначе «слетели настройки» не отличить от первого запуска.
+            import logging; logging.getLogger("launcher").warning("Не прочитать %s (%s) — дефолты", CONFIG_FILE.name, e)
     return migrate_config({})
 
 
@@ -105,13 +108,42 @@ def remember_folder_stacks(cfg: dict, folder: str, stacks, n: int | None = None,
     fs.pop(key, None)   # переставляем в конец: свежие переживают чистку
     fs[key] = sorted({str(s) for s in stacks})
     if len(fs) > cap:
+        auto = cfg.get("folder_auto", [])
         for old in list(fs)[:-cap]:
             del fs[old]
+            if old in auto: auto.remove(old)  # не держим авто-флаг для забытой папки
 
 
 def recall_folder_stacks(cfg: dict, folder: str) -> list[str] | None:
     """Ранее запомненный выбор стеков для папки или None, если папка новая."""
     return cfg.get("folder_stacks", {}).get(_folder_key(folder))
+
+
+def set_folder_auto(cfg: dict, folder: str, on: bool) -> None:
+    """Пометить папку авто-применяемой: при её выборе запомненный набор стеков
+    включается сам, без строки-подсказки. Только правит cfg (не пишет на диск)."""
+    key = _folder_key(folder)
+    if not key:
+        return
+    auto = cfg.setdefault("folder_auto", [])
+    if on and key not in auto:
+        auto.append(key)
+    elif not on and key in auto:
+        auto.remove(key)
+
+
+def is_folder_auto(cfg: dict, folder: str) -> bool:
+    """Помечена ли папка как авто-применяемая."""
+    return _folder_key(folder) in cfg.get("folder_auto", [])
+
+
+def folder_auto_stacks(cfg: dict, folder: str) -> list[str] | None:
+    """Набор стеков для авто-применения при выборе папки: запомненный выбор,
+    если папка помечена авто и выбор для неё есть. Иначе None — тогда работает
+    обычная строка-подсказка."""
+    if not is_folder_auto(cfg, folder):
+        return None
+    return recall_folder_stacks(cfg, folder)
 
 
 # --- история фактических замеров памяти (#6) -------------------------------
