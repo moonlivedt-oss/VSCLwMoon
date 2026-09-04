@@ -79,6 +79,9 @@ from .core import (
     profile_file_content,
     read_installed_from_disk,
     recall_folder_stacks,
+    folder_auto_stacks,
+    set_folder_auto,
+    is_folder_auto,
     recommended_for,
     record_baseline,
     record_footprint,
@@ -117,64 +120,14 @@ from .theme import PALETTES, apply_titlebar, build_qss
 from . import toolchains as _tc
 
 
-# --- точка входа -----------------------------------------------------------
+
+# --- окно: фабрика класса Launcher --------------------------------------
+# Класс замыкает состояние сессии (карта, конфиг, CLI, логгер, ...). Фабрика
+# делает его модульным и импортируемым: run_gui зовёт её для приложения,
+# тесты — с подставленным состоянием (см. tests/test_gui_smoke.py).
 
 
-def run_gui():
-    log = setup_logging()
-    cats, cats_err = load_categories()
-    duplicates = find_duplicate_extensions(cats)
-    cfg = load_config()
-    # #6: оверлей раскладки незнакомых расширений (мастер) — сливается в индекс
-    # неразрушающе; сама categories.json не трогается.
-    ext_index = build_ext_index(cats, cfg.get("extra_categories"))
-    # #13: путь к CLI можно задать вручную в конфиге (портативная/нестандартная
-    # сборка) — resolve_code_cli учитывает его, иначе ищет как раньше.
-    code_cli = resolve_code_cli(cfg)
-    set_language(cfg.get("lang", "ru"))  # #7: до сборки UI, чтобы _() перевёл строки
-    # Заполняется в конце run_gui (см. rebuild). Метод _switch_language дёргает
-    # его, чтобы пересобрать окно на новом языке. Объявляем здесь, чтобы имя
-    # стало локальным run_gui и попало в замыкание методов Launcher.
-    _lang_switch = {"fn": None}
-    descriptions = load_descriptions()
-    log.info(
-        "Старт v%s · CLI=%s · тема=%s%s",
-        __version__,
-        code_cli,
-        cfg.get("theme", "dark"),
-        f" · categories.json: {cats_err}" if cats_err else "",
-    )
-    # Дубли в карте — тихая мина: build_ext_index молча оставляет последнее
-    # назначение, и стек, куда расширение было положено раньше, теряет его.
-    # Пишем в лог сразу и покажем предупреждение в окне.
-    if duplicates:
-        preview = ", ".join(f"{e} ({'/'.join(k)})" for e, k in sorted(duplicates.items())[:3])
-        more = "…" if len(duplicates) > 3 else ""
-        log.warning("В categories.json дубли расширений: %d (%s%s)", len(duplicates), preview, more)
-
-    # Чистим «мёртвые» ключи категорий в пресетах/последнем выборе (например,
-    # если категорию переименовали в categories.json). Только когда карта
-    # загрузилась — иначе пустой набор ключей стёр бы все пресеты.
-    if not cats_err:
-        valid_keys = set(cats.get("categories", {}))
-        dirty = False
-        for name, value in list(cfg.get("presets", {}).items()):
-            stacks = preset_stacks(value)  # #4: пресет может быть списком или словарём
-            cleaned = [k for k in stacks if k in valid_keys]
-            if cleaned != stacks:
-                cfg["presets"][name] = (
-                    {**value, "stacks": cleaned} if isinstance(value, dict) else cleaned
-                )
-                dirty = True
-        last = cfg.get("last_selected", [])
-        cleaned_last = [k for k in last if k in valid_keys]
-        if cleaned_last != last:
-            cfg["last_selected"] = cleaned_last
-            dirty = True
-        if dirty:
-            save_config(cfg)
-            log.info("Очищены несуществующие ключи категорий в конфиге")
-
+def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, duplicates, log, _lang_switch):
     def show_details(parent, key, cat, installed):
         """Диалог со списком плагинов стека: описания + установка/удаление."""
         dlg = QDialog(parent)
@@ -560,7 +513,7 @@ def run_gui():
         dlg.exec()
 
     class Launcher(QWidget):
-        def __init__(self):
+        def __init__(self, background=True):
             super().__init__()
             self.setWindowTitle(f"VS Code Launcher {__version__} — переключатель нагрузки")
             self.resize(1040, 860)  # с запасом под 2 колонки карточек
@@ -587,13 +540,15 @@ def run_gui():
             set_switch_palette(self._pal)  # цвета тумблеров под тему
             self._build_ui()
             self._restore()
+            self._apply_folder_auto()  # #5: молча включить набор для авто-папки
             self._maybe_auto_suggest()  # #1: если папка подставилась из «недавних»
             self._update_summary()
             # Первая раскладка карточек-сетки, когда окно получит реальную ширину.
             QTimer.singleShot(0, self._relayout_cards)
-            self._start_ext_load()
-            self._probe_memory()
-            self._start_update_check()  # #8
+            if background:  # тесты создают окно без фоновых потоков и сети
+                self._start_ext_load()
+                self._probe_memory()
+                self._start_update_check()  # #8
             geo = cfg.get("geometry")
             if geo:  # запоминаем размер и позицию окна между запусками
                 try:
@@ -821,6 +776,46 @@ def run_gui():
             QApplication.quit()
 
         # --- автоопределение стеков по папке (#1) -------------------------
+        def _sync_auto_cb(self, on: bool):
+            """Отразить авто-статус папки в чекбоксе, не дёргая обработчик."""
+            if not hasattr(self, "auto_cb"):
+                return
+            self.auto_cb.blockSignals(True)
+            self.auto_cb.setChecked(on)
+            self.auto_cb.blockSignals(False)
+
+        def _apply_folder_auto(self) -> bool:
+            """#5: если текущая папка помечена авто и для неё есть набор —
+            включить эти стеки молча. True, если что-то применили."""
+            folder = self.folder_edit.text().strip()
+            auto = folder_auto_stacks(cfg, folder)
+            if not auto:
+                return False
+            available = set(cats.get("categories", {}))
+            keys = sorted(set(auto) & available)
+            for k in keys:
+                card = self.cat_checks.get(k)
+                if card is not None:
+                    card.setChecked(True)
+            if keys:
+                self.log.appendPlainText(
+                    _("Авто-набор для папки: {stacks}").format(
+                        stacks=", ".join(cats["categories"][k].get("title", k) for k in keys)
+                    )
+                )
+            self._sync_auto_cb(True)
+            return True
+
+        def _toggle_folder_auto(self, on: bool):
+            """Пользователь сам переключил «всегда для этой папки»."""
+            folder = self.folder_edit.text().strip()
+            if not folder:
+                return
+            set_folder_auto(cfg, folder, on)
+            if on and not self._bare():
+                remember_folder_stacks(cfg, folder, self._selected())
+            save_config(cfg)
+
         def _suggest_for_folder(self, folder: str):
             """Определить тип проекта и, если есть что предложить, показать
             строку-подсказку. Предлагаем только стеки с установленными
@@ -829,7 +824,18 @@ def run_gui():
             self.suggest_bar.setVisible(False)
             self._suggest_toolchains(folder)
             if not folder:
+                self._sync_auto_cb(False)
                 return
+            # #5: авто-папка — включаем набор молча и показываем инфо-строку
+            # (без кнопки «Включить»), где можно снять авто-режим.
+            if folder_auto_stacks(cfg, folder) is not None:
+                self._apply_folder_auto()
+                self.suggest_lbl.setText(_("Авто-набор для этой папки включён."))
+                self._sug_apply.setVisible(False)
+                self.suggest_bar.setVisible(True)
+                return
+            self._sug_apply.setVisible(True)
+            self._sync_auto_cb(False)
             available = set(cats.get("categories", {}))
             detected = detect_stacks(folder, available=available)
             # #3: рекомендации воркспейса (.vscode/extensions.json) точно называют
@@ -905,6 +911,10 @@ def run_gui():
             self.log.appendPlainText(
                 _("Включены стеки по типу проекта: {stacks}").format(stacks=titles)
             )
+            folder = self.folder_edit.text().strip()
+            if folder and is_folder_auto(cfg, folder) and not self._bare():
+                remember_folder_stacks(cfg, folder, self._selected())
+                save_config(cfg)
             self.suggest_bar.setVisible(False)
             self._suggested_keys = set()
 
@@ -1000,7 +1010,12 @@ def run_gui():
             root = QVBoxLayout(self)
             root.setContentsMargins(18, 18, 18, 14)
             root.setSpacing(14)
+            self._build_header(root)
+            self._build_stacks_area(root)
+            self._build_footer(root)
 
+        def _build_header(self, root):
+            """Шапка: логотип, заголовок, баннер обновления, строка памяти."""
             header = QFrame()
             header.setObjectName("Header")
             hl = QHBoxLayout(header)
@@ -1114,6 +1129,10 @@ def run_gui():
             # Середина (пресеты → параметры) — в одном скролле, чтобы шапка и
             # нижняя панель «Запустить» всегда были видны, а окно оставалось
             # адаптивным при любой высоте.
+
+        def _build_stacks_area(self, root):
+            """Прокручиваемая середина: пресеты, сегменты/фильтр, сетка карточек-
+            стеков и карточки папки/опций/автонастройки."""
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -1369,14 +1388,21 @@ def run_gui():
             self.suggest_lbl = _wrap(QLabel())
             self.suggest_lbl.setObjectName("CatNote")
             sbl.addWidget(self.suggest_lbl, 1)
-            sug_apply = QPushButton(_("Включить"))
-            sug_apply.setObjectName("Accent")
-            sug_apply.setCursor(Qt.CursorShape.PointingHandCursor)
-            sug_apply.clicked.connect(self._apply_suggestion)
+            # #5: чекбокс «всегда для этой папки» — пометить папку авто-набором.
+            self.auto_cb = QCheckBox(_("всегда для этой папки"))
+            self.auto_cb.setToolTip(
+                _("Запоминать набор для этой папки и включать его при выборе без подсказки")
+            )
+            self.auto_cb.toggled.connect(self._toggle_folder_auto)
+            sbl.addWidget(self.auto_cb)
+            self._sug_apply = QPushButton(_("Включить"))
+            self._sug_apply.setObjectName("Accent")
+            self._sug_apply.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._sug_apply.clicked.connect(self._apply_suggestion)
             sug_hide = QPushButton(_("Скрыть"))
             sug_hide.setObjectName("Ghost")
             sug_hide.clicked.connect(self._dismiss_suggestion)
-            sbl.addWidget(sug_apply)
+            sbl.addWidget(self._sug_apply)
             sbl.addWidget(sug_hide)
             self.suggest_bar.setVisible(False)
             fv.addWidget(self.suggest_bar)
@@ -1503,6 +1529,9 @@ def run_gui():
             cv.addStretch()
             scroll.setWidget(content)
             root.addWidget(scroll, 1)
+
+        def _build_footer(self, root):
+            """Низ окна: hero-панель экономии, кнопки запуска и лог."""
 
             # Hero-панель экономии: слева крупное число сэкономленных МБ, справа
             # чипы (включено/выключено/замер) и действия. Ключевая ценность —
@@ -3159,6 +3188,70 @@ def run_gui():
                 if t is not None and t.isRunning():
                     t.wait(2000)
             super().closeEvent(e)
+    return Launcher
+
+
+# --- точка входа -----------------------------------------------------------
+
+
+def run_gui():
+    log = setup_logging()
+    cats, cats_err = load_categories()
+    duplicates = find_duplicate_extensions(cats)
+    cfg = load_config()
+    # #6: оверлей раскладки незнакомых расширений (мастер) — сливается в индекс
+    # неразрушающе; сама categories.json не трогается.
+    ext_index = build_ext_index(cats, cfg.get("extra_categories"))
+    # #13: путь к CLI можно задать вручную в конфиге (портативная/нестандартная
+    # сборка) — resolve_code_cli учитывает его, иначе ищет как раньше.
+    code_cli = resolve_code_cli(cfg)
+    set_language(cfg.get("lang", "ru"))  # #7: до сборки UI, чтобы _() перевёл строки
+    # Заполняется в конце run_gui (см. rebuild). Метод _switch_language дёргает
+    # его, чтобы пересобрать окно на новом языке. Объявляем здесь, чтобы имя
+    # стало локальным run_gui и попало в замыкание методов Launcher.
+    _lang_switch = {"fn": None}
+    descriptions = load_descriptions()
+    log.info(
+        "Старт v%s · CLI=%s · тема=%s%s",
+        __version__,
+        code_cli,
+        cfg.get("theme", "dark"),
+        f" · categories.json: {cats_err}" if cats_err else "",
+    )
+    # Дубли в карте — тихая мина: build_ext_index молча оставляет последнее
+    # назначение, и стек, куда расширение было положено раньше, теряет его.
+    # Пишем в лог сразу и покажем предупреждение в окне.
+    if duplicates:
+        preview = ", ".join(f"{e} ({'/'.join(k)})" for e, k in sorted(duplicates.items())[:3])
+        more = "…" if len(duplicates) > 3 else ""
+        log.warning("В categories.json дубли расширений: %d (%s%s)", len(duplicates), preview, more)
+
+    # Чистим «мёртвые» ключи категорий в пресетах/последнем выборе (например,
+    # если категорию переименовали в categories.json). Только когда карта
+    # загрузилась — иначе пустой набор ключей стёр бы все пресеты.
+    if not cats_err:
+        valid_keys = set(cats.get("categories", {}))
+        dirty = False
+        for name, value in list(cfg.get("presets", {}).items()):
+            stacks = preset_stacks(value)  # #4: пресет может быть списком или словарём
+            cleaned = [k for k in stacks if k in valid_keys]
+            if cleaned != stacks:
+                cfg["presets"][name] = (
+                    {**value, "stacks": cleaned} if isinstance(value, dict) else cleaned
+                )
+                dirty = True
+        last = cfg.get("last_selected", [])
+        cleaned_last = [k for k in last if k in valid_keys]
+        if cleaned_last != last:
+            cfg["last_selected"] = cleaned_last
+            dirty = True
+        if dirty:
+            save_config(cfg)
+            log.info("Очищены несуществующие ключи категорий в конфиге")
+
+    Launcher = _launcher_factory(
+        cats, cats_err, cfg, ext_index, code_cli, descriptions, duplicates, log, _lang_switch
+    )
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
