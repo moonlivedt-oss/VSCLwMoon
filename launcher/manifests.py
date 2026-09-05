@@ -111,16 +111,19 @@ def read_extension_manifests(code_cli: str | None) -> dict[str, dict]:
         if m is not None:
             out[ext_id] = m
 
-    # Фолбэк: расширения, которых не было в extensions.json (или файла нет).
-    if not rel:
-        try:
-            subdirs = [d for d in ext_dir.iterdir() if d.is_dir()]
-        except OSError:
-            subdirs = []
-        for d in subdirs:
-            m = _parse_manifest(d / "package.json")
-            if m is not None and m["id"] and m["id"] not in out:
-                out[m["id"]] = m
+    # Фолбэк: расширения, которых не было в extensions.json (или файла нет) —
+    # портативные сборки, ручная установка. Уже разобранные по индексу папки
+    # пропускаем, поэтому при полном extensions.json скан почти ничего не стоит.
+    known_folders = {f.lower() for f in rel.values()}
+    try:
+        subdirs = [d for d in ext_dir.iterdir()
+                   if d.is_dir() and d.name.lower() not in known_folders]
+    except OSError:
+        subdirs = []
+    for d in subdirs:
+        m = _parse_manifest(d / "package.json")
+        if m is not None and m["id"] and m["id"] not in out:
+            out[m["id"]] = m
     return out
 
 

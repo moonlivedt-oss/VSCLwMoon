@@ -97,7 +97,7 @@ def _folder_key(folder: str) -> str:
         return folder.strip().lower()
 
 
-def remember_folder_stacks(cfg: dict, folder: str, stacks, n: int | None = None,
+def remember_folder_stacks(cfg: dict, folder: str, stacks,
                            cap: int = FOLDER_STACKS_CAP) -> None:
     """Запомнить выбор стеков для папки. Пустой список — валиден (осознанный
     выбор «только ядро»). Ничего не пишет на диск — только правит cfg."""

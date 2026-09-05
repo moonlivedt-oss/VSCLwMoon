@@ -240,8 +240,3 @@ def apply_titlebar(widget, dark: bool = True) -> None:
                 hwnd, attr, ctypes.byref(val), ctypes.sizeof(val))
     except Exception:
         pass
-
-
-def apply_dark_titlebar(widget) -> None:
-    """Обратная совместимость: тёмный тайтлбар."""
-    apply_titlebar(widget, True)

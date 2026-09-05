@@ -3182,6 +3182,7 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                 getattr(self, "_mem", None),
                 getattr(self, "_loader", None),
                 getattr(self, "_upd", None),
+                getattr(self, "_dl", None),   # загрузка обновления: тоже дождаться
             ]
             threads += list(self._install_threads)
             for t in threads:

@@ -796,11 +796,6 @@ def configure_vscode_for(key: str, code_cli: str | None) -> tuple[bool, str]:
 # --- связь с автоопределением стека по папке проекта ------------------------
 
 
-def toolchain_for_stack(stack_key: str) -> Toolchain | None:
-    """Тулчейн, соответствующий ключу стека (совпадает по ключу)."""
-    return TOOLCHAINS.get(stack_key)
-
-
 def missing_toolchains_for(folder: str) -> list[str]:
     """Ключи тулчейнов, которые нужны проекту в `folder`, но не установлены.
 
@@ -975,9 +970,10 @@ def find_jdk_home() -> str | None:
                 if sub.is_dir() and (sub / "bin" / "javac.exe").exists():
                     candidates.append(sub)
     if candidates:
-        # Свежую версию — вперёд: сортируем по имени каталога в обратном порядке
-        # (jdk-21 > jdk-17), этого достаточно для типовых схем именования.
-        candidates.sort(key=lambda p: p.name, reverse=True)
+        # Свежую версию — вперёд. Сортируем по ЧИСЛАМ в имени, а не по строке:
+        # строковое сравнение ставит 'jdk-8' выше 'jdk-17' ('8' > '1') и выбрало
+        # бы старый JDK. Числовой ключ даёт (21) > (17) > (8), как и ожидается.
+        candidates.sort(key=lambda p: [int(n) for n in re.findall(r"\d+", p.name)], reverse=True)
         return str(candidates[0])
     return None
 
