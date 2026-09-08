@@ -9,16 +9,20 @@
 - config          — load_config, save_config, setup_logging;
 - categories      — карта стеков, поиск дублей, WEIGHT/*, рекомендации;
 - vscode          — CLI, чтение/установка расширений, память, kill/launch;
+- winmem          — нативный (ctypes) замер памяти процессов Windows;
+- weights         — реальный вес стеков: размер на диске + калибровка по замерам;
+- quicklaunch     — запуск пресета одной функцией (окно, CLI и трей);
 - toolchains      — установка языковых тулчейнов (компиляторы, SDK) через winget;
 - env_path        — управление пользовательским PATH через реестр (без setx);
-- launch          — compute_disabled, estimate_saved_mb, build_launch_*;
+- launch          — compute_disabled, build_launch_*, selection_signature;
 - settings_apply  — apply_settings + ротация бэкапов;
 - selftest        — CLI-прогон логики без GUI;
 - theme           — палитры Catppuccin Mocha/Latte и QSS;
 - gui_widgets     — CategoryCard и микро-фабрики виджетов;
 - gui_workers     — фоновые QThread'ы (ExtLoader, MemProbe, Installer);
+- gui_tray        — значок в трее: запуск пресета без открытия окна;
 - gui             — окно PyQt6, диалоги, точка входа run_gui;
 - core            — фасад для обратной совместимости (импорты).
 """
 
-__version__ = "1.2.0"
+__version__ = "1.4.0"

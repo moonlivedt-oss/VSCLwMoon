@@ -184,9 +184,25 @@ def test_footprint_prefers_private_ws(monkeypatch):
 
 
 def test_footprint_falls_back_to_tasklist(monkeypatch):
+    # Нативный замер недоступен (не Windows / снимок процессов не дался) —
+    # уходим на tasklist, как раньше.
     monkeypatch.setattr(core.vscode, "code_private_ws_mb", lambda cli: (0, 0))
+    monkeypatch.setattr(core.vscode.winmem, "available", lambda: False)
     monkeypatch.setattr(core.vscode, "code_memory_mb", lambda cli: (999, 12))
     assert core.vscode.code_footprint_mb("code") == (999, 12)
+
+
+def test_footprint_trusts_native_zero(monkeypatch):
+    # Нативный замер работает и говорит «процессов Code нет» — это ответ, а не
+    # повод порождать tasklist: он вернёт ровно то же, только на 300 мс дольше.
+    monkeypatch.setattr(core.vscode, "code_private_ws_mb", lambda cli: (0, 0))
+    monkeypatch.setattr(core.vscode.winmem, "available", lambda: True)
+    monkeypatch.setattr(
+        core.vscode,
+        "code_memory_mb",
+        lambda cli: (_ for _ in ()).throw(AssertionError("не должно вызваться")),
+    )
+    assert core.vscode.code_footprint_mb("code") == (0, 0)
 
 
 # --- #16: JSON Schema карты категорий ---------------------------------------

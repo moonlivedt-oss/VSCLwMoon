@@ -24,7 +24,10 @@ a = Analysis(
     binaries=[],
     datas=[(os.path.join(ROOT, 'data'), 'data'),
            (os.path.join(ROOT, 'assets'), 'assets')],
-    hiddenimports=[],
+    # QtNetwork импортируется лениво (одноэкземплярность через QLocalServer),
+    # поэтому называем его явно: статический анализ PyInstaller может его
+    # не подхватить, а без него лаунчер упал бы уже при старте.
+    hiddenimports=['PyQt6.QtNetwork'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -2,10 +2,10 @@
 """Что выключить и как запустить VS Code с этим набором.
 
 Читаемо: чистые функции без IO. Берём (installed, ext_index, selected),
-возвращаем список выключаемых расширений, оценку экономии и готовые
-CLI-аргументы. Сам запуск процесса — в vscode.launch_detached.
+возвращаем список выключаемых расширений и готовые CLI-аргументы. Сам запуск
+процесса — в vscode.launch_detached, а оценка экономии — в weights.py: она
+опирается на собственные замеры пользователя, а не только на таблицу весов.
 """
-from .categories import WEIGHT, WEIGHT_MB
 from .safety import safe_arg, valid_ext_id
 from .vscode import code_image_name
 
@@ -109,14 +109,6 @@ def selection_signature(enabled_keys, bare: bool = False) -> str:
         return "bare"
     keys = sorted(k for k in enabled_keys if k)
     return "|".join(keys) if keys else "core-only"
-
-
-def estimate_saved_mb(disabled: list[str], ext_index: dict[str, str]) -> int:
-    """Оценка освобождаемой памяти: каждую выключаемую категорию считаем
-    один раз и только если у неё реально выключается установленное расширение."""
-    cats_off = {cat for e in disabled
-                if (cat := ext_index.get(e)) is not None and cat != "always_on"}
-    return sum(WEIGHT_MB.get(WEIGHT.get(c, "light"), 30) for c in cats_off)
 
 
 def build_launch_command(code_cli: str, disabled: list[str], folder: str,

@@ -39,6 +39,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QDialog,
     QProgressBar,
+    QSystemTrayIcon,
 )
 
 from . import __version__
@@ -51,7 +52,6 @@ from .core import (
     WEIGHT_MB,
     apply_settings,
     build_ext_index,
-    build_launch_args,
     build_launch_command,
     build_dependency_map,
     build_shortcut_cmd,
@@ -62,7 +62,6 @@ from .core import (
     detect_stacks,
     read_extension_manifests,
     disabled_by_category,
-    estimate_saved_mb,
     find_duplicate_extensions,
     kill_vscode,
     launch_detached,
@@ -75,6 +74,7 @@ from .core import (
     marketplace_url,
     measured_savings_mb,
     normalize_preset,
+    plan_launch,
     preset_stacks,
     profile_file_content,
     read_installed_from_disk,
@@ -112,10 +112,13 @@ from .gui_workers import (
     FnWorker,
     Installer,
     MemProbe,
+    SizeProbe,
+    StatusProbe,
     ToolchainInstaller,
     UpdateCheck,
     UpdateDownloader,
 )
+from . import weights as _w
 from .theme import PALETTES, apply_titlebar, build_qss
 from . import toolchains as _tc
 
@@ -131,7 +134,7 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
     def show_details(parent, key, cat, installed):
         """Диалог со списком плагинов стека: описания + установка/удаление."""
         dlg = QDialog(parent)
-        dlg.setWindowTitle(f"Стек: {cat.get('title', key)}")
+        dlg.setWindowTitle(_("Стек: {title}").format(title=cat.get("title", key)))
         dlg.resize(820, 660)
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(18, 18, 18, 16)
@@ -207,18 +210,18 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             if ib is not None:
                 ib.setVisible(not is_inst)
                 ib.setEnabled(True)
-                ib.setText("Установить")
+                ib.setText(_("Установить"))
             if ub is not None:
                 ub.setVisible(is_inst)
                 ub.setEnabled(True)
-                ub.setText("Удалить")
+                ub.setText(_("Удалить"))
 
         def refresh_bulk():
             if bulk_btn is None:
                 return
             left = [e for e in exts if e.lower() not in installed]
             bulk_btn.setEnabled(True)
-            bulk_btn.setText(f"Установить недостающие ({len(left)})")
+            bulk_btn.setText(_("Установить недостающие ({n})").format(n=len(left)))
             bulk_btn.setVisible(bool(left))
 
         def start_action(ids, action):
@@ -230,34 +233,37 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                 return
             if action == "install":
                 body = (
-                    f"Установить расширение:\n\n{todo[0]}\n\nОно будет скачано "
-                    f"из маркетплейса VS Code."
+                    _("Установить расширение:\n\n{ext}\n\nОно будет скачано "
+                      "из маркетплейса VS Code.").format(ext=todo[0])
                     if len(todo) == 1
-                    else f"Установить {len(todo)} недостающих расширений стека "
-                    f"«{cat.get('title', key)}»?\n\nВсе они будут скачаны из маркетплейса."
+                    else _("Установить {n} недостающих расширений стека «{title}»?"
+                           "\n\nВсе они будут скачаны из маркетплейса.").format(
+                               n=len(todo), title=cat.get("title", key))
                 )
                 if (
                     QMessageBox.question(
-                        dlg, "Скачать и установить?", body + "\n\nПродолжить?", YES | NO, NO
+                        dlg, _("Скачать и установить?"),
+                        body + "\n\n" + _("Продолжить?"), YES | NO, NO
                     )
                     != YES
                 ):
                     return
-                busy = "Устанавливаю…"
+                busy = _("Устанавливаю…")
                 busy_word = _("Устанавливаю")
             else:
                 body = (
-                    f"Удалить расширение:\n\n{todo[0]}\n\nОно будет удалено с диска. "
-                    f"Переустановить можно кнопкой «Установить»."
+                    _("Удалить расширение:\n\n{ext}\n\nОно будет удалено с диска. "
+                      "Переустановить можно кнопкой «Установить».").format(ext=todo[0])
                 )
                 if (
                     QMessageBox.question(
-                        dlg, "Удалить расширение?", body + "\n\nПродолжить?", YES | NO, NO
+                        dlg, _("Удалить расширение?"),
+                        body + "\n\n" + _("Продолжить?"), YES | NO, NO
                     )
                     != YES
                 ):
                     return
-                busy = "Удаляю…"
+                busy = _("Удаляю…")
                 busy_word = _("Удаляю")
             for i in todo:
                 # NB: не называть переменную `_` — это затенит функцию перевода
@@ -474,7 +480,8 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
         bar = QHBoxLayout()
         if code_cli:
             missing = [e for e in exts if e.lower() not in installed]
-            bulk_btn = QPushButton(f"Установить недостающие ({len(missing)})")
+            bulk_btn = QPushButton(
+                _("Установить недостающие ({n})").format(n=len(missing)))
             bulk_btn.clicked.connect(
                 lambda: start_action([e for e in exts if e.lower() not in installed], "install")
             )
@@ -501,7 +508,7 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             cancel_btn.setVisible(False)
             bar.addWidget(cancel_btn)
         else:
-            no_cli = QLabel("нет CLI VS Code — установка/удаление недоступны")
+            no_cli = QLabel(_("нет CLI VS Code — установка/удаление недоступны"))
             no_cli.setObjectName("CatNote")
             bar.addWidget(no_cli)
         bar.addStretch()
@@ -515,7 +522,8 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
     class Launcher(QWidget):
         def __init__(self, background=True):
             super().__init__()
-            self.setWindowTitle(f"VS Code Launcher {__version__} — переключатель нагрузки")
+            self.setWindowTitle(
+                _("VS Code Launcher {ver} — переключатель нагрузки").format(ver=__version__))
             self.resize(1040, 860)  # с запасом под 2 колонки карточек
             self.setMinimumSize(680, 560)
             # Стартуем из кэша (мгновенно), свежий список догружаем в фоне.
@@ -533,12 +541,21 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             self._pending_is_baseline = False  # #2: следующий замер — базлайн «всё вкл»
             self._suggested_keys: set[str] = set()  # #1: что предложил автодетект
             self._auto_suggested = False  # #1: авто-подсказку при старте делаем один раз
+            # Реальные размеры расширений на диске: из кэша мгновенно, свежие
+            # догружаем в фоне (обход папки расширений стоит 1-2 с).
+            cached_sizes = cfg.get("ext_sizes", {})
+            self._ext_sizes = dict(cached_sizes.get("sizes", {})) if isinstance(
+                cached_sizes, dict) else {}
+            self._tray = None            # ставится извне (run_gui), если трей включён
+            self._quit_requested = False  # закрытие «по-настоящему», а не в трей
             self._theme = cfg.get("theme", "dark")
             if self._theme not in PALETTES:
                 self._theme = "dark"
             self._pal = PALETTES[self._theme]
             set_switch_palette(self._pal)  # цвета тумблеров под тему
+            self.setAcceptDrops(True)   # папку проекта можно просто перетащить в окно
             self._build_ui()
+            self._apply_sizes(self._ext_sizes, persist=False)
             self._restore()
             self._apply_folder_auto()  # #5: молча включить набор для авто-папки
             self._maybe_auto_suggest()  # #1: если папка подставилась из «недавних»
@@ -548,6 +565,7 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             if background:  # тесты создают окно без фоновых потоков и сети
                 self._start_ext_load()
                 self._probe_memory()
+                self._start_size_probe()
                 self._start_update_check()  # #8
             geo = cfg.get("geometry")
             if geo:  # запоминаем размер и позицию окна между запусками
@@ -572,6 +590,134 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             cfg["theme"] = self._theme
             save_config(cfg)
 
+        # --- реальный вес стеков: размер на диске -------------------------
+        def _start_size_probe(self):
+            """Посчитать, сколько занимают расширения на диске. В фоне: обход
+            папки расширений (десятки тысяч файлов) стоит 1-2 с."""
+            if getattr(self, "_sizes", None) is not None and self._sizes.isRunning():
+                return
+            self._sizes = SizeProbe(code_cli)
+            self._sizes.measured.connect(lambda d: self._apply_sizes(d))
+            self._sizes.start()
+
+        def _apply_sizes(self, sizes: dict, persist: bool = True):
+            """Показать размер стека на карточках и запомнить в конфиге.
+
+            Число твёрдое (это байты на диске, а не прикидка), поэтому его видно
+            сразу и без единого запуска редактора: заметно, какие стеки дорогие."""
+            if not sizes:
+                return
+            self._ext_sizes = dict(sizes)
+            per_stack = _w.stack_disk_mb(ext_index, self._ext_sizes, self.installed)
+            for key, card in self.cat_checks.items():
+                card.set_disk_mb(per_stack.get(key, 0))
+            # Бейдж нагрузки стал длиннее (к «тяжёлый» дописался размер) — заметка
+            # рядом переносится на лишнюю строку. Без пересчёта ряды остаются
+            # прежней высоты, и текст обрезается до первого resize окна.
+            if hasattr(self, "_cards_flow"):
+                self._cards_flow.invalidate()
+                self.cards_host.updateGeometry()
+            if persist:
+                cfg["ext_sizes"] = {"n": len(self.installed), "sizes": self._ext_sizes}
+                save_config(cfg)
+
+        # --- честная стоимость расширений: code --status ------------------
+        def _measure_extensions(self):
+            """Спросить у самого VS Code, сколько сейчас едят его процессы, и
+            показать разбор «редактор против расширений».
+
+            Это единственный способ увидеть цену расширений отдельно от цены
+            редактора: VS Code сам подписывает свой extensionHost, а мы просто
+            читаем его ответ. Остальные числа в окне — оценки, это — факт."""
+            if getattr(self, "_status", None) is not None and self._status.isRunning():
+                return
+            self.ext_measure_btn.setEnabled(False)
+            self.ext_measure_btn.setText(_("Замеряю…"))
+            self._status = StatusProbe(code_cli)
+            self._status.measured.connect(self._on_ext_status)
+            self._status.start()
+
+        def _on_ext_status(self, data: dict):
+            self.ext_measure_btn.setEnabled(True)
+            self.ext_measure_btn.setText(_("Замерить расширения"))
+            if not data or not data.get("processes"):
+                QMessageBox.information(
+                    self,
+                    _("Замер расширений"),
+                    _("VS Code не отвечает на --status. Он запущен? Замер работает "
+                      "только при открытом редакторе."),
+                )
+                return
+            self._show_ext_report(data)
+
+        def _show_ext_report(self, data: dict):
+            total = data["total_mb"]
+            ext_mb = data["extension_mb"]
+            editor = data["editor_mb"]
+            share = round(ext_mb * 100 / total) if total else 0
+            lines = [
+                _("Всего процессы VS Code: {mb} МБ").format(mb=total),
+                _("  из них расширения (extensionHost и языковые серверы): {mb} МБ "
+                  "({share}%)").format(mb=ext_mb, share=share),
+                _("  сам редактор (окно, GPU, терминал, поиск): {mb} МБ").format(mb=editor),
+                "",
+                _("Процессы:"),
+            ]
+            unit = _("МБ")
+            for r in data["processes"]:
+                lines.append(f"  {r['mb']:>6} {unit}  {' ' * r['depth']}{r['name']}")
+            per_stack = _w.stack_disk_mb(ext_index, self._ext_sizes, self.installed)
+            if per_stack:
+                lines += ["", _("Размер стеков на диске (установленное):")]
+                for key, mb in sorted(per_stack.items(), key=lambda kv: -kv[1]):
+                    title = cats.get("categories", {}).get(key, {}).get("title", key)
+                    lines.append(f"  {mb:>6} {unit}  {title}")
+            self._text_dialog(
+                _("Замер расширений"),
+                _("Расширения занимают {mb} МБ — это {share}% памяти VS Code. "
+                  "Именно эта часть и уходит, когда стек выключен.").format(
+                      mb=ext_mb, share=share),
+                "\n".join(lines),
+            )
+
+        def _text_dialog(self, title: str, subtitle: str, text: str):
+            """Диалог «заголовок + пояснение + текстовый блок + копировать».
+            Три диалога окна отличались только текстом, теперь у них одна
+            реализация — и одинаковое поведение кнопок."""
+            dlg = QDialog(self)
+            dlg.setWindowTitle(title)
+            dlg.resize(620, 600)
+            lay = QVBoxLayout(dlg)
+            lay.setContentsMargins(18, 18, 18, 16)
+            lay.setSpacing(12)
+            ttl = QLabel(title)
+            ttl.setObjectName("Title")
+            lay.addWidget(ttl)
+            if subtitle:
+                note = _wrap(QLabel(subtitle))
+                note.setObjectName("Subtitle")
+                lay.addWidget(note)
+            lay.addWidget(_hline())
+            box = QPlainTextEdit()
+            box.setObjectName("Log")
+            box.setReadOnly(True)
+            box.setMaximumHeight(16777215)
+            box.setPlainText(text)
+            lay.addWidget(box, 1)
+            bar = QHBoxLayout()
+            copy = QPushButton(_("Копировать"))
+            copy.setObjectName("Ghost")
+            copy.setEnabled(bool(text))
+            copy.clicked.connect(lambda: QApplication.clipboard().setText(text))
+            bar.addWidget(copy)
+            bar.addStretch()
+            close = QPushButton(_("Закрыть"))
+            close.setObjectName("Accent")
+            close.clicked.connect(dlg.accept)
+            bar.addWidget(close)
+            lay.addLayout(bar)
+            dlg.exec()
+
         def _probe_memory(self):
             # Не плодим второй поток, пока прошлый замер не закончился: иначе
             # ссылка на живой QThread терялась бы и Qt ронял приложение.
@@ -587,8 +733,9 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                 self.mem_lbl.setText(_("VS Code сейчас: {mb} МБ, {n} процессов").format(mb=mb, n=n))
                 self.mem_lbl.setToolTip(
                     _(
-                        "Private working set всех процессов VS Code "
-                        "(неразделяемая, реально освобождаемая память)"
+                        "Приватная память всех процессов VS Code "
+                        "(неразделяемая — именно она освобождается при закрытии). "
+                        "Замер нативный, без запуска PowerShell."
                     )
                 )
             else:
@@ -641,7 +788,7 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                     self,
                     _("Выбери code.cmd или Code.exe"),
                     "",
-                    "VS Code CLI (code.cmd code-insiders.cmd Code.exe);;Все файлы (*.*)",
+                    _("VS Code CLI (code.cmd code-insiders.cmd Code.exe);;Все файлы (*.*)"),
                 )
                 if not picked:
                     return
@@ -816,10 +963,25 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                 remember_folder_stacks(cfg, folder, self._selected())
             save_config(cfg)
 
+        @staticmethod
+        def _scan_root(target: str) -> str:
+            """Что сканировать автодетектом. Для .code-workspace — папку, где
+            лежит сам файл: VS Code открывает такой файл как проект, а детект
+            по файлу дал бы пусто и подсказка молча не появлялась бы."""
+            t = (target or "").strip()
+            if not t:
+                return ""
+            try:
+                path = Path(t)
+                return str(path.parent) if path.is_file() else t
+            except Exception:
+                return t
+
         def _suggest_for_folder(self, folder: str):
             """Определить тип проекта и, если есть что предложить, показать
             строку-подсказку. Предлагаем только стеки с установленными
             расширениями, которые ещё не отмечены."""
+            folder = self._scan_root(folder) if folder else folder
             self._suggested_keys = set()
             self.suggest_bar.setVisible(False)
             self._suggest_toolchains(folder)
@@ -946,16 +1108,61 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                 "enable": sorted(self._force_enable),
             }
             save_config(cfg)
+            self._refresh_override_chip()
             self._update_summary()
 
         # --- переключение языка (#7) --------------------------------------
+        def ui_state(self) -> dict:
+            """Снимок того, что человек НАБРАЛ в окне, но ещё не запускал.
+
+            Текст виджетов задаётся при сборке, поэтому смена языка пересобирает
+            окно — и раньше при этом терялось всё несохранённое: галочки стеков
+            откатывались к последнему ЗАПУЩЕННОМУ набору, поиск и фильтр
+            сбрасывались. Снимок переносит состояние в новое окно."""
+            return {
+                "selected": sorted(self._selected()),
+                "folder": self.folder_edit.text(),
+                "profile": self.profile_edit.text(),
+                "search": self.search_edit.text(),
+                "inst_filter": getattr(self, "_inst_filter", "all"),
+                "kill": self.kill_cb.isChecked(),
+                "soft": self.soft_cb.isChecked(),
+                "new_window": self.newwin_cb.isChecked(),
+                "gpu_off": self.gpu_cb.isChecked(),
+                "bare": self.bare_cb.isChecked(),
+                "scroll": (self._scroll.verticalScrollBar().value()
+                           if hasattr(self, "_scroll") else 0),
+            }
+
+        def apply_ui_state(self, st: dict):
+            """Вернуть снимок ui_state в свежесобранное окно."""
+            if not st:
+                return
+            keys = set(st.get("selected", []))
+            for k, card in self.cat_checks.items():
+                card.setChecked(k in keys)
+            self.folder_edit.setText(st.get("folder", ""))
+            self.profile_edit.setText(st.get("profile", ""))
+            self.kill_cb.setChecked(bool(st.get("kill", True)))
+            self.soft_cb.setChecked(bool(st.get("soft", False)))
+            self.newwin_cb.setChecked(bool(st.get("new_window", True)))
+            self.gpu_cb.setChecked(bool(st.get("gpu_off", False)))
+            self.bare_cb.setChecked(bool(st.get("bare", False)))
+            self._set_inst_filter(st.get("inst_filter", "all"))
+            self.search_edit.setText(st.get("search", ""))
+            self._update_summary()
+            if st.get("scroll") and hasattr(self, "_scroll"):
+                QTimer.singleShot(
+                    0, lambda: self._scroll.verticalScrollBar().setValue(st["scroll"]))
+
         def _switch_language(self):
             self._persist()  # сохранить выбор/опции/папку перед пересборкой окна
             new = "ru" if get_language() == "en" else "en"
             set_language(new)
             cfg["lang"] = new
             save_config(cfg)
-            _lang_switch["fn"]()  # пересобрать окно (замыкание из run_gui)
+            # Пересобрать окно на новом языке, перенеся в него всё несохранённое.
+            _lang_switch["fn"](self.ui_state())
 
         def _start_ext_load(self):
             if getattr(self, "_loader", None) is not None and self._loader.isRunning():
@@ -976,6 +1183,16 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                 # перечисленные в categories.json напрямую.
                 card.set_installed(sum(1 for e in ids if ext_index.get(e.lower()) == key))
             self._refresh_unknown()
+            # Размеры считаны для прежнего набора — пересчитаем по стекам с
+            # новым списком установленного (свежий замер придёт из SizeProbe).
+            if self._ext_sizes:
+                self._apply_sizes(self._ext_sizes, persist=False)
+            # Набор расширений изменился (что-то поставили/удалили) — размеры
+            # на диске устарели, перечитываем их в фоне.
+            cached = cfg.get("ext_sizes", {})
+            if not isinstance(cached, dict) or cached.get("n") != len(ids):
+                if getattr(self, "_sizes", None) is not None or self._ext_sizes:
+                    self._start_size_probe()
             # Список установленных мог измениться — обновим счётчики сегментов и
             # перечитаем фильтр (карточка могла перейти в другую группу).
             self._update_seg_counts()
@@ -988,11 +1205,12 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             if ids and ids != self.installed:
                 self._apply_installed(ids)
             elif not ids and not self.installed:
-                self.log.appendPlainText("Не удалось получить список расширений.")
+                self.log.appendPlainText(_("Не удалось получить список расширений."))
             if ids:
                 cfg["installed_cache"] = {"ids": ids, "source": source}
                 save_config(cfg)
-                self.log.appendPlainText(f"Расширений: {len(ids)} (источник: {source}).")
+                self.log.appendPlainText(
+                    _("Расширений: {n} (источник: {src}).").format(n=len(ids), src=source))
             self._update_summary()
             self._maybe_auto_suggest()  # #1: кэш был пуст — подсказка после загрузки
 
@@ -1073,13 +1291,14 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                 dup_row.setSpacing(8)
                 dup_lbl = _wrap(
                     QLabel(
-                        f"В categories.json дубли расширений: {len(duplicates)}. "
-                        "Расширение попадёт только в один стек — последний по порядку."
+                        _("В categories.json дубли расширений: {n}. Расширение "
+                          "попадёт только в один стек — последний по порядку.").format(
+                              n=len(duplicates))
                     )
                 )
                 dup_lbl.setObjectName("Warn")
                 dup_row.addWidget(dup_lbl, 1)
-                dup_btn = QPushButton("Показать")
+                dup_btn = QPushButton(_("Показать"))
                 dup_btn.setObjectName("Ghost")
                 dup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 dup_btn.clicked.connect(self._show_duplicates)
@@ -1107,6 +1326,17 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             mem_ref.setObjectName("Ghost")
             mem_ref.setToolTip(_("Обновить замер памяти запущенного VS Code"))
             mem_ref.clicked.connect(self._probe_memory)
+            self.ext_measure_btn = QPushButton(_("Замерить расширения"))
+            self.ext_measure_btn.setObjectName("Ghost")
+            self.ext_measure_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.ext_measure_btn.setToolTip(
+                _(
+                    "Спросить у запущенного VS Code (code --status), сколько "
+                    "памяти едят именно расширения, а сколько — сам редактор. "
+                    "Это факт, а не оценка по таблице весов."
+                )
+            )
+            self.ext_measure_btn.clicked.connect(self._measure_extensions)
             code_btn = QPushButton(_("VS Code…"))
             code_btn.setObjectName("Ghost")
             code_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1120,6 +1350,7 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             code_btn.clicked.connect(self._choose_code_cli)
             mem_row.addWidget(self.mem_lbl)
             mem_row.addStretch()
+            mem_row.addWidget(self.ext_measure_btn)
             mem_row.addWidget(code_btn)
             mem_row.addWidget(self.lang_btn)
             mem_row.addWidget(self.theme_btn)
@@ -1327,9 +1558,9 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             self.unknown_btn.setObjectName("Ghost")
             self.unknown_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.unknown_btn.setToolTip(
-                "Установленные расширения, которых нет в "
-                "data/categories.json — лаунчер всегда оставляет "
-                "их включёнными"
+                _("Установленные расширения, которых нет в "
+                  "data/categories.json — лаунчер всегда оставляет "
+                  "их включёнными")
             )
             self.unknown_btn.clicked.connect(self._show_unknown)
             # #6: мастер авто-раскладки незнакомых расширений по стекам.
@@ -1346,12 +1577,26 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             )
             self.classify_btn.clicked.connect(self._classify_wizard)
             self.classify_btn.setVisible(False)
+            # Персональные исключения по расширениям раньше были видны только
+            # изнутри «Подробнее» нужного стека. Счётчик рядом с картой делает
+            # их заметными: их легко забыть, а они сильнее галочек.
+            self.overrides_btn = QPushButton()
+            self.overrides_btn.setObjectName("Ghost")
+            self.overrides_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.overrides_btn.setToolTip(
+                _("Расширения с личным режимом «всегда включать/выключать» — "
+                  "показать список и снять лишние.")
+            )
+            self.overrides_btn.clicked.connect(self._show_overrides)
+            self.overrides_btn.setVisible(False)
             urow = QHBoxLayout()
             urow.addWidget(self.unknown_btn)
             urow.addWidget(self.classify_btn)
+            urow.addWidget(self.overrides_btn)
             urow.addStretch()
             cv.addLayout(urow)
             self._refresh_unknown()
+            self._refresh_override_chip()
 
             fold_card = _card()
             fv = QVBoxLayout(fold_card)
@@ -1363,14 +1608,23 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             fbox = QHBoxLayout()
             fbox.setSpacing(8)
             self.folder_edit = QLineEdit()
-            self.folder_edit.setPlaceholderText(_("путь к проекту, который открыть"))
+            self.folder_edit.setPlaceholderText(
+                _("путь к проекту или .code-workspace — можно перетащить сюда"))
             self.folder_edit.editingFinished.connect(
                 lambda: self._suggest_for_folder(self.folder_edit.text().strip())
             )
             fbox.addWidget(self.folder_edit)
             b_browse = QPushButton(_("Обзор…"))
+            b_browse.setToolTip(_("Выбрать папку проекта. Папку можно и просто "
+                                  "перетащить в окно."))
             b_browse.clicked.connect(self._browse)
             fbox.addWidget(b_browse)
+            b_ws = QPushButton(_("Рабочая область…"))
+            b_ws.setObjectName("Ghost")
+            b_ws.setToolTip(_("Открыть файл .code-workspace — многопапочный проект "
+                              "VS Code."))
+            b_ws.clicked.connect(self._browse_workspace)
+            fbox.addWidget(b_ws)
             fv.addLayout(fbox)
             self.recent_box = QComboBox()
             self.recent_box.addItem(_("— недавние папки —"), "")
@@ -1441,18 +1695,19 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             self.kill_cb = QCheckBox(_("Закрыть VS Code перед стартом (чтобы память освободилась)"))
             self.kill_cb.setChecked(cfg.get("kill_first", True))
             self.kill_cb.setToolTip(
-                f"Закроет все окна VS Code ({code_image_name(code_cli)}) перед стартом. "
-                "Запускай этот тул НЕ из терминала VS Code."
+                _("Закроет все окна VS Code ({exe}) перед стартом. "
+                  "Запускай этот тул НЕ из терминала VS Code.").format(
+                      exe=code_image_name(code_cli))
             )
             ov.addWidget(self.kill_cb)
             self.soft_cb = QCheckBox(_("   Мягко: дать VS Code сохранить (иначе принудительно)"))
             self.soft_cb.setChecked(cfg.get("soft_close", False))
             self.soft_cb.setToolTip(
-                "Пошлёт окну обычный запрос на закрытие — VS Code сам спросит про "
-                "несохранённые файлы. Лаунчер подождёт, пока редактор закроется, и "
-                "только потом стартует новый. Если оставить открытым диалог сохранения, "
-                "запуск отменится (ничего не потеряется). Выкл — жёсткое закрытие (/F): "
-                "быстро и надёжно освобождает память, но несохранённое теряется."
+                _("Пошлёт окну обычный запрос на закрытие — VS Code сам спросит про "
+                  "несохранённые файлы. Лаунчер подождёт, пока редактор закроется, и "
+                  "только потом стартует новый. Если оставить открытым диалог сохранения, "
+                  "запуск отменится (ничего не потеряется). Выкл — жёсткое закрытие (/F): "
+                  "быстро и надёжно освобождает память, но несохранённое теряется.")
             )
             self.kill_cb.stateChanged.connect(
                 lambda: self.soft_cb.setEnabled(self.kill_cb.isChecked())
@@ -1465,19 +1720,41 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             self.gpu_cb = QCheckBox(_("Без GPU-ускорения (--disable-gpu) — для слабых видеокарт"))
             self.gpu_cb.setChecked(cfg.get("disable_gpu", False))
             self.gpu_cb.setToolTip(
-                "Отключает аппаратное ускорение отрисовки. "
-                "Иногда лечит артефакты/лаги на старых GPU и экономит немного памяти."
+                _("Отключает аппаратное ускорение отрисовки. "
+                  "Иногда лечит артефакты/лаги на старых GPU и экономит немного памяти.")
             )
             ov.addWidget(self.gpu_cb)
             self.bare_cb = QCheckBox(
                 _("Голый режим: полностью без расширений (--disable-extensions)")
             )
             self.bare_cb.setToolTip(
-                "Отключит ВСЕ расширения, включая ядро — максимальная скорость. "
-                "Галочки стеков при этом игнорируются."
+                _("Отключит ВСЕ расширения, включая ядро — максимальная скорость. "
+                  "Галочки стеков при этом игнорируются.")
             )
             self.bare_cb.stateChanged.connect(self._update_summary)
             ov.addWidget(self.bare_cb)
+
+            self.tray_cb = QCheckBox(_("Значок в трее: запускать пресеты без окна"))
+            self.tray_cb.setChecked(cfg.get("tray", True))
+            self.tray_cb.setToolTip(
+                _(
+                    "Правый клик по значку — список пресетов; выбрал, и VS Code "
+                    "открылся нужным набором. Окно нужно только когда набор "
+                    "действительно меняешь. Применится после перезапуска лаунчера."
+                )
+            )
+            self.tray_cb.stateChanged.connect(self._toggle_tray_setting)
+            ov.addWidget(self.tray_cb)
+            self.close_tray_cb = QCheckBox(
+                _("   Крестик сворачивает в трей, а не закрывает"))
+            self.close_tray_cb.setChecked(cfg.get("close_to_tray", False))
+            self.close_tray_cb.setEnabled(self.tray_cb.isChecked())
+            self.close_tray_cb.setToolTip(
+                _("Лаунчер останется в трее и будет открываться мгновенно. "
+                  "Выйти совсем — «Выход» в меню значка.")
+            )
+            self.close_tray_cb.stateChanged.connect(self._toggle_tray_setting)
+            ov.addWidget(self.close_tray_cb)
 
             prof_row = QHBoxLayout()
             prof_row.setSpacing(8)
@@ -1489,8 +1766,8 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                 _("имя существующего профиля VS Code (необязательно)")
             )
             self.profile_edit.setToolTip(
-                "Откроет окно с этим профилем (--profile). Профиль нужно заранее создать "
-                "в VS Code (шестерёнка → Profiles). Пусто — профиль по умолчанию."
+                _("Откроет окно с этим профилем (--profile). Профиль нужно заранее создать "
+                  "в VS Code (шестерёнка → Profiles). Пусто — профиль по умолчанию.")
             )
             prof_row.addWidget(prof_lbl)
             prof_row.addWidget(self.profile_edit, 1)
@@ -1517,9 +1794,9 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             cvv.addLayout(ac_row)
             ac_hint = _wrap(
                 QLabel(
-                    "Пропишет базовые настройки для установленных стеков (формат при "
-                    "сохранении и т.п.). Существующие настройки не трогаются, перед "
-                    "записью делается бэкап settings.json."
+                    _("Пропишет базовые настройки для установленных стеков (формат при "
+                      "сохранении и т.п.). Существующие настройки не трогаются, перед "
+                      "записью делается бэкап settings.json.")
                 )
             )
             ac_hint.setObjectName("CatNote")
@@ -1724,7 +2001,7 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
 
         def _refresh_unknown(self):
             unk = self._unknown()
-            self.unknown_btn.setText(f"Не в карте: {len(unk)} — показать")
+            self.unknown_btn.setText(_("Не в карте: {n} — показать").format(n=len(unk)))
             self.unknown_btn.setVisible(bool(unk))
             # #6: кнопку мастера показываем, когда есть что раскладывать; сами
             # предложения считаем лениво (при клике), чтобы не читать манифесты
@@ -2526,19 +2803,19 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             if not duplicates:
                 return
             dlg = QDialog(self)
-            dlg.setWindowTitle("Дубли в categories.json")
+            dlg.setWindowTitle(_("Дубли в categories.json"))
             dlg.resize(600, 500)
             lay = QVBoxLayout(dlg)
             lay.setContentsMargins(18, 18, 18, 16)
             lay.setSpacing(12)
-            title = QLabel("Расширения в нескольких стеках")
+            title = QLabel(_("Расширения в нескольких стеках"))
             title.setObjectName("Title")
             lay.addWidget(title)
             note = _wrap(
                 QLabel(
-                    "Каждое расширение попадёт только в один стек — тот, что стоит "
-                    "последним в data/categories.json. Убери дубли, чтобы галочка "
-                    "работала предсказуемо."
+                    _("Каждое расширение попадёт только в один стек — тот, что стоит "
+                      "последним в data/categories.json. Убери дубли, чтобы галочка "
+                      "работала предсказуемо.")
                 )
             )
             note.setObjectName("Subtitle")
@@ -2554,36 +2831,136 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             box.setPlainText(text)
             lay.addWidget(box, 1)
             bar = QHBoxLayout()
-            copy = QPushButton("Копировать")
+            copy = QPushButton(_("Копировать"))
             copy.setObjectName("Ghost")
             copy.clicked.connect(lambda: QApplication.clipboard().setText(text))
             bar.addWidget(copy)
             bar.addStretch()
-            close = QPushButton("Закрыть")
+            close = QPushButton(_("Закрыть"))
             close.setObjectName("Accent")
             close.clicked.connect(dlg.accept)
             bar.addWidget(close)
             lay.addLayout(bar)
             dlg.exec()
 
+        def _show_overrides(self):
+            """Все персональные исключения в одном месте.
+
+            Исключение по расширению («всегда включать» / «всегда выключать»)
+            ставится в окне «Подробнее» конкретного стека — и там же терялось:
+            через месяц человек видит, что стек выключен, а расширение грузится,
+            и не помнит, где это включил. Здесь весь список сразу, с отменой."""
+            rows = [(e, "enable") for e in sorted(self._force_enable)]
+            rows += [(e, "disable") for e in sorted(self._force_disable)]
+            dlg = QDialog(self)
+            dlg.setWindowTitle(_("Исключения по расширениям"))
+            dlg.resize(620, 520)
+            lay = QVBoxLayout(dlg)
+            lay.setContentsMargins(18, 18, 18, 16)
+            lay.setSpacing(12)
+            ttl = QLabel(_("Исключения по расширениям"))
+            ttl.setObjectName("Title")
+            lay.addWidget(ttl)
+            note = _wrap(QLabel(
+                _("Эти расширения игнорируют решение своего стека. Исключение "
+                  "сильнее галочки: «всегда включать» переживёт выключенный стек, "
+                  "«всегда выключать» — включённый.")
+                if rows else
+                _("Исключений нет. Поставить их можно в «Подробнее» у любого "
+                  "стека — там у каждого расширения есть выбор режима.")))
+            note.setObjectName("Subtitle")
+            lay.addWidget(note)
+            lay.addWidget(_hline())
+
+            area = QScrollArea()
+            area.setWidgetResizable(True)
+            area.setFrameShape(QFrame.Shape.NoFrame)
+            host = QWidget()
+            hv = QVBoxLayout(host)
+            hv.setContentsMargins(0, 0, 6, 0)
+            hv.setSpacing(6)
+
+            def drop(ext_id, row_widget):
+                self.set_override(ext_id, "default")
+                row_widget.setVisible(False)
+                self._refresh_override_chip()
+
+            for ext_id, mode in rows:
+                row = QFrame()
+                row.setObjectName("CatCard")
+                rl = QHBoxLayout(row)
+                rl.setContentsMargins(12, 8, 12, 8)
+                rl.setSpacing(10)
+                lbl = QLabel(ext_id)
+                lbl.setObjectName("CatTitle")
+                rl.addWidget(lbl, 1)
+                badge = QLabel(_("всегда включено") if mode == "enable"
+                               else _("всегда выключено"))
+                badge.setObjectName("Wlight" if mode == "enable" else "Wheavy")
+                rl.addWidget(badge, 0)
+                cat = ext_index.get(ext_id)
+                if cat:
+                    title = cats.get("categories", {}).get(cat, {}).get("title", cat)
+                    stack_lbl = QLabel(title)
+                    stack_lbl.setObjectName("CatNote")
+                    rl.addWidget(stack_lbl, 0)
+                rm = QPushButton(_("Убрать"))
+                rm.setObjectName("Ghost")
+                rm.clicked.connect(lambda _c=False, e=ext_id, r=row: drop(e, r))
+                rl.addWidget(rm, 0)
+                hv.addWidget(row)
+            hv.addStretch(1)
+            area.setWidget(host)
+            lay.addWidget(area, 1)
+
+            bar = QHBoxLayout()
+            clear = QPushButton(_("Убрать все"))
+            clear.setObjectName("Danger")
+            clear.setEnabled(bool(rows))
+
+            def clear_all():
+                for ext_id, _mode in rows:
+                    self.set_override(ext_id, "default")
+                self._refresh_override_chip()
+                dlg.accept()
+
+            clear.clicked.connect(clear_all)
+            bar.addWidget(clear)
+            bar.addStretch()
+            close = QPushButton(_("Закрыть"))
+            close.setObjectName("Accent")
+            close.clicked.connect(dlg.accept)
+            bar.addWidget(close)
+            lay.addLayout(bar)
+            dlg.exec()
+
+        def _refresh_override_chip(self):
+            """Кнопка-счётчик исключений: видна, только когда они есть."""
+            btn = getattr(self, "overrides_btn", None)
+            if btn is None:
+                return
+            n = len(self._force_enable) + len(self._force_disable)
+            btn.setText(_("Исключения: {n}").format(n=n))
+            btn.setVisible(bool(n))
+
         def _show_unknown(self):
             unk = self._unknown()
             if not unk:
                 return
             dlg = QDialog(self)
-            dlg.setWindowTitle("Расширения не в карте")
+            dlg.setWindowTitle(_("Расширения не в карте"))
             dlg.resize(560, 560)
             lay = QVBoxLayout(dlg)
             lay.setContentsMargins(18, 18, 18, 16)
             lay.setSpacing(12)
-            title = QLabel("Не в data/categories.json")
+            title = QLabel(_("Не в data/categories.json"))
             title.setObjectName("Title")
             lay.addWidget(title)
             note = _wrap(
                 QLabel(
-                    f"{len(unk)} расширений нет в карте категорий, поэтому лаунчер всегда "
-                    "оставляет их включёнными. Добавь их в нужную категорию в "
-                    "data/categories.json, чтобы управлять ими из окна."
+                    _("{n} расширений нет в карте категорий, поэтому лаунчер всегда "
+                      "оставляет их включёнными. Добавь их в нужную категорию в "
+                      "data/categories.json, чтобы управлять ими из окна.").format(n=len(unk))
                 )
             )
             note.setObjectName("Subtitle")
@@ -2596,12 +2973,12 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             box.setPlainText("\n".join(unk))
             lay.addWidget(box, 1)
             bar = QHBoxLayout()
-            copy = QPushButton("Копировать список")
+            copy = QPushButton(_("Копировать список"))
             copy.setObjectName("Ghost")
             copy.clicked.connect(lambda: QApplication.clipboard().setText("\n".join(unk)))
             bar.addWidget(copy)
             bar.addStretch()
-            close = QPushButton("Закрыть")
+            close = QPushButton(_("Закрыть"))
             close.setObjectName("Accent")
             close.clicked.connect(dlg.accept)
             bar.addWidget(close)
@@ -2618,24 +2995,25 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             text = (
                 json.dumps(to_add, ensure_ascii=False, indent=2)
                 if to_add
-                else "Нет рекомендаций для установленных стеков."
+                else _("Нет рекомендаций для установленных стеков.")
             )
 
             dlg = QDialog(self)
-            dlg.setWindowTitle("Автонастройка VS Code")
+            dlg.setWindowTitle(_("Автонастройка VS Code"))
             dlg.resize(600, 560)
             lay = QVBoxLayout(dlg)
             lay.setContentsMargins(18, 18, 18, 16)
             lay.setSpacing(12)
-            title = QLabel("Рекомендованные настройки")
+            title = QLabel(_("Рекомендованные настройки"))
             title.setObjectName("Title")
             lay.addWidget(title)
             stacks = ", ".join(sorted(present)) or "—"
             info = _wrap(
                 QLabel(
-                    f"Стеки: {stacks}. «Применить» добавит только НЕДОСТАЮЩИЕ ключи в "
-                    f"settings.json и сделает бэкап; существующие настройки не меняются.\n"
-                    f"Файл: {path if path else 'не найден'}"
+                    _("Стеки: {stacks}. «Применить» добавит только НЕДОСТАЮЩИЕ ключи в "
+                      "settings.json и сделает бэкап; существующие настройки не меняются.\n"
+                      "Файл: {path}").format(
+                          stacks=stacks, path=path if path else _("не найден"))
                 )
             )
             info.setObjectName("Subtitle")
@@ -2649,12 +3027,12 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             lay.addWidget(box, 1)
 
             bar = QHBoxLayout()
-            copy = QPushButton("Копировать")
+            copy = QPushButton(_("Копировать"))
             copy.setObjectName("Ghost")
             copy.setEnabled(bool(to_add))
             copy.clicked.connect(lambda: QApplication.clipboard().setText(text))
             bar.addWidget(copy)
-            apply_btn = QPushButton("Применить (бэкап)")
+            apply_btn = QPushButton(_("Применить (бэкап)"))
             apply_btn.setObjectName("Accent")
             apply_btn.setEnabled(bool(to_add and path))
 
@@ -2662,9 +3040,9 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                 if (
                     QMessageBox.question(
                         dlg,
-                        "Применить настройки?",
-                        "Добавить недостающие рекомендованные ключи в settings.json?\n"
-                        "Существующие настройки не изменятся, будет сделан бэкап.",
+                        _("Применить настройки?"),
+                        _("Добавить недостающие рекомендованные ключи в settings.json?\n"
+                          "Существующие настройки не изменятся, будет сделан бэкап."),
                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                         QMessageBox.StandardButton.No,
                     )
@@ -2673,12 +3051,13 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                     return
                 ok, msg = apply_settings(path, to_add)
                 log.info("Автонастройка: %s", msg.replace("\n", " | "))
-                (QMessageBox.information if ok else QMessageBox.warning)(dlg, "Автонастройка", msg)
+                (QMessageBox.information if ok else QMessageBox.warning)(
+                    dlg, _("Автонастройка"), msg)
 
             apply_btn.clicked.connect(do_apply)
             bar.addWidget(apply_btn)
             bar.addStretch()
-            close = QPushButton("Закрыть")
+            close = QPushButton(_("Закрыть"))
             close.setObjectName("Ghost")
             close.clicked.connect(dlg.accept)
             bar.addWidget(close)
@@ -2691,6 +3070,30 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                 self.sel_count.setText(
                     _("выбрано {n} / {m}").format(n=len(self._selected()), m=len(self.cat_checks))
                 )
+
+        def _set_savings_tooltip(self, disabled, n_calibrated: int):
+            """Объяснить, откуда взялось число экономии. Пользователь вправе
+            знать, что перед ним: прикидка по таблице или его собственные
+            замеры — доверие к цифре важнее самой цифры."""
+            cats_off = {c for e in disabled
+                        if (c := ext_index.get(e)) is not None and c != "always_on"}
+            total = len(cats_off)
+            if not total:
+                tip = _("Ничего не выключается — экономить нечего.")
+            elif n_calibrated >= total:
+                tip = _("Все {n} выключаемых стеков посчитаны по твоим прошлым "
+                        "замерам памяти — это не прикидка.").format(n=total)
+            elif n_calibrated:
+                tip = _("По твоим замерам посчитано {n} стеков из {total}, "
+                        "остальные — по таблице нагрузки. Чем чаще запускаешь "
+                        "разные наборы, тем точнее число.").format(
+                            n=n_calibrated, total=total)
+            else:
+                tip = _("Пока это прикидка по таблице нагрузки стеков. После "
+                        "нескольких запусков разных наборов лаунчер посчитает "
+                        "цену каждого стека по фактическим замерам.")
+            for w in (self.savings_num, self.savings_unit):
+                w.setToolTip(tip)
 
         def _set_hero(self, number, unit, en_txt, dis_txt, extra_txt=""):
             self.savings_num.setText(str(number))
@@ -2714,7 +3117,11 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                 return
             dis = self._disabled_list()
             en = len(self.installed) - len(dis)
-            saved = estimate_saved_mb(dis, ext_index)
+            # Оценка теперь опирается на СОБСТВЕННЫЕ замеры: если два прошлых
+            # запуска отличались одним стеком, его цена известна точно, а не
+            # взята из таблицы «тяжёлый/средний/лёгкий».
+            saved, n_calibrated = _w.estimate_saved_mb(dis, ext_index, cfg)
+            self._set_savings_tooltip(dis, n_calibrated)
             # Фактические замеры, если этот набор уже запускали (#6/#2).
             sig = selection_signature(self._selected(), self._bare())
             extra = ""
@@ -2741,10 +3148,37 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                 _("Запустить · −{dis}").format(dis=len(dis)) if dis else _("Запустить VS Code")
             )
 
+        def _toggle_tray_setting(self):
+            """Сохранить настройки трея сразу: это переключатели поведения окна,
+            а не параметры конкретного запуска — ждать «Запустить» незачем."""
+            cfg["tray"] = self.tray_cb.isChecked()
+            cfg["close_to_tray"] = self.close_tray_cb.isChecked()
+            self.close_tray_cb.setEnabled(self.tray_cb.isChecked())
+            # Применяем сразу, не дожидаясь перезапуска: иначе включённое
+            # «сворачивать в трей» пряталo бы окно, а Qt тут же завершал
+            # приложение как «последнее окно закрыто».
+            app = QApplication.instance()
+            if app is not None and self._tray is not None:
+                app.setQuitOnLastWindowClosed(not self.close_tray_cb.isChecked())
+            save_config(cfg)
+
         def _cmd_kwargs(self) -> dict:
             return {
                 "profile": self.profile_edit.text().strip(),
                 "disable_gpu": self.gpu_cb.isChecked(),
+                "bare": self._bare(),
+            }
+
+        def _plan_options(self) -> dict:
+            """Опции запуска в форме, которую понимает quicklaunch.plan_launch.
+            Отличается от _cmd_kwargs только именем ключа для GPU — там оно
+            повторяет параметр build_launch_*, здесь — поле пресета."""
+            return {
+                "folder": self.folder_edit.text().strip(),
+                "new_window": self.newwin_cb.isChecked(),
+                "kill": self.kill_cb.isChecked(),
+                "profile": self.profile_edit.text().strip(),
+                "gpu_off": self.gpu_cb.isChecked(),
                 "bare": self._bare(),
             }
 
@@ -2753,6 +3187,48 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             if d:
                 self.folder_edit.setText(d.replace("/", "\\"))
                 self._suggest_for_folder(self.folder_edit.text().strip())
+
+        def _browse_workspace(self):
+            """Выбрать .code-workspace — многопапочный проект VS Code. Он
+            открывается той же позиционной аргументацией, что и папка, но
+            раньше указать его было нельзя: диалог пускал только каталоги."""
+            f, _filt = QFileDialog.getOpenFileName(
+                self, _("Выбери файл рабочей области"), "",
+                _("VS Code workspace (*.code-workspace);;Все файлы (*.*)"))
+            if f:
+                self.folder_edit.setText(f.replace("/", "\\"))
+                self._suggest_for_folder(self.folder_edit.text().strip())
+
+        # --- перетаскивание папки/воркспейса в окно ----------------------
+        def dragEnterEvent(self, e):
+            """Принимаем перетаскивание папки или файла .code-workspace: это
+            самый короткий путь «открыть вот этот проект» — не надо ни искать
+            его в диалоге, ни копировать путь."""
+            if e.mimeData().hasUrls() and any(
+                    u.isLocalFile() for u in e.mimeData().urls()):
+                e.acceptProposedAction()
+
+        def dragMoveEvent(self, e):
+            if e.mimeData().hasUrls():
+                e.acceptProposedAction()
+
+        def dropEvent(self, e):
+            paths = [u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()]
+            if not paths:
+                return
+            target = paths[0]
+            try:
+                p = Path(target)
+                # Бросили обычный файл (не воркспейс) — открываем его папку:
+                # человек тащил проект, а не конкретный файл.
+                if p.is_file() and p.suffix.lower() != ".code-workspace":
+                    target = str(p.parent)
+            except Exception:
+                pass
+            self.folder_edit.setText(target.replace("/", "\\"))
+            self._suggest_for_folder(target)
+            self.log.appendPlainText(_("Папка проекта: {folder}").format(folder=target))
+            e.acceptProposedAction()
 
         def _pick_recent(self):
             path = self.recent_box.currentData() or ""
@@ -2830,13 +3306,14 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                 **self._cmd_kwargs(),
             )
             self.log.setPlainText(
-                "Эквивалент для cmd (сам лаунчер запускает "
-                "Code.exe напрямую, без оболочки):\n" + cmd
+                _("Эквивалент для cmd (сам лаунчер запускает "
+                  "Code.exe напрямую, без оболочки):") + "\n" + cmd
             )
 
         def _run(self):
             if not code_cli:
-                QMessageBox.critical(self, "Ошибка", "Не найден CLI VS Code (code.cmd).")
+                QMessageBox.critical(
+                    self, _("Ошибка"), _("Не найден CLI VS Code (code.cmd)."))
                 return
             folder = self.folder_edit.text().strip()
             if folder and not Path(folder).exists():
@@ -2844,8 +3321,9 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                 # и это отсекает попытку подсунуть в поле что-то, что не является путём.
                 r = QMessageBox.question(
                     self,
-                    "Папка не найдена",
-                    f"Путь не существует:\n{folder}\n\nОткрыть VS Code без папки?",
+                    _("Папка не найдена"),
+                    _("Путь не существует:\n{folder}\n\nОткрыть VS Code без "
+                      "папки?").format(folder=folder),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.No,
                 )
@@ -2853,40 +3331,54 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                     return
                 self.folder_edit.clear()
             if self.kill_cb.isChecked():
+                # Текст должен совпадать с тем, что реально произойдёт: при
+                # мягком закрытии VS Code сам спросит про несохранённое, и
+                # пугать потерей файлов здесь неправильно.
+                if self.soft_cb.isChecked():
+                    body = _(
+                        "Сейчас VS Code получит обычный запрос на закрытие — он "
+                        "сам спросит про несохранённые файлы. Когда закроется, "
+                        "откроется новое окно с выбранным набором.\n\n"
+                        "Продолжить?"
+                    )
+                else:
+                    body = _(
+                        "Сейчас будут ПРИНУДИТЕЛЬНО закрыты все окна VS Code, "
+                        "затем откроется новое с выбранным набором.\n\n"
+                        "Сохранил несохранённые файлы? Продолжить?"
+                    )
                 r = QMessageBox.question(
                     self,
-                    "Закрыть VS Code?",
-                    "Сейчас будут ПРИНУДИТЕЛЬНО закрыты все окна VS Code, "
-                    "затем откроется новое с выбранным набором.\n\n"
-                    "Сохранил несохранённые файлы? Продолжить?",
+                    _("Закрыть VS Code?"),
+                    body,
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 )
                 if r != QMessageBox.StandardButton.Yes:
                     return
-            dis = self._disabled_list()
             bare = self._bare()
-            args = build_launch_args(
-                dis,
-                self.folder_edit.text().strip(),
-                self.newwin_cb.isChecked(),
-                self.kill_cb.isChecked(),
-                **self._cmd_kwargs(),
+            # Один путь сборки запуска с CLI и треем (quicklaunch.plan_launch),
+            # иначе три места считают выключаемое по чуть-чуть по-разному.
+            # Списки отдаём готовыми: окно уже держит их в руках.
+            plan = plan_launch(
+                code_cli, cfg, ext_index, self._selected(), self._plan_options(),
+                installed=self.installed, dep_map=self._get_dep_map(),
             )
+            dis, args = plan["disabled"], plan["args"]
 
             def do_launch():
                 try:
                     launch_detached(code_cli, args)  # без оболочки, напрямую Code.exe
                 except Exception as e:
                     log.exception("Ошибка запуска")
-                    QMessageBox.critical(self, "Ошибка запуска", str(e))
+                    QMessageBox.critical(self, _("Ошибка запуска"), str(e))
                     return
                 log.info(
                     "Запуск: %s", "голый режим" if bare else f"выключено {len(dis)} расширений"
                 )
                 self.log.appendPlainText(
-                    "Запуск: голый режим (все расширения выкл). OK."
+                    _("Запуск: голый режим (все расширения выкл). OK.")
                     if bare
-                    else f"Запуск: выключено {len(dis)} расширений. OK."
+                    else _("Запуск: выключено {n} расширений. OK.").format(n=len(dis))
                 )
                 # #6: замерить фактический footprint этого набора чуть погодя.
                 self._pending_record_sig = selection_signature(self._selected(), bare)
@@ -2900,7 +3392,7 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                     self._graceful_close_then(do_launch)  # дать сохранить, дождаться
                 else:
                     kill_vscode(code_cli)  # жёстко (/F), затем стартуем с паузой
-                    self.log.appendPlainText("Закрываю VS Code…")
+                    self.log.appendPlainText(_("Закрываю VS Code…"))
                     QTimer.singleShot(1800, do_launch)  # не блокируем интерфейс
             else:
                 do_launch()
@@ -2911,19 +3403,20 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             затем cont(). Если через ~15 с редактор ещё открыт (скорее всего висит
             диалог сохранения) — отменяем запуск, ничего не потеряв."""
             kill_vscode(code_cli, graceful=True)
-            self.log.appendPlainText("Прошу VS Code закрыться (ответь на запрос сохранения)…")
+            self.log.appendPlainText(
+                _("Прошу VS Code закрыться (ответь на запрос сохранения)…"))
             self._soft_tries = 0
 
             def check():
                 self._soft_tries += 1
                 if vscode_process_count(code_cli) == 0:
-                    self.log.appendPlainText("VS Code закрыт. Запускаю…")
+                    self.log.appendPlainText(_("VS Code закрыт. Запускаю…"))
                     cont()
                     return
                 if self._soft_tries >= 20:  # ~15 секунд
                     self.log.appendPlainText(
-                        "VS Code всё ещё открыт — запуск отменён. Закрой окна "
-                        "(или ответь на запрос сохранения) и нажми «Запустить» снова."
+                        _("VS Code всё ещё открыт — запуск отменён. Закрой окна "
+                          "(или ответь на запрос сохранения) и нажми «Запустить» снова.")
                     )
                     return
                 QTimer.singleShot(750, check)
@@ -2931,6 +3424,11 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             QTimer.singleShot(750, check)
 
         def _reload_presets(self):
+            # Меню в трее показывает те же пресеты — пересобираем и его, иначе
+            # только что сохранённый пресет не появился бы там до перезапуска.
+            tray = getattr(self, "_tray", None)
+            if tray is not None:
+                tray.rebuild_menu()
             self.preset_box.blockSignals(True)
             self.preset_box.clear()
             self.preset_box.addItem(_("— выбрать пресет —"), None)
@@ -2963,7 +3461,8 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             self._update_summary()
 
         def _save_preset(self):
-            name, ok = QInputDialog.getText(self, "Сохранить пресет", "Имя пресета:")
+            name, ok = QInputDialog.getText(
+                self, _("Сохранить пресет"), _("Имя пресета:"))
             if not ok or not name.strip():
                 return
             # #4: сохраняем не только стеки, но и текущие опции запуска —
@@ -2994,10 +3493,10 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
         def _export_presets(self):
             presets = cfg.get("presets", {})
             if not presets:
-                QMessageBox.information(self, "Экспорт", "Пресетов пока нет.")
+                QMessageBox.information(self, _("Экспорт"), _("Пресетов пока нет."))
                 return
             path, _filt = QFileDialog.getSaveFileName(
-                self, "Экспорт пресетов", "vscode_launcher_presets.json", "JSON (*.json)"
+                self, _("Экспорт пресетов"), "vscode_launcher_presets.json", "JSON (*.json)"
             )
             if not path:
                 return
@@ -3005,22 +3504,25 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                 Path(path).write_text(
                     json.dumps(presets, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
-                self.log.appendPlainText(f"Экспортировано пресетов: {len(presets)} → {path}")
+                self.log.appendPlainText(
+                    _("Экспортировано пресетов: {n} → {path}").format(
+                        n=len(presets), path=path))
             except Exception as e:
-                QMessageBox.critical(self, "Ошибка экспорта", str(e))
+                QMessageBox.critical(self, _("Ошибка экспорта"), str(e))
 
         def _import_presets(self):
-            path, _filt = QFileDialog.getOpenFileName(self, "Импорт пресетов", "", "JSON (*.json)")
+            path, _filt = QFileDialog.getOpenFileName(
+                self, _("Импорт пресетов"), "", "JSON (*.json)")
             if not path:
                 return
             try:
                 data = json.loads(Path(path).read_text(encoding="utf-8"))
                 if not isinstance(data, dict):
-                    raise ValueError("ожидается объект {имя: [категории]}")
+                    raise ValueError(_("ожидается объект вида имя: [категории]"))
                 # #4: значение пресета — список ключей ИЛИ словарь-профиль.
                 raw = {str(k): v for k, v in data.items() if isinstance(v, (list, dict))}
             except Exception as e:
-                QMessageBox.critical(self, "Ошибка импорта", str(e))
+                QMessageBox.critical(self, _("Ошибка импорта"), str(e))
                 return
             # Пропускаем несуществующие ключи категорий: чужой пресет мог
             # ссылаться на переименованный/удалённый стек — молчаливо оставлять
@@ -3037,19 +3539,18 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                     {**value, "stacks": cleaned} if isinstance(value, dict) else cleaned
                 )
             if not incoming:
-                self.log.appendPlainText("Импорт: в файле нет пресетов.")
+                self.log.appendPlainText(_("Импорт: в файле нет пресетов."))
                 return
             cfg.setdefault("presets", {}).update(incoming)
             save_config(cfg)
             self._reload_presets()
-            msg = f"Импортировано пресетов: {len(incoming)}"
+            msg = _("Импортировано пресетов: {n}").format(n=len(incoming))
             if dropped_keys:
                 sample = ", ".join(sorted(dropped_keys)[:6])
                 tail = "…" if len(dropped_keys) > 6 else ""
-                msg += (
-                    f" (пропущено неизвестных ключей категорий: "
-                    f"{len(dropped_keys)} — {sample}{tail})"
-                )
+                msg += _(" (пропущено неизвестных ключей категорий: "
+                         "{n} — {sample}{tail})").format(
+                             n=len(dropped_keys), sample=sample, tail=tail)
             self.log.appendPlainText(msg)
 
         def _make_shortcut(self):
@@ -3170,7 +3671,24 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
             if worker in self._install_threads:
                 self._install_threads.remove(worker)
 
+        def request_quit(self):
+            """Выйти по-настоящему (пункт «Выход» в трее): закрыть окно, не
+            пряча его в трей."""
+            self._quit_requested = True
+            self.close()
+
         def closeEvent(self, e):
+            # Окно с включённым «сворачивать в трей» не закрывается по крестику,
+            # а прячется: лаунчер остаётся под рукой, а пресеты — в одном клике.
+            if (not self._quit_requested and self._tray is not None
+                    and cfg.get("close_to_tray", False)):
+                e.ignore()
+                self.hide()
+                self._tray.showMessage(
+                    "VS Code Launcher",
+                    _("Лаунчер свёрнут в трей. Пресеты — правым кликом по значку."),
+                    QSystemTrayIcon.MessageIcon.Information, 2500)
+                return
             try:  # запоминаем геометрию окна
                 cfg["geometry"] = bytes(self.saveGeometry().toBase64()).decode("ascii")
                 save_config(cfg)
@@ -3183,6 +3701,8 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
                 getattr(self, "_loader", None),
                 getattr(self, "_upd", None),
                 getattr(self, "_dl", None),   # загрузка обновления: тоже дождаться
+                getattr(self, "_sizes", None),   # обход папки расширений
+                getattr(self, "_status", None),  # code --status
             ]
             threads += list(self._install_threads)
             for t in threads:
@@ -3193,6 +3713,30 @@ def _launcher_factory(cats, cats_err, cfg, ext_index, code_cli, descriptions, du
 
 
 # --- точка входа -----------------------------------------------------------
+
+
+def _single_instance_guard(app_id: str = "vscode-launcher-single"):
+    """Не поднимать второй лаунчер: если он уже запущен, разбудить его окно.
+
+    Со значком в трее это стало обязательным — иначе «запустил ещё раз» даёт
+    два значка и два окна, спорящих за один конфиг (кто последним сохранил, того
+    и настройки). Возвращает (сервер, уже_запущен). Сервер надо держать живым всё
+    время работы приложения, иначе имя освободится."""
+    from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+
+    probe = QLocalSocket()
+    probe.connectToServer(app_id)
+    if probe.waitForConnected(300):
+        probe.write(b"show")
+        probe.flush()
+        probe.waitForBytesWritten(300)
+        probe.disconnectFromServer()
+        return None, True
+    # Прошлый экземпляр мог упасть и оставить имя занятым — снимаем.
+    QLocalServer.removeServer(app_id)
+    server = QLocalServer()
+    server.listen(app_id)
+    return server, False
 
 
 def run_gui():
@@ -3255,6 +3799,10 @@ def run_gui():
     )
 
     app = QApplication(sys.argv)
+    server, already_running = _single_instance_guard()
+    if already_running:
+        log.info("Лаунчер уже запущен — активирую его окно")
+        return
     app.setStyle("Fusion")
     font = QFont()
     font.setPointSize(10)
@@ -3276,22 +3824,67 @@ def run_gui():
     # Держим текущее окно в holder, чтобы кнопка языка могла заменить его,
     # перенеся геометрию и сохранённый выбор.
     holder = {"w": None}
+    tray_holder = {"t": None}
 
-    def rebuild():
+    def rebuild(state=None):
         old = holder["w"]
         geo = old.saveGeometry() if old is not None else None
         nw = build_window()
         if geo is not None:
             nw.restoreGeometry(geo)
+        if state:
+            nw.apply_ui_state(state)   # не терять несохранённый выбор при смене языка
         holder["w"] = nw
         if old is not None:
+            old._quit_requested = True   # старое окно закрываем, а не прячем в трей
             old.close()
             old.deleteLater()
+        if tray_holder["t"] is not None:
+            tray_holder["t"].attach(nw)
 
     _lang_switch["fn"] = rebuild
 
     w = build_window()
     holder["w"] = w
+
+    # Значок в трее: пресеты запускаются без открытия окна. Создаём после
+    # первого окна, потому что меню трея говорит именно с ним.
+    if cfg.get("tray", True) and QSystemTrayIcon.isSystemTrayAvailable():
+        try:
+            from .gui_tray import LauncherTray
+
+            def _quit_all():
+                # Через окно, а не app.quit(): так сработает closeEvent и
+                # геометрия с настройками успеет сохраниться.
+                cur = holder["w"]
+                if cur is not None:
+                    cur.request_quit()
+                app.quit()
+
+            tray = LauncherTray(w, cfg, ext_index, lambda: code_cli, _quit_all)
+            tray.show()
+            tray_holder["t"] = tray
+            w._tray = tray
+            # Не выходить, когда последнее окно спрятано в трей: иначе
+            # «свернуть в трей» мгновенно завершало бы приложение.
+            app.setQuitOnLastWindowClosed(not cfg.get("close_to_tray", False))
+        except Exception:
+            log.exception("Не удалось создать значок в трее")
+
+    # Второй запуск лаунчера не поднимает второе окно, а будит это.
+    if server is not None:
+        def _on_new_connection():
+            conn = server.nextPendingConnection()
+            if conn is not None:
+                conn.disconnectFromServer()
+            cur = holder["w"]
+            if cur is not None:
+                cur.showNormal()
+                cur.raise_()
+                cur.activateWindow()
+
+        server.newConnection.connect(_on_new_connection)
+
     _shot = os.environ.get("LAUNCHER_SHOT")  # dev-хук: снять окно в PNG и выйти
     if _shot:
         sw, sh = os.environ.get("LAUNCHER_W"), os.environ.get("LAUNCHER_H")

@@ -95,7 +95,8 @@ def test_baseline_and_measured_savings():
     cfg = {}
     core.record_baseline(cfg, 2000, 10)
     core.record_footprint(cfg, "python", 1400, 6)
-    assert core.lookup_baseline(cfg) == {"mb": 2000, "n": 10}
+    assert core.lookup_baseline(cfg) == {"mb": 2000, "n": 10,
+                                         "metric": core.config.MEMORY_METRIC}
     assert core.measured_savings_mb(cfg, "python") == 600
 
 

@@ -9,9 +9,11 @@ import csv
 import io
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
+from . import winmem
 from .safety import valid_ext_id
 
 # GUI запускается через pythonw/exe без консоли, поэтому любой консольный
@@ -228,59 +230,161 @@ def code_memory_mb(code_cli: str | None) -> tuple[int, int]:
 
 
 def code_private_ws_mb(code_cli: str | None) -> tuple[int, int]:
-    """Честный footprint (#2): сумма PRIVATE working set всех процессов VS Code.
+    """Честный footprint (#2): приватная память всех процессов VS Code.
 
     tasklist в code_memory_mb суммирует полный working set каждого процесса —
     а десяток процессов Code делят общие страницы (движок, DLL), которые так
-    считаются многократно, и «сэкономлено X МБ» завышается. Private working set
-    (perf-счётчик WorkingSetPrivate) — только неразделяемая, реально
-    освобождаемая при закрытии память. Считаем её через PowerShell/CIM.
+    считаются многократно, и «сэкономлено X МБ» завышается. Приватная память —
+    только неразделяемая, реально освобождаемая при закрытии.
+
+    Считаем нативно через Win32 (winmem.py): единицы миллисекунд, без запуска
+    powershell.exe, который стоил ~1-2 с на каждый замер и есть не везде.
 
     Возвращает (МБ, число процессов). (0, 0) — VS Code не запущен ИЛИ замер не
-    удался (нет PowerShell, счётчик недоступен): вызывающий откатывается на
-    code_memory_mb. Имена процессов в perf-классе — базовое имя без .exe, у
-    нескольких инстансов вид 'Code', 'Code#1'; фильтром берём оба."""
-    base = code_image_name(code_cli)[:-4]      # 'Code.exe' -> 'Code'
-    base = base.replace("'", "''")             # экранируем для WQL-фильтра
-    wql = f"Name='{base}' OR Name LIKE '{base}#%'"
-    ps = (
-        "$ErrorActionPreference='SilentlyContinue';"
-        "$r=Get-CimInstance Win32_PerfFormattedData_PerfProc_Process "
-        f"-Filter \"{wql}\";"
-        "'{0} {1}' -f (($r|Measure-Object WorkingSetPrivate -Sum).Sum),"
-        "($r|Measure-Object).Count"
-    )
+    удался: вызывающий откатывается на code_memory_mb."""
+    try:
+        private_mb, _ws_mb, n = winmem.image_memory(code_image_name(code_cli))
+    except Exception:
+        return 0, 0
+    return (private_mb, n) if n else (0, 0)
+
+
+# --- честная стоимость расширений: code --status ---------------------------
+
+_STATUS_ROW_RE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S.*?)\s*$")
+
+
+def parse_code_status(text: str) -> dict:
+    """Разобрать вывод `code --status` в сводку по процессам редактора.
+
+    Что там есть, чего нет больше нигде: VS Code сам подписывает свои процессы —
+    'window', 'gpu-process', 'extensionHost', 'ptyHost', 'fileWatcher'. Это
+    позволяет отделить память САМОГО редактора от памяти РАСШИРЕНИЙ: расширения
+    живут в extensionHost и в порождённых им языковых серверах (они выводятся
+    с отступом под ним). Ответ «сколько едят расширения» перестаёт быть
+    догадкой по таблице весов.
+
+    Возвращает {"total_mb", "extension_mb", "editor_mb", "processes", "extensions"}.
+    Чистая функция без IO — тестируется на фикстуре; ничего не распарсилось —
+    нули и пустой список.
+
+    Вложенность считаем по КОЛОНКЕ, с которой начинается имя процесса: числовые
+    колонки выровнены по правому краю, поэтому у детей имя сдвинуто правее
+    родителя ровно на отступ."""
+    rows: list[dict] = []
+    in_table = False
+    for raw in (text or "").splitlines():
+        low = raw.strip().lower()
+        if not in_table:
+            if low.startswith("cpu %") and "mem mb" in low and "process" in low:
+                in_table = True
+            continue
+        if not raw.strip():
+            if rows:
+                break          # таблица кончилась пустой строкой
+            continue
+        m = _STATUS_ROW_RE.match(raw)
+        if not m:
+            break
+        # Отступ дочернего процесса VS Code кладёт В САМО поле имени, а поля
+        # разделяет табами. Берём отступ из последнего поля — тогда pid другой
+        # ширины (семизначные бывают) не сдвинет вложенность. Старый формат с
+        # выравниванием пробелами всё ещё читается по колонке имени.
+        if raw.count("\t") >= 3:
+            field = raw.split("\t")[3]
+            col = len(field) - len(field.lstrip(" "))
+        else:
+            col = m.start(4)
+        rows.append({
+            "cpu": int(m.group(1)),
+            "mb": int(m.group(2)),
+            "pid": int(m.group(3)),
+            "name": m.group(4),
+            "col": col,
+        })
+
+    if rows:  # колонка верхнего уровня = самая левая из встреченных
+        base = min(r["col"] for r in rows)
+        for r in rows:
+            r["depth"] = r["col"] - base
+            del r["col"]
+
+    ext_mb = 0
+    ext_depth = -1
+    for r in rows:
+        # Имя процесса VS Code менял: раньше 'extensionHost', в нынешних версиях
+        # 'extension-host'. Сравниваем без дефисов, иначе на свежем редакторе
+        # хост расширений не находится и вся память уходит в графу «редактор».
+        if r["name"].lower().replace("-", "").startswith("extensionhost"):
+            ext_depth = r["depth"]
+            ext_mb += r["mb"]
+        elif ext_depth >= 0:
+            if r["depth"] > ext_depth:
+                ext_mb += r["mb"]      # языковой сервер, порождённый расширением
+            else:
+                ext_depth = -1
+
+    total = sum(r["mb"] for r in rows)
+    n_ext = None
+    m = re.search(r"^\s*Extensions\s*:?\s*(\d+)", text or "", re.M | re.I)
+    if m:
+        n_ext = int(m.group(1))
+    return {
+        "total_mb": total,
+        "extension_mb": ext_mb,
+        "editor_mb": max(0, total - ext_mb),
+        "processes": rows,
+        "extensions": n_ext,
+    }
+
+
+def code_status(code_cli: str | None, timeout: float = 30.0) -> dict | None:
+    """Спросить у самого VS Code, сколько сейчас едят его процессы.
+
+    Дорогая операция (поднимает node, ~1-3 с) и требует запущенного редактора,
+    поэтому зовётся только по явному действию пользователя и всегда в фоне.
+    None — CLI нет, редактор закрыт или вывод не разобрался."""
+    if not code_cli:
+        return None
     try:
         out = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            [os.environ.get("COMSPEC", "cmd.exe"), "/c", code_cli, "--status"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=15, creationflags=_NO_WINDOW,
+            timeout=timeout, creationflags=_NO_WINDOW,
         )
-        parts = (out.stdout or "").split()
-        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
-            total_bytes, n = int(parts[0]), int(parts[1])
-            if n > 0:
-                return round(total_bytes / (1024 * 1024)), n
     except Exception:
-        pass
-    return 0, 0
+        return None
+    data = parse_code_status(out.stdout or "")
+    return data if data["processes"] else None
 
 
 def code_footprint_mb(code_cli: str | None) -> tuple[int, int]:
-    """Память VS Code для показа пользователю: сначала честный private working
-    set (#2), при неудаче — полный working set через tasklist (запасной путь,
-    всегда работает). Единая точка для GUI/selftest/CLI, чтобы базлайн и
-    текущий замер считались одной метрикой (иначе «экономия» = разница
-    несравнимых чисел)."""
+    """Память VS Code для показа пользователю: сначала приватная память по
+    нативному замеру (#2), при неудаче — полный working set через tasklist
+    (запасной путь, всегда работает). Единая точка для GUI/selftest/CLI, чтобы
+    базлайн и текущий замер считались одной метрикой (иначе «экономия» —
+    разница несравнимых чисел)."""
     mb, n = code_private_ws_mb(code_cli)
     if n > 0:
         return mb, n
+    try:
+        if winmem.available():
+            return 0, 0   # нативный путь работает и говорит: редактор закрыт
+    except Exception:
+        pass
     return code_memory_mb(code_cli)
 
 
 def vscode_process_count(code_cli: str | None) -> int:
     """Сколько процессов VS Code сейчас запущено (0 — закрыт).
-    Для ожидания завершения при мягком закрытии."""
+    Для ожидания завершения при мягком закрытии. Нативный путь (миллисекунды)
+    важен вдвойне: при мягком закрытии счётчик опрашивается раз в 750 мс, и
+    старый tasklist успевал не уложиться в интервал."""
+    try:
+        if winmem.available():
+            return winmem.image_memory(code_image_name(code_cli))[2]
+    except Exception:
+        pass
     return code_memory_mb(code_cli)[1]
 
 

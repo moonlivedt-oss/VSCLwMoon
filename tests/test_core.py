@@ -56,22 +56,26 @@ def test_compute_disabled_keeps_always_on_and_unknown():
 
 # --- estimate_saved_mb -----------------------------------------------------
 
+# Функция теперь одна (weights.estimate_saved_mb) и возвращает пару:
+# (МБ, сколько стеков посчитано по собственным замерам). Без истории замеров
+# второй элемент — 0, а число берётся из таблицы весов, как и раньше.
+
 def test_estimate_saved_mb_counts_each_category_once():
     idx = core.build_ext_index(sample_cats())
     # два питоновых расширения выключены -> питон считается один раз (medium=150)
     disabled = ["ms-python.python", "charliermarsh.ruff"]
-    assert core.estimate_saved_mb(disabled, idx) == core.WEIGHT_MB["medium"]
+    assert core.estimate_saved_mb(disabled, idx) == (core.WEIGHT_MB["medium"], 0)
 
 
 def test_estimate_saved_mb_sums_distinct_categories():
     idx = core.build_ext_index(sample_cats())
     disabled = ["ms-python.python", "redhat.java"]   # medium + heavy
     expected = core.WEIGHT_MB["medium"] + core.WEIGHT_MB["heavy"]
-    assert core.estimate_saved_mb(disabled, idx) == expected
+    assert core.estimate_saved_mb(disabled, idx) == (expected, 0)
 
 
 def test_estimate_saved_mb_empty():
-    assert core.estimate_saved_mb([], {}) == 0
+    assert core.estimate_saved_mb([], {}) == (0, 0)
 
 
 # --- code_image_name -------------------------------------------------------
@@ -563,8 +567,18 @@ def test_selection_signature_stable_and_order_independent():
 def test_record_and_lookup_footprint():
     cfg = {}
     core.record_footprint(cfg, "python|web", 1200, 8)
-    assert core.lookup_footprint(cfg, "python|web") == {"mb": 1200, "n": 8}
+    rec = core.lookup_footprint(cfg, "python|web")
+    # metric помечает, каким замером получено число: записи прежней метрики
+    # (PowerShell/WorkingSetPrivate) не сравнимы с нынешним нативным замером.
+    assert rec == {"mb": 1200, "n": 8, "metric": core.config.MEMORY_METRIC}
     assert core.lookup_footprint(cfg, "other") is None
+
+
+def test_lookup_footprint_ignores_other_metric():
+    # Замер, сделанный прежней метрикой, не отдаём: «экономия» вышла бы
+    # разницей несравнимых чисел.
+    cfg = {"footprint_history": {"python": {"mb": 900, "n": 6, "metric": "ws-private-perf"}}}
+    assert core.lookup_footprint(cfg, "python") is None
 
 
 def test_record_footprint_ignores_zero_measurement():

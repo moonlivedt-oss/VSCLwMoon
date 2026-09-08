@@ -8,6 +8,7 @@
 """
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from .i18n import _
 from .toolchains import (
     install_package, install_package_elevated, uninstall_package, upgrade_package,
 )
@@ -43,6 +44,48 @@ class MemProbe(QThread):
         self.measured.emit(mb, n)
 
 
+class SizeProbe(QThread):
+    """Фоновый подсчёт размера расширений на диске.
+
+    Обход ~100 папок с десятками тысяч файлов занимает 1-2 с — в главном треде
+    это была бы заметная заморозка окна на каждом старте. Результат кэшируется
+    в конфиге, поэтому реально считается редко."""
+    measured = pyqtSignal(dict)
+
+    def __init__(self, cli):
+        super().__init__()
+        self._cli = cli
+
+    def run(self):
+        from .weights import extension_sizes
+        try:
+            sizes = extension_sizes(self._cli)
+        except Exception:
+            sizes = {}
+        self.measured.emit(sizes)
+
+
+class StatusProbe(QThread):
+    """Фоновый опрос `code --status` — честная стоимость расширений.
+
+    Поднимает node внутри VS Code и отвечает 1-3 с, поэтому только по явному
+    действию пользователя и обязательно в фоне. Пустой словарь — редактор
+    закрыт или вывод не разобрался."""
+    measured = pyqtSignal(dict)
+
+    def __init__(self, cli):
+        super().__init__()
+        self._cli = cli
+
+    def run(self):
+        from .vscode import code_status
+        try:
+            data = code_status(self._cli) or {}
+        except Exception:
+            data = {}
+        self.measured.emit(data)
+
+
 class UpdateCheck(QThread):
     """Фоновая проверка обновлений на GitHub (#8). Никогда не роняет окно:
     сеть изолирована в updates.check_for_update, наружу — только тег новой
@@ -73,8 +116,8 @@ class UpdateDownloader(QThread):
         from .updates import download_and_verify, fetch_latest_release_info
         info = fetch_latest_release_info()
         if not info:
-            self.done.emit(False, "Не удалось получить информацию о релизе "
-                                  "(нет сети или в релизе нет .exe).", "")
+            self.done.emit(False, _("Не удалось получить информацию о релизе "
+                                    "(нет сети или в релизе нет .exe)."), "")
             return
         ok, msg = download_and_verify(
             info, self._dest,

@@ -11,7 +11,9 @@ import time
 
 from .categories import build_ext_index, load_categories
 from .classify import suggest_categories
-from .launch import build_launch_command, compute_disabled, estimate_saved_mb
+from .config import load_config
+from .launch import build_launch_command, compute_disabled
+from .weights import estimate_saved_mb, extension_sizes, stack_disk_mb
 from .manifests import build_dependency_map, read_extension_manifests
 from .paths import ROOT
 from .vscode import code_footprint_mb, find_code_cli, load_installed
@@ -29,7 +31,7 @@ def selftest(selected_csv: str):
     dt = (time.perf_counter() - t0) * 1000
     print(f"установлено расширений: {len(installed)}  (источник: {source}, {dt:.0f} мс)")
     mb, nproc = code_footprint_mb(code_cli)
-    print(f"VS Code сейчас: {mb} МБ (private WS), {nproc} процессов"
+    print(f"VS Code сейчас: {mb} МБ (приватная память), {nproc} процессов"
           if nproc else "VS Code сейчас не запущен")
     manifests = read_extension_manifests(code_cli)
     dep_map = build_dependency_map(manifests)
@@ -38,7 +40,15 @@ def selftest(selected_csv: str):
     disabled = compute_disabled(installed, idx, selected, dep_map=dep_map)
     unknown = [e for e in installed if e not in idx]
     print(f"будет ВКЛючено: {len(installed) - len(disabled)}  |  ВЫКЛючено: {len(disabled)}")
-    print(f"~экономия памяти: {estimate_saved_mb(disabled, idx)} МБ")
+    cfg = load_config()
+    saved, calibrated = estimate_saved_mb(disabled, idx, cfg)
+    src = f"{calibrated} стеков по собственным замерам" if calibrated else "по таблице нагрузки"
+    print(f"~экономия памяти: {saved} МБ ({src})")
+    per_stack = stack_disk_mb(idx, extension_sizes(code_cli), installed)
+    if per_stack:
+        top = sorted(per_stack.items(), key=lambda kv: -kv[1])[:5]
+        print("тяжелее всего на диске:",
+              ", ".join(f"{k} {mb} МБ" for k, mb in top))
     if dep_map:
         print(f"граф зависимостей: у {len(dep_map)} расширений (#1)")
     print("unknown (не в карте, останутся вкл):", unknown)

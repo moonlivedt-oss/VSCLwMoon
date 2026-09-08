@@ -188,6 +188,11 @@ class CategoryCard(QFrame):
         self.setObjectName("CatCard")
         self.setProperty("on", "false")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        # Карточка — основной орган управления окна, поэтому она должна быть
+        # достижима с клавиатуры: Tab приводит фокус сюда, пробел/Enter
+        # переключает стек, а QSS рисует видимую рамку фокуса. Без этого весь
+        # выбор стеков был доступен только мышью.
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         # Минимальная ширина под сетку-флоу; фактическую задаёт окно по колонкам.
         self.setMinimumWidth(320)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
@@ -228,8 +233,9 @@ class CategoryCard(QFrame):
         self.cb.stateChanged.connect(self._changed)
         top.addWidget(self.cb, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        title = QLabel(cat.get("title", key)); title.setObjectName("CatTitle")
-        title.setToolTip(cat.get("title", key))
+        self._title_text = cat.get("title", key)
+        title = QLabel(self._title_text); title.setObjectName("CatTitle")
+        title.setToolTip(self._title_text)
         top.addWidget(title, 1, Qt.AlignmentFlag.AlignVCenter)
 
         self._total = total
@@ -239,9 +245,17 @@ class CategoryCard(QFrame):
 
         # Ряд 2: метка нагрузки + заметка (растягивается) + «Подробнее».
         bottom = QHBoxLayout(); bottom.setSpacing(10)
-        wl = QLabel(_(WEIGHT_LABEL[weight])); wl.setObjectName(f"W{weight}")
-        wl.setToolTip(_(WEIGHT_HELP.get(weight, "")))
-        bottom.addWidget(wl, 0, Qt.AlignmentFlag.AlignTop)
+        # Метка нагрузки; сюда же дописывается реальный размер стека на диске
+        # («тяжёлый · 865 МБ»). Отдельным бейджем он не помещался: карточка в
+        # три колонки узкая, и лишний элемент отбирал ширину то у названия, то
+        # у заметки. А рядом с классом нагрузки размер и читается связнее —
+        # это две грани одного вопроса «дорого ли обходится стек».
+        self._weight = weight
+        self._disk_mb = 0
+        self.weight_lbl = QLabel(_(WEIGHT_LABEL[weight]))
+        self.weight_lbl.setObjectName(f"W{weight}")
+        self.weight_lbl.setToolTip(_(WEIGHT_HELP.get(weight, "")))
+        bottom.addWidget(self.weight_lbl, 0, Qt.AlignmentFlag.AlignTop)
 
         note = QLabel(cat.get("note", "")); note.setObjectName("CatNote")
         note.setWordWrap(True)
@@ -284,15 +298,60 @@ class CategoryCard(QFrame):
                               "ни на что не влияет. Поставить их можно в "
                               "«Подробнее» → «Установить недостающие»."))
         self.cnt.style().unpolish(self.cnt); self.cnt.style().polish(self.cnt)
+        self._refresh_accessible()
+
+    def set_disk_mb(self, mb: int):
+        """Показать реальный размер установленных расширений стека на диске.
+
+        Не память, но твёрдое число: видно, какой стек «дорогой», ещё до первого
+        запуска редактора. 0 — ничего не дописываем, «0 МБ» только шумел бы."""
+        self._disk_mb = int(mb or 0)
+        label = _(WEIGHT_LABEL[self._weight])
+        tip = _(WEIGHT_HELP.get(self._weight, ""))
+        if self._disk_mb > 0:
+            label = f"{label} · " + _("{mb} МБ").format(mb=self._disk_mb)
+            tip += "\n\n" + _("Установленные расширения этого стека занимают "
+                               "{mb} МБ на диске.").format(mb=self._disk_mb)
+        self.weight_lbl.setText(label)
+        self.weight_lbl.setToolTip(tip)
+        self._refresh_accessible()
+
+    def disk_mb(self) -> int:
+        """Показанный размер стека на диске в МБ (0 — размеры ещё не считали)."""
+        return self._disk_mb
+
+    def _refresh_accessible(self):
+        """Имя для скринридера: что за стек, сколько установлено, включён ли.
+        Qt озвучивает accessibleName, а не набор вложенных лейблов."""
+        state = _("включён") if self.cb.isChecked() else _("выключен")
+        self.setAccessibleName(f"{self._title_text}: {state}")
+        parts = [_("установлено {inst} из {total}").format(
+            inst=getattr(self, "_inst", 0), total=self._total)]
+        if getattr(self, "_disk_mb", 0):
+            parts.append(_("{mb} МБ на диске").format(mb=self._disk_mb))
+        self.setAccessibleDescription(", ".join(parts))
 
     def _changed(self):
         self.setProperty("on", "true" if self.cb.isChecked() else "false")
         self.style().unpolish(self); self.style().polish(self)
+        self._refresh_accessible()
         self._on_toggle()
 
     def mousePressEvent(self, e):
-        self.cb.toggle()
+        # Переключаем только левой кнопкой: правый клик по карточке раньше
+        # молча менял выбор, хотя пользователь целился в контекстное меню.
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
+            self.cb.toggle()
         super().mousePressEvent(e)
+
+    def keyPressEvent(self, e):
+        # Пробел/Enter — переключить стек (как у любого чекбокса в Qt).
+        if e.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.cb.toggle()
+            e.accept()
+            return
+        super().keyPressEvent(e)
 
     def enterEvent(self, e):
         # Приподнимаем карточку тенью при наведении.

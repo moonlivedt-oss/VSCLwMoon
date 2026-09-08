@@ -63,6 +63,11 @@ QFrame#CatCard {{
     background: {p["surface"]}; border: 1px solid {p["border"]}; border-radius: 12px;
 }}
 QFrame#CatCard:hover {{ border-color: {_rgba(p["accent"], 0.55)}; background: {hov}; }}
+/* Видимая рамка фокуса: карточку теперь можно выбрать с клавиатуры (Tab),
+   и должно быть понятно, на какой из двух десятков стеков сейчас фокус. */
+QFrame#CatCard:focus {{
+    border: 2px solid {p["accent"]}; background: {hov}; outline: none;
+}}
 QFrame#CatCard[on="true"] {{
     border: 1px solid {p["accent"]};
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,

@@ -25,13 +25,9 @@ import sys
 
 from .categories import WEIGHT, WEIGHT_LABEL, build_ext_index, load_categories
 from .config import load_config
-from .launch import (
-    build_launch_args,
-    build_launch_command,
-    compute_disabled,
-    estimate_saved_mb,
-)
-from .manifests import build_dependency_map, read_extension_manifests
+from .launch import build_launch_command
+from .weights import estimate_saved_mb, measured_stack_costs, stack_disk_mb
+from .quicklaunch import plan_launch
 from .presets import build_shortcut_cmd, normalize_preset, preset_stacks
 from .vscode import (
     kill_vscode,
@@ -113,6 +109,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="действительно запустить (без флага — dry-run: только показать команду)",
     )
     p.add_argument("--json", action="store_true", help="машиночитаемый вывод (для скриптов)")
+    p.add_argument(
+        "--version",
+        action="store_true",
+        help="показать версию лаунчера и выйти",
+    )
+    p.add_argument(
+        "--measure-extensions",
+        action="store_true",
+        help="спросить у запущенного VS Code (code --status), сколько памяти "
+        "едят расширения, а сколько сам редактор",
+    )
+    p.add_argument(
+        "--stack-sizes",
+        action="store_true",
+        help="сколько МБ на диске занимает каждый стек (по установленным расширениям)",
+    )
     p.add_argument("--quiet", action="store_true", help="без пояснительного вывода (для ярлыков)")
     p.add_argument(
         "--list-presets", action="store_true", help="показать сохранённые пресеты и выйти"
@@ -625,6 +637,70 @@ def _configure_vscode(key: str, cfg: dict, out) -> int:
     return 0 if ok else 2
 
 
+def _measure_extensions(cfg: dict, as_json: bool) -> int:
+    """Честная стоимость расширений: спрашиваем сам VS Code.
+
+    Всё остальное в лаунчере — оценки; здесь редактор сам называет, сколько
+    памяти держит его extensionHost (и порождённые языковые серверы), а
+    сколько — окно, GPU и терминал."""
+    from .vscode import code_status
+
+    code_cli = resolve_code_cli(cfg)
+    data = code_status(code_cli)
+    if not data:
+        if as_json:
+            print(_json.dumps({"ok": False, "reason": "vscode-not-running"}))
+        else:
+            print("VS Code не отвечает на --status (он запущен?).")
+        return 2
+    total, ext = data["total_mb"], data["extension_mb"]
+    share = round(ext * 100 / total) if total else 0
+    if as_json:
+        print(_json.dumps({"ok": True, **data}, ensure_ascii=False, indent=2))
+        return 0
+    print(f"Всего процессы VS Code: {total} МБ")
+    print(f"  расширения (extensionHost и языковые серверы): {ext} МБ ({share}%)")
+    print(f"  сам редактор: {data['editor_mb']} МБ")
+    print("Процессы:")
+    for r in data["processes"]:
+        print(f"  {r['mb']:>6} МБ  {' ' * r['depth']}{r['name']}")
+    return 0
+
+
+def _stack_sizes(cfg: dict, as_json: bool) -> int:
+    """Сколько места на диске занимает каждый стек — и во что он обошёлся по
+    памяти, если для него уже набрались собственные замеры."""
+    from .weights import extension_sizes
+
+    cats, _err = load_categories()
+    ext_index = build_ext_index(cats, cfg.get("extra_categories"))
+    code_cli = resolve_code_cli(cfg)
+    installed, _src = load_installed(code_cli)
+    sizes = extension_sizes(code_cli)
+    per_stack = stack_disk_mb(ext_index, sizes, installed)
+    measured = measured_stack_costs(cfg)
+    rows = [
+        {
+            "key": k,
+            "title": cats.get("categories", {}).get(k, {}).get("title", k),
+            "disk_mb": mb,
+            "measured_ram_mb": measured.get(k),
+        }
+        for k, mb in sorted(per_stack.items(), key=lambda kv: -kv[1])
+    ]
+    if as_json:
+        print(_json.dumps(rows, ensure_ascii=False, indent=2))
+        return 0
+    if not rows:
+        print("Не удалось прочитать размеры расширений.")
+        return 0
+    print("Стеки по размеру на диске:")
+    for r in rows:
+        ram = f"  ОЗУ по замерам: {r['measured_ram_mb']} МБ" if r["measured_ram_mb"] else ""
+        print(f"  {r['disk_mb']:>6} МБ  {r['key']:<14} {r['title']}{ram}")
+    return 0
+
+
 def cli_main(argv: list[str] | None = None) -> int:
     # argv=None → argparse сам возьмёт sys.argv[1:]. Так работает и как
     # console-script `vscode-launcher` (без аргументов), и при явном вызове
@@ -637,6 +713,11 @@ def cli_main(argv: list[str] | None = None) -> int:
     except Exception:
         pass
     args = build_parser().parse_args(argv)
+    if args.version:
+        from . import __version__
+
+        print(f"VS Code Launcher {__version__}")
+        return 0
     cfg = load_config()
     quiet = args.quiet
     out = (lambda *a: None) if quiet else print
@@ -664,6 +745,10 @@ def cli_main(argv: list[str] | None = None) -> int:
         return _clean_path(args.yes, args.keep_dead, args.machine, args.json)
     if args.fix_java_home:
         return _fix_java_home(args.json)
+    if args.measure_extensions:
+        return _measure_extensions(cfg, args.json)
+    if args.stack_sizes:
+        return _stack_sizes(cfg, args.json)
 
     if args.list_presets:
         presets = cfg.get("presets", {})
@@ -695,14 +780,11 @@ def cli_main(argv: list[str] | None = None) -> int:
         out("!", w)
 
     opts = _merge_options(args, cfg)
-    ov = cfg.get("overrides", {})
-    force_disable = set(ov.get("disable", []))
-    force_enable = set(ov.get("enable", []))
-    dep_map = build_dependency_map(read_extension_manifests(code_cli))
-    disabled = compute_disabled(
-        installed, ext_index, selected, force_disable, force_enable, dep_map=dep_map
-    )
-    saved = estimate_saved_mb(disabled, ext_index)
+    # Тот же путь, что у окна и трея (quicklaunch): список установленного уже
+    # прочитан выше, поэтому отдаём его готовым.
+    plan = plan_launch(code_cli, cfg, ext_index, selected, opts, installed=installed)
+    disabled = plan["disabled"]
+    saved, n_calibrated = estimate_saved_mb(disabled, ext_index, cfg)
     cmd = build_launch_command(
         code_cli or "code",
         disabled,
@@ -725,6 +807,7 @@ def cli_main(argv: list[str] | None = None) -> int:
                     "disabled": sorted(disabled),
                     "disabled_count": len(disabled),
                     "estimated_saved_mb": saved,
+                    "calibrated_stacks": n_calibrated,
                     "bare": opts["bare"],
                     "folder": opts["folder"],
                     "command": cmd,
@@ -738,7 +821,8 @@ def cli_main(argv: list[str] | None = None) -> int:
         out(f"CLI: {code_cli or 'не найден'} | расширений: {len(installed)} ({source})")
         out(f"выбранные стеки: {', '.join(sorted(selected)) or '(только ядро)'}")
         out(
-            f"будет выключено: {len(disabled)} (~{saved} МБ)"
+            f"будет выключено: {len(disabled)} (~{saved} МБ"
+            + (f", из них {n_calibrated} стеков по замерам)" if n_calibrated else ")")
             if not opts["bare"]
             else "голый режим: все расширения выключены"
         )
@@ -754,17 +838,8 @@ def cli_main(argv: list[str] | None = None) -> int:
 
     if opts["kill"]:
         kill_vscode(code_cli)
-    launch_args = build_launch_args(
-        disabled,
-        opts["folder"],
-        opts["new_window"],
-        opts["kill"],
-        profile=opts["profile"],
-        disable_gpu=opts["gpu_off"],
-        bare=opts["bare"],
-    )
     try:
-        launch_detached(code_cli, launch_args)
+        launch_detached(code_cli, plan["args"])
     except Exception as e:
         print("Ошибка запуска VS Code:", e)
         return 3

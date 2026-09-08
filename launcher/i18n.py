@@ -202,8 +202,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Отмена…": "Cancelling…",
         "Прервать пакетную установку (текущее расширение доустановится, следующие — нет)": "Stop the batch install (the current extension finishes, the rest do not)",
         # языки и инструменты (тулчейны)
-        "Языки и инструменты…": "Languages & tools…",
-        "Языки и инструменты": "Languages & tools",
+        "Языки и инструменты…": "Languages and tools…",
+        "Языки и инструменты": "Languages and tools",
         "Установить компиляторы и SDK (C/C++, Java, Go, Rust…) через winget и "
         "прописать их в PATH.": "Install compilers and SDKs (C/C++, Java, Go, Rust…) via winget and "
         "add them to PATH.",
@@ -323,9 +323,222 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Все": "All",
         "Установленные": "Installed",
         "Не установленные": "Not installed",
+        # 1.4: честный замер расширений (code --status)
+        "Замерить расширения": "Measure extensions",
+        "Замеряю…": "Measuring…",
+        "Замер расширений": "Extension memory",
+        "Спросить у запущенного VS Code (code --status), сколько "
+        "памяти едят именно расширения, а сколько — сам редактор. "
+        "Это факт, а не оценка по таблице весов.": "Ask the running VS Code (code --status) how much memory "
+        "the extensions use and how much the editor itself does. "
+        "A fact, not a guess from a weight table.",
+        "VS Code не отвечает на --status. Он запущен? Замер работает "
+        "только при открытом редакторе.": "VS Code does not answer --status. Is it running? The measurement "
+        "needs an open editor.",
+        "Всего процессы VS Code: {mb} МБ": "VS Code processes in total: {mb} MB",
+        "  из них расширения (extensionHost и языковые серверы): {mb} МБ "
+        "({share}%)": "  of that, extensions (extensionHost and language servers): {mb} MB "
+        "({share}%)",
+        "  сам редактор (окно, GPU, терминал, поиск): {mb} МБ": "  the editor itself (window, GPU, terminal, search): {mb} MB",
+        "Процессы:": "Processes:",
+        "Размер стеков на диске (установленное):": "Stack size on disk (installed):",
+        "Расширения занимают {mb} МБ — это {share}% памяти VS Code. "
+        "Именно эта часть и уходит, когда стек выключен.": "Extensions take {mb} MB — {share}% of what VS Code uses. "
+        "That is exactly the part that goes away when a stack is off.",
+        # 1.4: реальный вес стека на диске
+        "{mb} МБ": "{mb} MB",
+        "Установленные расширения этого стека занимают "
+        "{mb} МБ на диске.": "Installed extensions of this stack take {mb} MB on disk.",
+        "включён": "on",
+        "выключен": "off",
+        "установлено {inst} из {total}": "{inst} of {total} installed",
+        "{mb} МБ на диске": "{mb} MB on disk",
+        # 1.4: откуда взялось число экономии
+        "Ничего не выключается — экономить нечего.": "Nothing gets disabled — nothing to save.",
+        "Все {n} выключаемых стеков посчитаны по твоим прошлым "
+        "замерам памяти — это не прикидка.": "All {n} stacks being disabled are counted from your own past "
+        "memory measurements — this is not an estimate.",
+        "По твоим замерам посчитано {n} стеков из {total}, "
+        "остальные — по таблице нагрузки. Чем чаще запускаешь "
+        "разные наборы, тем точнее число.": "{n} of {total} stacks are counted from your own measurements, "
+        "the rest from the weight table. The more different sets you "
+        "launch, the more accurate the number gets.",
+        "Пока это прикидка по таблице нагрузки стеков. После "
+        "нескольких запусков разных наборов лаунчер посчитает "
+        "цену каждого стека по фактическим замерам.": "For now this is an estimate from the stack weight table. After a "
+        "few launches with different sets the launcher will compute each "
+        "stack's real cost from actual measurements.",
+        # 1.4: исключения по расширениям
+        "Исключения по расширениям": "Per-extension exceptions",
+        "Исключения: {n}": "Exceptions: {n}",
+        "Расширения с личным режимом «всегда включать/выключать» — "
+        "показать список и снять лишние.": "Extensions with a personal always-on/always-off mode — "
+        "see the list and drop the ones you no longer need.",
+        "Эти расширения игнорируют решение своего стека. Исключение "
+        "сильнее галочки: «всегда включать» переживёт выключенный стек, "
+        "«всегда выключать» — включённый.": "These extensions ignore their stack's decision. An exception beats "
+        "the switch: always-on survives a disabled stack, always-off "
+        "survives an enabled one.",
+        "Исключений нет. Поставить их можно в «Подробнее» у любого "
+        "стека — там у каждого расширения есть выбор режима.": "No exceptions yet. You can set them in any stack's Details — every "
+        "extension there has a mode selector.",
+        "всегда включено": "always on",
+        "всегда выключено": "always off",
+        "Убрать": "Remove",
+        "Убрать все": "Remove all",
+        # 1.4: рабочая область и перетаскивание
+        "Рабочая область…": "Workspace…",
+        "Выбери файл рабочей области": "Choose a workspace file",
+        "Открыть файл .code-workspace — многопапочный проект "
+        "VS Code.": "Open a .code-workspace file — a multi-root VS Code project.",
+        "Выбрать папку проекта. Папку можно и просто "
+        "перетащить в окно.": "Pick the project folder. You can also just drag a folder onto the window.",
+        "путь к проекту или .code-workspace — можно перетащить сюда": "path to the project or a .code-workspace — you can drop it here",
+        "Папка проекта: {folder}": "Project folder: {folder}",
+        # 1.4: значок в трее
+        "Значок в трее: запускать пресеты без окна": "Tray icon: launch presets without the window",
+        "Правый клик по значку — список пресетов; выбрал, и VS Code "
+        "открылся нужным набором. Окно нужно только когда набор "
+        "действительно меняешь. Применится после перезапуска лаунчера.": "Right-click the icon for the preset list; pick one and VS Code opens "
+        "with that set. The window is only needed when you actually change "
+        "the set. Takes effect after restarting the launcher.",
+        "   Крестик сворачивает в трей, а не закрывает": "   The close button minimises to tray instead of quitting",
+        "Лаунчер останется в трее и будет открываться мгновенно. "
+        "Выйти совсем — «Выход» в меню значка.": "The launcher stays in the tray and opens instantly. "
+        "To quit for real use Quit in the icon menu.",
+        "Лаунчер свёрнут в трей. Пресеты — правым кликом по значку.": "The launcher is in the tray. Presets: right-click the icon.",
+        "Показать окно": "Show window",
+        "Запустить пресет:": "Launch preset:",
+        "Пресетов пока нет": "No presets yet",
+        "Выход": "Quit",
+        "{name} — стеков: {n}": "{name} — stacks: {n}",
+        "{name} — голый режим": "{name} — bare mode",
+        # 1.4: честное подтверждение закрытия
+        "Закрыть VS Code?": "Close VS Code?",
+        "Сейчас VS Code получит обычный запрос на закрытие — он "
+        "сам спросит про несохранённые файлы. Когда закроется, "
+        "откроется новое окно с выбранным набором.\n\n"
+        "Продолжить?": "VS Code will get a normal close request and will ask about unsaved "
+        "files itself. Once it closes, a new window opens with the "
+        "selected set.\n\nContinue?",
+        "Сейчас будут ПРИНУДИТЕЛЬНО закрыты все окна VS Code, "
+        "затем откроется новое с выбранным набором.\n\n"
+        "Сохранил несохранённые файлы? Продолжить?": "All VS Code windows will be FORCE-closed, then a new one opens with "
+        "the selected set.\n\nHave you saved your files? Continue?",
+        "Приватная память всех процессов VS Code "
+        "(неразделяемая — именно она освобождается при закрытии). "
+        "Замер нативный, без запуска PowerShell.": "Private memory of all VS Code processes (non-shared — exactly what "
+        "is released on close). Measured natively, no PowerShell.",
         "Все ({n})": "All ({n})",
         "Установленные ({n})": "Installed ({n})",
         "Не установленные ({n})": "Not installed ({n})",
+        # --- добавлено в 1.4: остаток интерфейса, который был только по-русски
+        "Авто (автопоиск)": "Auto (detect)",
+        "Обзор… (указать путь вручную)": "Browse… (set the path manually)",
+        "Удаляю…": "Removing…",
+        "нет CLI VS Code — установка/удаление недоступны": "no VS Code CLI — install/remove unavailable",
+        "Установка VS Code": "VS Code installation",
+        "Скачиваю обновление…": "Downloading update…",
+        "VS Code…": "VS Code…",
+        "Выбрать установку VS Code (стабильная/Insiders/портативная) — если автопоиск нашёл не ту или не нашёл вовсе.": "Pick the VS Code installation (stable/Insiders/portable) — if autodetect found the wrong one or none at all.",
+        "Профиль…": "Profile…",
+        "Экспортировать текущий выбор стеков как нативный профиль VS Code (.code-profile). Импортируется через «Profiles: Import Profile…» — постоянный профиль ровно с включёнными расширениями.": "Export the current stack selection as a native VS Code profile (.code-profile). Import it via 'Profiles: Import Profile…' — a permanent profile with exactly the enabled extensions.",
+        "Установленные расширения, которых нет в data/categories.json — лаунчер всегда оставляет их включёнными": "Installed extensions that are missing from data/categories.json — the launcher always keeps them enabled",
+        "Автоматически разложить незнакомые расширения по стекам (по их манифесту). Ничего не навязывается — ты подтверждаешь раскладку; categories.json не меняется.": "Sort unknown extensions into stacks automatically, by their manifest. Nothing is forced — you confirm the mapping; categories.json is not changed.",
+        "всегда для этой папки": "always for this folder",
+        "Запоминать набор для этой папки и включать его при выборе без подсказки": "Remember this set for the folder and turn it on when the folder is picked, without asking",
+        "Пошлёт окну обычный запрос на закрытие — VS Code сам спросит про несохранённые файлы. Лаунчер подождёт, пока редактор закроется, и только потом стартует новый. Если оставить открытым диалог сохранения, запуск отменится (ничего не потеряется). Выкл — жёсткое закрытие (/F): быстро и надёжно освобождает память, но несохранённое теряется.": "Sends the window a normal close request — VS Code asks about unsaved files itself. The launcher waits for the editor to quit and only then starts a new one. If a save dialog is left open, the launch is cancelled (nothing is lost). Off — hard close (/F): frees memory fast and reliably, but unsaved work is lost.",
+        "Отключает аппаратное ускорение отрисовки. Иногда лечит артефакты/лаги на старых GPU и экономит немного памяти.": "Turns off hardware-accelerated rendering. Sometimes cures artifacts and lag on old GPUs, and saves a little memory.",
+        "Отключит ВСЕ расширения, включая ядро — максимальная скорость. Галочки стеков при этом игнорируются.": "Disables ALL extensions, the core ones included — maximum speed. Stack checkboxes are ignored.",
+        "Откроет окно с этим профилем (--profile). Профиль нужно заранее создать в VS Code (шестерёнка → Profiles). Пусто — профиль по умолчанию.": "Opens the window with this profile (--profile). Create the profile in VS Code first (gear → Profiles). Empty — the default profile.",
+        "Разложить по стекам": "Sort into stacks",
+        "Принять отмеченные": "Apply checked",
+        "Дубли в categories.json": "Duplicates in categories.json",
+        "Расширения в нескольких стеках": "Extensions in several stacks",
+        "Расширения не в карте": "Extensions not in the map",
+        "Не в data/categories.json": "Not in data/categories.json",
+        "Нет рекомендаций для установленных стеков.": "No recommendations for the installed stacks.",
+        "Автонастройка VS Code": "VS Code auto-setup",
+        "Рекомендованные настройки": "Recommended settings",
+        "Применить (бэкап)": "Apply (with backup)",
+        "VS Code workspace (*.code-workspace);;Все файлы (*.*)": "VS Code workspace (*.code-workspace);;All files (*.*)",
+        "Прошу VS Code закрыться (ответь на запрос сохранения)…": "Asking VS Code to close (answer the save prompt)…",
+        "Сохранить пресет": "Save preset",
+        "Имя пресета:": "Preset name:",
+        "Экспорт пресетов": "Export presets",
+        "Импорт пресетов": "Import presets",
+        "Экспорт профиля VS Code": "Export VS Code profile",
+        "Стек: {title}": "Stack: {title}",
+        "Выбери code.cmd или Code.exe": "Pick code.cmd or Code.exe",
+        "VS Code CLI (code.cmd code-insiders.cmd Code.exe);;Все файлы (*.*)": "VS Code CLI (code.cmd code-insiders.cmd Code.exe);;All files (*.*)",
+        "Обновление": "Update",
+        "Авто-набор для этой папки включён.": "Auto set for this folder is on.",
+        "Пропишет базовые настройки для установленных стеков (формат при сохранении и т.п.). Существующие настройки не трогаются, перед записью делается бэкап settings.json.": "Writes the basic settings for the installed stacks (format on save and the like). Existing settings are left alone, and settings.json is backed up first.",
+        "Разложить по стекам (авто)": "Sort into stacks (auto)",
+        "Раскладка": "Mapping",
+        "Незнакомых расширений нет.": "There are no unknown extensions.",
+        "Не удалось уверенно определить стек ни для одного незнакомого расширения. Разложи вручную в data/categories.json.": "Could not confidently determine a stack for any unknown extension. Sort them by hand in data/categories.json.",
+        "Каждое расширение попадёт только в один стек — тот, что стоит последним в data/categories.json. Убери дубли, чтобы галочка работала предсказуемо.": "Each extension goes into one stack only — the one listed last in data/categories.json. Remove the duplicates so the checkbox behaves predictably.",
+        "Автонастройка": "Auto-setup",
+        "Не найден CLI VS Code (code.cmd).": "VS Code CLI (code.cmd) not found.",
+        "Папка не найдена": "Folder not found",
+        "Пресетов пока нет.": "No presets yet.",
+        "Импорт: в файле нет пресетов.": "Import: the file has no presets.",
+        "Импортировано пресетов: {n}": "Presets imported: {n}",
+        "Профиль VS Code": "VS Code profile",
+        "Список расширений ещё не загружен.": "The extension list has not loaded yet.",
+        "Установить недостающие ({n})": "Install missing ({n})",
+        "Скачать и установить?": "Download and install?",
+        "Удалить расширение:\n\n{ext}\n\nОно будет удалено с диска. Переустановить можно кнопкой «Установить».": "Remove the extension:\n\n{ext}\n\nIt will be deleted from disk. You can reinstall it with 'Install'.",
+        "Удалить расширение?": "Remove the extension?",
+        "VS Code Launcher {ver} — переключатель нагрузки": "VS Code Launcher {ver} — extension load switcher",
+        "Сейчас: {cur}\n\nВыбери установку:": "Current: {cur}\n\nPick an installation:",
+        "VS Code CLI: {cli}": "VS Code CLI: {cli}",
+        "Доступна новая версия {ver} — скачать и установить": "Version {ver} is available — download and install",
+        "Перезапустить сейчас, чтобы применить обновление?": "Restart now to apply the update?",
+        "Не удалось получить список расширений.": "Could not get the extension list.",
+        "Закроет все окна VS Code ({exe}) перед стартом. Запускай этот тул НЕ из терминала VS Code.": "Closes every VS Code window ({exe}) before starting. Do NOT run this tool from the VS Code terminal.",
+        "Не в карте: {n} — показать": "Not in the map: {n} — show",
+        "Разложено расширений: {n}": "Extensions sorted: {n}",
+        "Применить настройки?": "Apply settings?",
+        "Добавить недостающие рекомендованные ключи в settings.json?\nСуществующие настройки не изменятся, будет сделан бэкап.": "Add the missing recommended keys to settings.json?\nExisting settings stay as they are, and a backup will be made.",
+        "Эквивалент для cmd (сам лаунчер запускает Code.exe напрямую, без оболочки):": "The cmd equivalent (the launcher itself starts Code.exe directly, without a shell):",
+        "Запуск: голый режим (все расширения выкл). OK.": "Launch: bare mode (all extensions off). OK.",
+        "Закрываю VS Code…": "Closing VS Code…",
+        "VS Code закрыт. Запускаю…": "VS Code is closed. Starting…",
+        "VS Code всё ещё открыт — запуск отменён. Закрой окна (или ответь на запрос сохранения) и нажми «Запустить» снова.": "VS Code is still open — launch cancelled. Close the windows (or answer the save prompt) and press 'Launch' again.",
+        "Ошибка экспорта": "Export error",
+        "ожидается объект вида имя: [категории]": "expected an object of the form name: [categories]",
+        "Ошибка импорта": "Import error",
+        " (пропущено неизвестных ключей категорий: {n} — {sample}{tail})": " (unknown category keys skipped: {n} — {sample}{tail})",
+        "Ошибка экспорта профиля": "Profile export error",
+        "Установить расширение:\n\n{ext}\n\nОно будет скачано из маркетплейса VS Code.": "Install the extension:\n\n{ext}\n\nIt will be downloaded from the VS Code marketplace.",
+        "Установить {n} недостающих расширений стека «{title}»?\n\nВсе они будут скачаны из маркетплейса.": "Install {n} missing extensions of the '{title}' stack?\n\nAll of them will be downloaded from the marketplace.",
+        "Продолжить?": "Continue?",
+        "Скачать и установить {ver}? Лаунчер закроется и обновится сам.": "Download and install {ver}? The launcher will close and update itself.",
+        "Скачиваю обновление… {pct}%": "Downloading update… {pct}%",
+        "Скачиваю обновление… {mb} МБ": "Downloading update… {mb} MB",
+        "Авто-набор для папки: {stacks}": "Auto set for the folder: {stacks}",
+        "Расширений: {n} (источник: {src}).": "Extensions: {n} (source: {src}).",
+        "Обновляю": "Updating",
+        "Версия для установки/обновления": "Version to install/update",
+        "{n} расширений нет в карте категорий, поэтому лаунчер всегда оставляет их включёнными. Добавь их в нужную категорию в data/categories.json, чтобы управлять ими из окна.": "{n} extensions are missing from the category map, so the launcher always keeps them enabled. Add them to the right category in data/categories.json to control them from this window.",
+        "Стеки: {stacks}. «Применить» добавит только НЕДОСТАЮЩИЕ ключи в settings.json и сделает бэкап; существующие настройки не меняются.\nФайл: {path}": "Stacks: {stacks}. 'Apply' adds only the MISSING keys to settings.json and makes a backup; existing settings are not changed.\nFile: {path}",
+        "Путь не существует:\n{folder}\n\nОткрыть VS Code без папки?": "The path does not exist:\n{folder}\n\nOpen VS Code without a folder?",
+        "Ошибка запуска": "Launch error",
+        "Экспортировано пресетов: {n} → {path}": "Presets exported: {n} → {path}",
+        "Профиль VS Code сохранён ({n} расш.): {path}": "VS Code profile saved ({n} ext.): {path}",
+        "Готово. В VS Code открой палитру команд и выполни «Profiles: Import Profile…», затем выбери этот файл.\n\nРасширений в профиле: {n}": "Done. In VS Code open the command palette, run 'Profiles: Import Profile…' and pick this file.\n\nExtensions in the profile: {n}",
+        "Не удалось подготовить обновление: {e}": "Could not prepare the update: {e}",
+        "В categories.json дубли расширений: {n}. Расширение попадёт только в один стек — последний по порядку.": "Duplicate extensions in categories.json: {n}. An extension goes into one stack only — the last one listed.",
+        "Предлагаю раскладку {n} расширений. Сними галочку, чтобы пропустить; стек можно поменять. Твоя categories.json не меняется — раскладка хранится отдельно и обратима.": "Here is a suggested mapping for {n} extensions. Uncheck one to skip it; the stack can be changed. Your categories.json is not touched — the mapping is stored separately and is reversible.",
+        "Запуск: выключено {n} расширений. OK.": "Launch: {n} extensions disabled. OK.",
+        "Не удалось получить информацию о релизе (нет сети или в релизе нет .exe).": "Could not get release info (no network, or the release has no .exe).",
+        "Не найден CLI VS Code.": "VS Code CLI not found.",
+        "Пресет не найден: {name}": "Preset not found: {name}",
+        "Пресет «{name}»: голый режим.": "Preset '{name}': bare mode.",
+        "Пресет «{name}»: выключено расширений — {n}.": "Preset '{name}': extensions disabled — {n}.",
+        "Не удалось запустить VS Code: {err}": "Could not start VS Code: {err}",
     }
 }
 
