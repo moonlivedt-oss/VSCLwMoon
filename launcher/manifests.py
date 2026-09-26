@@ -76,10 +76,15 @@ def _parse_manifest(pkg: Path) -> dict | None:
 
     acts = data.get("activationEvents")
     on_languages = []
+    eager = False
     if isinstance(acts, list):
         for a in acts:
             if isinstance(a, str) and a.startswith("onLanguage:"):
                 on_languages.append(a.split(":", 1)[1].lower())
+            # «*» и onStartupFinished — расширение стартует вместе с редактором
+            # в любом проекте, а не когда понадобится его язык или команда.
+            elif a in ("*", "onStartupFinished"):
+                eager = True
 
     cats = data.get("categories")
     categories = [c for c in cats if isinstance(c, str)] if isinstance(cats, list) else []
@@ -91,6 +96,7 @@ def _parse_manifest(pkg: Path) -> dict | None:
         "categories": categories,
         "languages": sorted(set(langs) | set(on_languages)),
         "display": str(data.get("displayName") or "").strip(),
+        "eager": eager and bool(data.get("main") or data.get("browser")),
     }
 
 
@@ -133,12 +139,15 @@ def read_extension_manifests(code_cli: str | None) -> dict[str, dict]:
 def build_dependency_map(manifests: dict[str, dict]) -> dict[str, set[str]]:
     """id -> множество id, от которых расширение зависит напрямую.
 
-    Объединяем extensionDependencies (жёсткая зависимость) и extensionPack
-    (пакет тянет за собой набор — тоже не должен гаснуть, пока включён сам
-    пакет). Пустые записи опускаем, чтобы карта не пухла."""
+    Берём только extensionDependencies — жёсткую зависимость: без неё VS Code
+    не активирует расширение. extensionPack сюда НЕ входит: пакет — лишь
+    способ поставить набор разом, его участники работают и выключаются
+    независимо. Раньше пакет считался зависимостью, и один набор в ядре
+    (seyyedkhandon.qpack тянет SonarLint) держал JVM SonarLint включённой при
+    любом выборе стеков. Пустые записи опускаем, чтобы карта не пухла."""
     dep_map: dict[str, set[str]] = {}
     for ext_id, m in manifests.items():
-        deps = set(m.get("depends") or ()) | set(m.get("pack") or ())
+        deps = set(m.get("depends") or ())
         deps.discard(ext_id)  # само на себя не ссылаемся
         if deps:
             dep_map[ext_id] = deps

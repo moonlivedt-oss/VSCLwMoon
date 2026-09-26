@@ -1,19 +1,37 @@
 {
-  "_comment": "Рекомендованные настройки VS Code по стекам. Автонастройка добавляет только НЕДОСТАЮЩИЕ ключи (существующие не трогает) и делает бэкап settings.json. Ключ _comment игнорируется.",
+  "_comment": "Рекомендованные настройки VS Code по стекам. Автонастройка добавляет только НЕДОСТАЮЩИЕ ключи (существующие не трогает) и делает бэкап settings.json. always_on — общие настройки, снимающие фоновую нагрузку; применяются всегда. Ключ _comment игнорируется.",
+  "always_on": {
+    "typescript.disableAutomaticTypeAcquisition": true,
+    "npm.autoDetect": "off",
+    "task.autoDetect": "off",
+    "workbench.enableExperiments": false,
+    "window.restoreWindows": "one"
+  },
   "python": {
     "[python]": { "editor.defaultFormatter": "charliermarsh.ruff", "editor.formatOnSave": true },
-    "python.analysis.typeCheckingMode": "basic"
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.diagnosticMode": "openFilesOnly"
   },
   "web": {
     "eslint.format.enable": true,
     "editor.codeActionsOnSave": { "source.fixAll.eslint": "explicit" }
   },
   "git": {
-    "git.autofetch": true,
+    "git.autofetch": false,
     "git.confirmSync": false
   },
+  "gitlens": {
+    "gitlens.codeLens.enabled": false
+  },
   "cpp": {
-    "C_Cpp.intelliSenseEngine": "default"
+    "C_Cpp.intelliSenseEngine": "default",
+    "C_Cpp.intelliSense.maxCachedProcesses": 2,
+    "C_Cpp.intelliSense.maxMemory": 2048,
+    "C_Cpp.references.maxCachedProcesses": 1,
+    "C_Cpp.workspaceParsingPriority": "medium"
+  },
+  "java": {
+    "java.jdt.ls.vmargs": "-XX:+UseParallelGC -XX:GCTimeRatio=4 -XX:AdaptiveSizePolicyWeight=90 -Dsun.zip.disableMemoryMapping=true -Xmx1G -Xms100m -Xlog:disable"
   },
   "powershell": {
     "[powershell]": { "editor.formatOnSave": true }

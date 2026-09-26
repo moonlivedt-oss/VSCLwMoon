@@ -15,7 +15,7 @@ def required_by_enabled(enabled: set[str],
     """Транзитивное замыкание зависимостей включённого набора (#1).
 
     Для каждого включённого расширения собираем всё, от чего оно зависит
-    (extensionDependencies + extensionPack, см. manifests.build_dependency_map),
+    (extensionDependencies, см. manifests.build_dependency_map),
     и зависимости зависимостей — чтобы получить полный список того, что обязано
     остаться включённым. Циклы в графе не зацикливают обход: идём только по
     ещё не добавленным."""

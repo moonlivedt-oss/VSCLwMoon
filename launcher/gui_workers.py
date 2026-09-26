@@ -73,9 +73,10 @@ class StatusProbe(QThread):
     закрыт или вывод не разобрался."""
     measured = pyqtSignal(dict)
 
-    def __init__(self, cli):
+    def __init__(self, cli, ext_index=None):
         super().__init__()
         self._cli = cli
+        self._ext_index = ext_index or {}
 
     def run(self):
         from .vscode import code_status
@@ -83,6 +84,17 @@ class StatusProbe(QThread):
             data = code_status(self._cli) or {}
         except Exception:
             data = {}
+        # Дерево процессов с раскладкой по стекам: миллисекунды и работает,
+        # даже когда --status не ответил.
+        try:
+            from . import proctree
+            from .vscode import code_image_name, extensions_dir
+            tree = proctree.measure(code_image_name(self._cli),
+                                    str(extensions_dir(self._cli)), self._ext_index)
+        except Exception:
+            tree = None
+        if tree:
+            data["tree"] = tree
         self.measured.emit(data)
 
 

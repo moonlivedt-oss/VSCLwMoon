@@ -80,6 +80,10 @@ SUFFIX_MARKERS: dict[str, str] = {
     ".rb": "ruby",
     ".lua": "lua",
     ".sql": "sql",
+    ".db": "sqlite",
+    ".sqlite": "sqlite",
+    ".sqlite3": "sqlite",
+    ".csv": "sqlite",
     ".dart": "dart",
     ".jl": "julia",
     ".swift": "swift",
@@ -177,6 +181,10 @@ def detect_stacks(folder, available: set[str] | None = None, max_entries: int = 
         if seen >= max_entries:
             break
 
+    # Документация — это тексты: вместе с Markdown предлагаем орфографию.
+    if "markdown" in found:
+        found.add("spell")
+
     if available is not None:
         found &= available
     return found
@@ -185,20 +193,47 @@ def detect_stacks(folder, available: set[str] | None = None, max_entries: int = 
 def _loads_jsonc(text: str):
     """Разобрать JSON, терпя JSONC (// и /* */ комментарии, хвостовые запятые) —
     файлы VS Code часто с комментариями. Сначала честный json, при неудаче —
-    грубая чистка комментариев и повтор. None, если не разобралось."""
+    чистка комментариев и повтор. None, если не разобралось.
+
+    Чистка идёт посимвольно с учётом строк: «//» внутри значения (URL,
+    `cscript //Nologo` в настройках Code Runner) — не комментарий."""
     import json
 
     try:
         return json.loads(text)
     except Exception:
         pass
-    import re
-
-    no_block = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
-    no_line = re.sub(r"(^|\s)//[^\n]*", "", no_block)
-    no_trail = re.sub(r",(\s*[}\]])", r"\1", no_line)
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i : j + 1])
+            i = j + 1
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+        elif ch in "}]":
+            # Хвостовая запятая: убрать последнюю запятую, если после неё
+            # были только пробелы (комментарии уже вырезаны).
+            k = len(out) - 1
+            while k >= 0 and out[k].isspace():
+                k -= 1
+            if k >= 0 and out[k] == ",":
+                del out[k]
+            out.append(ch)
+            i += 1
+        else:
+            out.append(ch)
+            i += 1
     try:
-        return json.loads(no_trail)
+        return json.loads("".join(out))
     except Exception:
         return None
 

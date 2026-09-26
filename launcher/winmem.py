@@ -21,6 +21,7 @@ PowerShell.
 Всё Windows-специфично: на других ОС функции возвращают пустой результат, а
 вызывающий откатывается на прежний путь (tasklist).
 """
+
 from __future__ import annotations
 
 import ctypes
@@ -34,9 +35,11 @@ IS_WINDOWS = sys.platform == "win32"
 if IS_WINDOWS:
     from ctypes import wintypes
 else:  # pragma: no cover — заглушки, чтобы объявления структур ниже собрались
-    class wintypes:            # type: ignore[no-redef]
+
+    class wintypes:  # type: ignore[no-redef]
         DWORD = ctypes.c_uint32
         HANDLE = ctypes.c_void_p
+
 
 TH32CS_SNAPPROCESS = 0x00000002
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -107,6 +110,31 @@ def iter_processes() -> list[tuple[int, str]]:
         while ok:
             name = entry.szExeFile.decode("mbcs", "replace")
             out.append((int(entry.th32ProcessID), name))
+            ok = k32.Process32Next(snap, ctypes.byref(entry))
+    finally:
+        k32.CloseHandle(snap)
+    return out
+
+
+def iter_processes_ex() -> list[tuple[int, int, str]]:
+    """Снимок процессов с родителем: [(pid, ppid, имя_exe), ...]. Нужен для
+    дерева процессов редактора (proctree.py): языковые серверы — потомки
+    Code.exe с другими именами образа."""
+    if not IS_WINDOWS:
+        return []
+    k32 = _kernel32()
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    snap = k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if not snap or snap == ctypes.c_void_p(-1).value:
+        return []
+    out: list[tuple[int, int, str]] = []
+    try:
+        entry = _PROCESSENTRY32()
+        entry.dwSize = ctypes.sizeof(_PROCESSENTRY32)
+        ok = k32.Process32First(snap, ctypes.byref(entry))
+        while ok:
+            name = entry.szExeFile.decode("mbcs", "replace")
+            out.append((int(entry.th32ProcessID), int(entry.th32ParentProcessID), name))
             ok = k32.Process32Next(snap, ctypes.byref(entry))
     finally:
         k32.CloseHandle(snap)

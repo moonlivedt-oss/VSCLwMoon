@@ -38,13 +38,40 @@ def test_migrate_config_adds_defaults_and_version():
 
 
 def test_migrate_config_preserves_user_values_and_is_idempotent():
-    cfg = {"presets": {"web": ["web"]}, "kill_first": False, "theme": "light"}
+    cfg = {"presets": {"web": ["web"]}, "kill_first": False, "theme": "light",
+           "config_version": core.CONFIG_VERSION}
     once = core.migrate_config(dict(cfg))
     twice = core.migrate_config(dict(once))
     assert once["presets"] == {"web": ["web"]}
     assert once["kill_first"] is False       # пользовательское значение не тронуто
     assert once["theme"] == "light"
     assert twice == once                      # идемпотентна
+
+
+def test_migrate_v4_keeps_old_selection_equivalent():
+    # До v4 стек git включал GitLens, sql — SQLite, azure — Azure AI, а
+    # анимации были в ядре. Старый выбор должен включать то же самое.
+    cfg = {
+        "config_version": 3,
+        "last_selected": ["git", "python"],
+        "presets": {
+            "db": ["sql"],
+            "cloud": {"stacks": ["azure"], "kill": True},
+            "bare": {"stacks": [], "bare": True},
+        },
+        "folder_stacks": {"d:/proj": ["git"], "d:/empty": []},
+    }
+    out = core.migrate_config(cfg)
+    assert out["last_selected"] == ["git", "python", "gitlens", "appearance"]
+    assert out["presets"]["db"] == ["sql", "sqlite", "appearance"]
+    assert out["presets"]["cloud"]["stacks"] == ["azure", "azure_ai", "appearance"]
+    assert out["presets"]["cloud"]["kill"] is True
+    assert out["presets"]["bare"]["stacks"] == []        # голый набор не трогаем
+    assert out["folder_stacks"]["d:/proj"] == ["appearance", "git", "gitlens"]
+    assert out["folder_stacks"]["d:/empty"] == []
+    # орфография и Code Runner сознательно не дописываются
+    assert "spell" not in out["last_selected"] and "runner" not in out["last_selected"]
+    assert core.migrate_config(dict(out)) == out           # идемпотентна
 
 
 def test_migrate_config_handles_non_dict():

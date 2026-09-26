@@ -19,7 +19,7 @@ from launcher.paths import CATEGORIES_FILE, DATA_DIR
 # --- #1: граф зависимостей и защита при выключении -------------------------
 
 
-def test_build_dependency_map_merges_deps_and_pack():
+def test_build_dependency_map_ignores_pack():
     manifests = {
         "pub.pack": {"depends": [], "pack": ["pub.a", "pub.b"]},
         "pub.a": {"depends": ["pub.lib"], "pack": []},
@@ -27,7 +27,8 @@ def test_build_dependency_map_merges_deps_and_pack():
         "pub.empty": {"depends": [], "pack": []},  # пустое — не в карте
     }
     dep = build_dependency_map(manifests)
-    assert dep["pub.pack"] == {"pub.a", "pub.b"}
+    # Участники пакета независимы: пакет не держит их включёнными.
+    assert "pub.pack" not in dep
     assert dep["pub.a"] == {"pub.lib"}
     assert "pub.self" not in dep  # ссылка сама на себя выкинута -> пусто
     assert "pub.empty" not in dep
@@ -162,7 +163,7 @@ def test_read_extension_manifests_from_extensions_json(tmp_path, monkeypatch):
 
     dep = build_dependency_map(manifests)
     assert dep["ms-python.python"] == {"ms-python.debugpy"}
-    assert dep["redhat.java"] == {"redhat.dep1", "redhat.dep2"}
+    assert "redhat.java" not in dep   # extensionPack — не зависимость
 
 
 def test_read_extension_manifests_missing_dir(monkeypatch, tmp_path):

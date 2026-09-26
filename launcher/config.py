@@ -49,7 +49,7 @@ def setup_logging() -> Logger:
 
 # Версия схемы launcher_config.json. Растёт, когда меняется форма данных —
 # migrate_config приводит старый конфиг к текущей форме, не теряя настроек.
-CONFIG_VERSION = 3
+CONFIG_VERSION = 4
 
 # Ожидаемый тип и значение по умолчанию для каждого известного ключа.
 # Ключ не в таблице (например, пришедший из будущей версии) сохраняется как
@@ -142,8 +142,50 @@ def migrate_config(cfg: dict) -> dict:
         base = cfg.get("baseline_full")
         if isinstance(base, dict):
             base.setdefault("metric", "ws-private-perf")
+    # v4: стеки git/sql/azure разделены на лёгкую и тяжёлую части, а
+    # анимации и Custom CSS переехали из ядра в стек appearance. Сохранённые
+    # выборы дописываем так, чтобы они включали ровно то же, что и раньше, —
+    # кроме орфографии и Code Runner: их вынос из ядра и есть экономия.
+    if cfg.get("config_version", 0) < 4:
+        _migrate_split_stacks(cfg)
     cfg["config_version"] = CONFIG_VERSION
     return cfg
+
+
+# Ключ старого стека -> стеки, которые от него отделились в v4.
+STACK_SPLITS_V4: dict[str, tuple[str, ...]] = {
+    "git": ("gitlens",),
+    "sql": ("sqlite",),
+    "azure": ("azure_ai",),
+}
+# Стеки, вынесенные из ядра, которые до v4 были включены всегда.
+FROM_CORE_V4: tuple[str, ...] = ("appearance",)
+
+
+def _upgrade_stacks(stacks: list) -> list:
+    """Список ключей стеков старого выбора -> эквивалентный новый."""
+    out = [str(s) for s in stacks]
+    for old, extra in STACK_SPLITS_V4.items():
+        if old in out:
+            out += [e for e in extra if e not in out]
+    out += [e for e in FROM_CORE_V4 if e not in out]
+    return out
+
+
+def _migrate_split_stacks(cfg: dict) -> None:
+    """Дописать отделившиеся стеки в пресеты, последний выбор и память папок.
+    Голый набор (пустой список) не трогаем: это осознанное «только ядро»."""
+    last = cfg.get("last_selected")
+    if isinstance(last, list) and last:
+        cfg["last_selected"] = _upgrade_stacks(last)
+    for name, value in list(cfg.get("presets", {}).items()):
+        if isinstance(value, list) and value:
+            cfg["presets"][name] = _upgrade_stacks(value)
+        elif isinstance(value, dict) and isinstance(value.get("stacks"), list)                 and value["stacks"] and not value.get("bare"):
+            value["stacks"] = _upgrade_stacks(value["stacks"])
+    for key, value in list(cfg.get("folder_stacks", {}).items()):
+        if isinstance(value, list) and value:
+            cfg["folder_stacks"][key] = sorted(_upgrade_stacks(value))
 
 
 def quarantine_config(path: "Path | None" = None) -> "Path | None":
@@ -264,7 +306,9 @@ FOOTPRINT_CAP = 40   # сколько разных наборов помнить
 # замер (winmem.py) отдаёт Private Bytes — число другое. Сравнивать их между
 # собой нельзя: «экономия» вышла бы разницей несравнимых величин. Поэтому у
 # каждой записи есть метка, и старые записи просто не участвуют в расчёте.
-MEMORY_METRIC = "private-bytes"
+# v1.5: к замеру добавились процессы языковых серверов (дерево процессов, см.
+# proctree.py) — число снова другое, отсюда новая метка.
+MEMORY_METRIC = "private-bytes-tree"
 
 
 def record_footprint(cfg: dict, signature: str, mb: int, n: int,

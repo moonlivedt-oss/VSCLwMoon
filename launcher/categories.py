@@ -15,11 +15,13 @@ from .paths import CATEGORIES_FILE, DESCRIPTIONS_FILE, RECOMMENDED_FILE, ROOT
 # не точный прогноз: реальный расход зависит от проекта и версии расширения.
 WEIGHT = {
     "sonar": "heavy", "java": "heavy", "azure": "heavy", "cpp": "heavy",
-    "rust": "heavy", "data": "heavy", "dotnet": "heavy",
-    "python": "medium", "sql": "medium", "git": "medium",
+    "rust": "heavy", "data": "heavy", "dotnet": "heavy", "sql": "heavy",
+    "azure_ai": "heavy",
+    "python": "medium", "gitlens": "medium", "spell": "medium",
     "go": "medium", "docker": "medium", "php": "medium", "ruby": "medium",
     "terraform": "medium",
-    "web": "light", "graphics3d": "light", "markdown": "light",
+    "web": "light", "git": "light", "sqlite": "light", "appearance": "light",
+    "runner": "light", "graphics3d": "light", "markdown": "light",
     "powershell": "light", "remote": "light", "api": "light", "config": "light",
     "lua": "light", "svelte_astro": "light", "graphql": "light",
 }

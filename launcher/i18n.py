@@ -336,6 +336,62 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "только при открытом редакторе.": "VS Code does not answer --status. Is it running? The measurement "
         "needs an open editor.",
         "Всего процессы VS Code: {mb} МБ": "VS Code processes in total: {mb} MB",
+        "Ядро": "Core",
+        "стартует сразу": "starts at launch",
+        "Расширение активируется при каждом запуске VS Code "
+        "(«*» или onStartupFinished), а не когда открыт файл его "
+        "языка. Такие держат память даже там, где не нужны, — "
+        "их выгоднее всего выключать стеком.": "The extension activates on every VS Code launch ('*' or "
+        "onStartupFinished), not when a file of its language is opened. "
+        "Such extensions hold memory even where they are not needed — "
+        "they pay off most when their stack is off.",
+        # --- уборка -------------------------------------------------------
+        "Уборка…": "Clean up…",
+        "Найти, что VS Code накопил на диске: копии установщиков, "
+        "данные удалённых проектов, кэши, старые логи и версии "
+        "расширений. Удаление — в Корзину.": "Find what VS Code has piled up on disk: installer copies, data of "
+        "deleted projects, caches, old logs and extension versions. "
+        "Deletion goes to the Recycle Bin.",
+        "Уборка VS Code": "VS Code clean-up",
+        "Что VS Code накопил и сам не чистит: копии установщиков, данные "
+        "удалённых проектов, кэши движка, старые логи и версии расширений. "
+        "Всё это пересоздаётся при необходимости. Удаление — в Корзину, "
+        "только при закрытом VS Code.": "What VS Code accumulates and never cleans itself: installer copies, "
+        "data of deleted projects, engine caches, old logs and extension "
+        "versions. All of it is recreated when needed. Deletion goes to the "
+        "Recycle Bin and only while VS Code is closed.",
+        "Что": "What",
+        "Размер": "Size",
+        "Ищу…": "Scanning…",
+        "Пересканировать": "Rescan",
+        "В Корзину": "To Recycle Bin",
+        "Не найдена папка данных VS Code (%APPDATA%).": "VS Code data folder not found (%APPDATA%).",
+        "Ошибка поиска: {err}": "Scan error: {err}",
+        "Убирать нечего — всё чисто.": "Nothing to clean — all tidy.",
+        "Выбрано: {n} · освободится {size}": "Selected: {n} · frees {size}",
+        "VS Code запущен. Закройте его: кэши открытого редактора заняты "
+        "и удалятся не полностью.": "VS Code is running. Close it: the open editor holds its caches "
+        "and they would be removed only partially.",
+        "Переместить в Корзину {n} элементов ({size})?": "Move {n} items ({size}) to the Recycle Bin?",
+        "Перемещаю в Корзину…": "Moving to the Recycle Bin…",
+        "Готово: {size} в Корзине.": "Done: {size} in the Recycle Bin.",
+        "Не всё удалось убрать: {err}": "Not everything was removed: {err}",
+        "Копии установщиков расширений (CachedExtensionVSIXs)": "Extension installer copies (CachedExtensionVSIXs)",
+        "Данные удалённых проектов (workspaceStorage)": "Data of deleted projects (workspaceStorage)",
+        "Кэш прошлых версий VS Code (CachedData)": "Cache of previous VS Code versions (CachedData)",
+        "Кэши движка (Cache, GPUCache…)": "Engine caches (Cache, GPUCache…)",
+        "Логи прошлых сеансов": "Logs of past sessions",
+        "Старые версии расширений": "Old extension versions",
+        "Дерево процессов VS Code: {mb} МБ": "VS Code process tree: {mb} MB",
+        "  расширения и их языковые серверы: {mb} МБ": "  extensions and their language servers: {mb} MB",
+        "  сам редактор (окно, хост расширений, GPU): {mb} МБ": "  the editor itself (window, extension host, GPU): {mb} MB",
+        "Память по стекам (отдельные процессы расширений):": "Memory by stack (separate extension processes):",
+        "По расширениям:": "By extension:",
+        "Не входит в замер (терминал и запущенное в нём):": "Not counted (terminal and what runs in it):",
+        "Ответ code --status: всего {mb} МБ": "code --status answer: {mb} MB in total",
+        "Больше всех в отдельных процессах держит «{title}»: "
+        "{mb} МБ. Эта память уходит, когда стек выключен.": "The biggest holder in separate processes is '{title}': "
+        "{mb} MB. This memory is freed when the stack is off.",
         "  из них расширения (extensionHost и языковые серверы): {mb} МБ "
         "({share}%)": "  of that, extensions (extensionHost and language servers): {mb} MB "
         "({share}%)",

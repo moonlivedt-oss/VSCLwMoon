@@ -1,47 +1,42 @@
 {
   "$schema": "./categories.schema.json",
   "_comment": "Карта расширение -> категория. always_on грузятся ВСЕГДА. Остальные категории включаются галочками в лаунчере. Всё, чего нет в этом файле, тоже остаётся включённым (безопасный дефолт). id пиши в нижнем регистре, как в 'code --list-extensions'.",
-
   "always_on": {
     "title": "Ядро (всегда вкл)",
-    "note": "Косметика, продуктивность, орфография, Claude, русский язык — лёгкие и нужны везде.",
+    "note": "Тема, иконки, Claude, закладки, ErrorLens, русский язык — лёгкие и нужны везде. Всё, что стартует вместе с редактором и нужно не всегда, вынесено в отдельные стеки.",
     "extensions": [
       "catppuccin.catppuccin-vsc",
       "pkief.material-icon-theme",
-      "brandonkirbyson.vscode-animations",
-      "be5invis.vscode-custom-css",
       "aaron-bond.better-comments",
-      "jzmstrjp.color-the-tag-name",
       "anthropic.claude-code",
       "gruntfuggly.todo-tree",
       "alefragnani.bookmarks",
       "cardinal90.multi-cursor-case-preserve",
       "usernamehw.errorlens",
-      "streetsidesoftware.code-spell-checker",
-      "streetsidesoftware.code-spell-checker-russian",
       "ms-ceintl.vscode-language-pack-ru",
       "christian-kohler.path-intellisense",
       "adpyke.codesnap",
-      "seyyedkhandon.qpack",
-      "kisstkondoros.vscode-codemetrics",
-      "eriklynd.json-tools",
-      "formulahendry.code-runner",
-      "moonlivedt.diagnostics-ru"
+      "eriklynd.json-tools"
     ]
   },
-
   "categories": {
     "git": {
-      "title": "Git / контроль версий",
-      "note": "GitLens индексирует историю репозитория — заметная память. Вынесен из ядра, чтобы можно было отключать на не-git проектах.",
+      "title": "Git (лёгкий)",
+      "note": "Граф, история, blame по строке, шаблоны .gitignore. Почти ничего не держит в памяти.",
       "extensions": [
-        "eamodio.gitlens",
         "mhutchie.git-graph",
         "donjayamanne.githistory",
-        "github.vscode-pull-request-github",
-        "github.vscode-github-actions",
         "waderyan.gitblame",
         "codezombiech.gitignore"
+      ]
+    },
+    "gitlens": {
+      "title": "GitLens / GitHub",
+      "note": "GitLens индексирует историю репозитория, GitHub PR и Actions держат фоновую синхронизацию. Включай, когда нужна работа с PR и историей.",
+      "extensions": [
+        "eamodio.gitlens",
+        "github.vscode-pull-request-github",
+        "github.vscode-github-actions"
       ]
     },
     "python": {
@@ -96,7 +91,7 @@
     },
     "web": {
       "title": "Web / JS / TS / Vue",
-      "note": "ESLint, Vue Volar, Tailwind, Live Server.",
+      "note": "ESLint, Vue Volar, Tailwind, Live Server, метрики кода, подсветка тегов.",
       "extensions": [
         "dbaeumer.vscode-eslint",
         "denoland.vscode-deno",
@@ -106,27 +101,36 @@
         "formulahendry.auto-rename-tag",
         "ritwickdey.liveserver",
         "leizongmin.node-module-intellisense",
-        "ms-edgedevtools.vscode-edge-devtools"
+        "ms-edgedevtools.vscode-edge-devtools",
+        "seyyedkhandon.qpack",
+        "kisstkondoros.vscode-codemetrics",
+        "jzmstrjp.color-the-tag-name"
       ]
     },
     "sql": {
-      "title": "SQL / данные",
-      "note": "MSSQL, SQLTools, SQLite, CSV.",
+      "title": "SQL Server / SQLTools",
+      "note": "MSSQL поднимает отдельный SQL Tools Service на .NET — сотни МБ. Для SQLite и CSV хватит лёгкого стека.",
       "extensions": [
         "ms-mssql.mssql",
         "ms-mssql.data-workspace-vscode",
         "ms-mssql.sql-database-projects-vscode",
         "ms-mssql.sql-bindings-vscode",
         "mtxr.sqltools",
+        "adpyke.vscode-sql-formatter"
+      ]
+    },
+    "sqlite": {
+      "title": "SQLite / CSV",
+      "note": "Просмотр .db/.sqlite и цветные колонки CSV. Лёгкий.",
+      "extensions": [
         "alexcvzz.vscode-sqlite",
         "qwtel.sqlite-viewer",
-        "adpyke.vscode-sql-formatter",
         "mechatroner.rainbow-csv"
       ]
     },
     "azure": {
       "title": "Azure / облако / контейнеры",
-      "note": "15+ расширений, тянут .NET рантайм. Нужны редко.",
+      "note": "Ресурсы, функции, хранилища, контейнеры. Тянут .NET рантайм. Нужны редко.",
       "extensions": [
         "ms-vscode.vscode-node-azure-pack",
         "ms-azuretools.vscode-azureresourcegroups",
@@ -141,10 +145,16 @@
         "ms-azuretools.vscode-containers",
         "ms-azure-load-testing.microsoft-testing",
         "ms-vscode-remote.remote-containers",
-        "ms-dotnettools.vscode-dotnet-runtime",
+        "ms-dotnettools.vscode-dotnet-runtime"
+      ]
+    },
+    "azure_ai": {
+      "title": "Azure AI / MCP",
+      "note": "AI Toolkit, Azure Copilot и MCP-сервер Azure: ~540 МБ на диске, стартуют вместе с редактором.",
+      "extensions": [
+        "ms-windows-ai-studio.windows-ai-studio",
         "ms-azuretools.vscode-azure-github-copilot",
-        "ms-azuretools.vscode-azure-mcp-server",
-        "ms-windows-ai-studio.windows-ai-studio"
+        "ms-azuretools.vscode-azure-mcp-server"
       ]
     },
     "graphics3d": {
@@ -163,6 +173,29 @@
         "bierner.markdown-mermaid",
         "bpruitt-goddard.mermaid-markdown-syntax-highlighting",
         "tomoki1207.pdf"
+      ]
+    },
+    "spell": {
+      "title": "Орфография (RU/EN)",
+      "note": "Code Spell Checker — отдельный языковой сервер, проверяет каждый открытый файл. Нужен для текстов и документации.",
+      "extensions": [
+        "streetsidesoftware.code-spell-checker",
+        "streetsidesoftware.code-spell-checker-russian"
+      ]
+    },
+    "appearance": {
+      "title": "Оформление / анимации",
+      "note": "Анимации интерфейса и Custom CSS. Встраиваются в окно при старте; выключи для самого быстрого запуска. Уже внедрённый CSS остаётся.",
+      "extensions": [
+        "brandonkirbyson.vscode-animations",
+        "be5invis.vscode-custom-css"
+      ]
+    },
+    "runner": {
+      "title": "Code Runner",
+      "note": "Запуск файла одной кнопкой на любом языке. Стартует вместе с редактором.",
+      "extensions": [
+        "formulahendry.code-runner"
       ]
     },
     "powershell": {
@@ -228,7 +261,7 @@
     },
     "config": {
       "title": "YAML / TOML / конфиги",
-      "note": "Ещё не установлен. Схемы и подсветка конфигов.",
+      "note": "Схемы и подсветка YAML/TOML-конфигов.",
       "extensions": [
         "redhat.vscode-yaml",
         "tamasfe.even-better-toml"

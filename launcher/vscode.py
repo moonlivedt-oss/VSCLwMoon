@@ -230,20 +230,32 @@ def code_memory_mb(code_cli: str | None) -> tuple[int, int]:
 
 
 def code_private_ws_mb(code_cli: str | None) -> tuple[int, int]:
-    """Честный footprint (#2): приватная память всех процессов VS Code.
+    """Честный footprint (#2): приватная память VS Code вместе с языковыми
+    серверами расширений.
 
     tasklist в code_memory_mb суммирует полный working set каждого процесса —
     а десяток процессов Code делят общие страницы (движок, DLL), которые так
     считаются многократно, и «сэкономлено X МБ» завышается. Приватная память —
     только неразделяемая, реально освобождаемая при закрытии.
 
-    Считаем нативно через Win32 (winmem.py): единицы миллисекунд, без запуска
-    powershell.exe, который стоил ~1-2 с на каждый замер и есть не везде.
+    Считаем по дереву процессов (proctree.py): кроме Code.exe сюда входят
+    потомки, принадлежащие расширениям (cpptools.exe, java.exe SonarLint/Java,
+    сервис MSSQL) — именно в них живёт основной вес тяжёлых стеков. Оболочки
+    терминала и то, что в них запущено, не считаются. Если дерево собрать не
+    удалось — прежний замер только Code.exe.
 
     Возвращает (МБ, число процессов). (0, 0) — VS Code не запущен ИЛИ замер не
     удался: вызывающий откатывается на code_memory_mb."""
+    image = code_image_name(code_cli)
     try:
-        private_mb, _ws_mb, n = winmem.image_memory(code_image_name(code_cli))
+        from . import proctree
+        tree = proctree.measure(image, str(extensions_dir(code_cli)), {})
+        if tree and tree["n"]:
+            return tree["total_mb"], tree["n"]
+    except Exception:
+        pass
+    try:
+        private_mb, _ws_mb, n = winmem.image_memory(image)
     except Exception:
         return 0, 0
     return (private_mb, n) if n else (0, 0)

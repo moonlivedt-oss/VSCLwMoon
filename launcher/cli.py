@@ -121,6 +121,12 @@ def build_parser() -> argparse.ArgumentParser:
         "едят расширения, а сколько сам редактор",
     )
     p.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="найти, что VS Code накопил на диске (кэши, копии установщиков, "
+        "данные удалённых проектов); с --yes переместить это в Корзину",
+    )
+    p.add_argument(
         "--stack-sizes",
         action="store_true",
         help="сколько МБ на диске занимает каждый стек (по установленным расширениям)",
@@ -208,7 +214,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes",
         "-y",
         action="store_true",
-        help="с --clean-path: применить изменения без подтверждения",
+        help="с --clean-path/--cleanup: применить изменения без подтверждения",
     )
     p.add_argument(
         "--keep-dead",
@@ -643,28 +649,81 @@ def _measure_extensions(cfg: dict, as_json: bool) -> int:
     Всё остальное в лаунчере — оценки; здесь редактор сам называет, сколько
     памяти держит его extensionHost (и порождённые языковые серверы), а
     сколько — окно, GPU и терминал."""
-    from .vscode import code_status
+    from . import proctree
+    from .vscode import code_image_name, code_status, extensions_dir
 
     code_cli = resolve_code_cli(cfg)
-    data = code_status(code_cli)
-    if not data:
+    cats, _err = load_categories()
+    ext_index = build_ext_index(cats, cfg.get("extra_categories"))
+    try:
+        tree = proctree.measure(code_image_name(code_cli),
+                                str(extensions_dir(code_cli)), ext_index)
+    except Exception:
+        tree = None
+    data = code_status(code_cli) or {}
+    if not data and not tree:
         if as_json:
             print(_json.dumps({"ok": False, "reason": "vscode-not-running"}))
         else:
             print("VS Code не отвечает на --status (он запущен?).")
         return 2
-    total, ext = data["total_mb"], data["extension_mb"]
-    share = round(ext * 100 / total) if total else 0
     if as_json:
-        print(_json.dumps({"ok": True, **data}, ensure_ascii=False, indent=2))
+        print(_json.dumps({"ok": True, **data, "tree": tree}, ensure_ascii=False, indent=2))
         return 0
-    print(f"Всего процессы VS Code: {total} МБ")
-    print(f"  расширения (extensionHost и языковые серверы): {ext} МБ ({share}%)")
-    print(f"  сам редактор: {data['editor_mb']} МБ")
-    print("Процессы:")
-    for r in data["processes"]:
-        print(f"  {r['mb']:>6} МБ  {' ' * r['depth']}{r['name']}")
+    if tree:
+        titles = {k: c.get("title", k) for k, c in cats.get("categories", {}).items()}
+        print(f"Дерево процессов VS Code: {tree['total_mb']} МБ "
+              f"(расширения {tree['ext_mb']} МБ, редактор {tree['editor_mb']} МБ)")
+        print("По стекам:")
+        for key, mb in tree["stacks"].items():
+            print(f"  {mb:>6} МБ  {titles.get(key, key)}")
+        print("По расширениям:")
+        for ext_id, mb in tree["ext"].items():
+            print(f"  {mb:>6} МБ  {ext_id}")
+    if data:
+        total, ext = data["total_mb"], data["extension_mb"]
+        share = round(ext * 100 / total) if total else 0
+        print(f"code --status: всего {total} МБ")
+        print(f"  расширения (extensionHost и языковые серверы): {ext} МБ ({share}%)")
+        print(f"  сам редактор: {data['editor_mb']} МБ")
+        print("Процессы:")
+        for r in data["processes"]:
+            print(f"  {r['mb']:>6} МБ  {' ' * r['depth']}{r['name']}")
     return 0
+
+
+def _cleanup(cfg: dict, apply: bool, as_json: bool) -> int:
+    """Предпросмотр уборки; с --yes — перемещение найденного в Корзину."""
+    from . import cleanup
+    from .vscode import code_gui_exe, extensions_dir, vscode_process_count, vscode_user_settings_path
+
+    code_cli = resolve_code_cli(cfg)
+    settings = vscode_user_settings_path(code_cli)
+    if settings is None:
+        print("Не найдена папка данных VS Code (%APPDATA%).")
+        return 2
+    items = cleanup.scan(settings.parent.parent, extensions_dir(code_cli),
+                         code_gui_exe(code_cli))
+    total = sum(i["bytes"] for i in items)
+    mb = 1024 * 1024
+    if not apply:
+        if as_json:
+            print(_json.dumps({"total_mb": round(total / mb), "items": items},
+                              ensure_ascii=False, indent=2))
+            return 0
+        for kind, size, n in cleanup.summarize(items):
+            print(f"  {round(size / mb):>6} МБ  {cleanup.KIND_TITLES.get(kind, kind)} ({n})")
+        print(f"Всего: {round(total / mb)} МБ. Переместить в Корзину: --cleanup --yes")
+        return 0
+    if vscode_process_count(code_cli) > 0:
+        print("VS Code запущен — закройте его перед уборкой.")
+        return 2
+    ok, err = cleanup.send_to_trash([i["path"] for i in items])
+    if as_json:
+        print(_json.dumps({"ok": ok, "error": err, "total_mb": round(total / mb)}))
+    else:
+        print(f"В Корзине: {round(total / mb)} МБ." if ok else f"Ошибка: {err}")
+    return 0 if ok else 1
 
 
 def _stack_sizes(cfg: dict, as_json: bool) -> int:
@@ -749,6 +808,8 @@ def cli_main(argv: list[str] | None = None) -> int:
         return _measure_extensions(cfg, args.json)
     if args.stack_sizes:
         return _stack_sizes(cfg, args.json)
+    if args.cleanup:
+        return _cleanup(cfg, args.yes, args.json)
 
     if args.list_presets:
         presets = cfg.get("presets", {})
