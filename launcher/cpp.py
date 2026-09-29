@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import asdict, dataclass
+from typing import Any
 from pathlib import Path
 from shutil import which
 
@@ -378,7 +379,9 @@ def first_dll(name: str, path_str: str | None = None) -> str | None:
 
 
 def _same_dir(a: str | None, b: str | None) -> bool:
-    return bool(a and b) and _norm(str(Path(a).parent)) == _norm(str(Path(b).parent))
+    if not a or not b:
+        return False
+    return _norm(str(Path(a).parent)) == _norm(str(Path(b).parent))
 
 
 def _t(ru: str, en: str) -> str:
@@ -827,7 +830,7 @@ def cpp_report(smoke: bool = True, scan_disk: bool = True) -> dict:
     """Полный отчёт доктора C++ (для GUI и CLI)."""
     compilers = find_compilers(scan_disk=scan_disk)
     tools = tool_locations()
-    rep = {
+    rep: dict[str, Any] = {
         "compilers": [c.to_dict() for c in compilers],
         "tools": tools,
         "gcc_dirs": gcc_dirs(),
@@ -898,8 +901,8 @@ def format_report(rep: dict) -> list[str]:
         lines.append(_t("Пробная сборка (C++20):", "Test build (C++20):"))
         for s in smoke:
             c = s["compiler"]
-            flags = (" " + " ".join(s.get("flags") or [])) if s.get("flags") else ""
-            lines.append(f"  {c['kind']} {c['version']} ({c['origin']}){flags}:")
+            sflags = (" " + " ".join(s.get("flags") or [])) if s.get("flags") else ""
+            lines.append(f"  {c['kind']} {c['version']} ({c['origin']}){sflags}:")
             for st in s["steps"]:
                 mark = _t("да ", "ok ") if st["ok"] else _t("НЕТ", "NO ")
                 det = f" — {st['detail']}" if st["detail"] else ""
@@ -1197,9 +1200,9 @@ def vcpkg_root() -> str | None:
     exe = which("vcpkg")
     if exe:
         return str(Path(exe).parent)
-    for cand in (Path.home() / "vcpkg", Path("C:/vcpkg"), Path("C:/src/vcpkg")):
-        if (cand / "vcpkg.exe").is_file():
-            return str(cand)
+    for place in (Path.home() / "vcpkg", Path("C:/vcpkg"), Path("C:/src/vcpkg")):
+        if (place / "vcpkg.exe").is_file():
+            return str(place)
     return None
 
 
@@ -1352,7 +1355,7 @@ _MSYS2_LIB_HEADERS = {
 def _msys2_lib_present(bin_dir: str, lib: str) -> bool:
     inc = Path(bin_dir).parent / "include"
     name = _MSYS2_LIB_HEADERS.get(lib)
-    return bool(name) and (inc / name).exists()
+    return bool(name) and (inc / str(name)).exists()
 
 
 def msys2_install_libs(libs: tuple[str, ...], env: str = "ucrt64") -> tuple[bool, str]:

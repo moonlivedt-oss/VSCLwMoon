@@ -77,4 +77,5 @@ no_implicit_optional = true
 # GUI-модуль завязан на PyQt6 без стабов — исключаем из типизации, логика
 # покрыта в других модулях и тестах.
 exclude = ["launcher/gui\\.py$", "launcher/gui_widgets\\.py$",
-           "launcher/gui_workers\\.py$", "launcher/gui_tray\\.py$"]
+           "launcher/gui_workers\\.py$", "launcher/gui_tray\\.py$",
+           "launcher/gui_shell\\.py$", "launcher/gui_cpp\\.py$", "launcher/gui_path\\.py$"]

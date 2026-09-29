@@ -525,8 +525,7 @@ def analyze(
     gxx = providers(dirs, "g++")
     if len(gxx) > 1:
         primary = by_norm.get(norm(gxx[0]))
-        others = [by_norm.get(norm(d)) for d in gxx[1:]]
-        others = [o for o in others if o is not None]
+        others = [o for o in (by_norm.get(norm(d)) for d in gxx[1:]) if o is not None]
         ops = [Op("move_end", o.scope, o.index) for o in others]
         if (
             primary is not None
@@ -552,7 +551,8 @@ def analyze(
     # в ucrt64\bin есть свои python, cmake, perl… и, стоя раньше, он подменяет
     # Python со всеми вашими pip-пакетами.
     for issue in _toolchain_shadow(live, dirs, by_norm):
-        add(*issue[:4], issue[4], selected=issue[5])
+        kind, level, title, detail, ops, selected = issue
+        add(kind, level, title, detail, ops, selected=selected)
 
     # java не из JAVA_HOME.
     jh = os.environ.get("JAVA_HOME") or env_path.read_user_env_var("JAVA_HOME")

@@ -360,7 +360,7 @@ def scan_state(code_cli: str | None) -> dict:
         except Exception:
             exts = set()
     clangd = which("clangd")
-    clangd_ver = ()
+    clangd_ver: tuple[int, ...] = ()
     if clangd:
         clangd_ver = cpp.parse_version(cpp._out(cpp._run([clangd, "--version"], timeout=15)))
     msys = cpp.msys2_status()
@@ -434,7 +434,11 @@ def status(key: str, state: dict) -> tuple[bool, str]:
         if m.get("has_gcc"):
             c = next((c for c in comps if c["origin"].startswith("MSYS2")), None)
             return True, c["version"] if c else ""
-        return False, (cpp._t("MSYS2 есть, компилятора нет", "MSYS2 without a compiler") if m.get("root") else "")
+        return False, (
+            cpp._t("MSYS2 есть, компилятора нет", "MSYS2 without a compiler")
+            if m.get("root")
+            else ""
+        )
     if key == "msvc":
         c = next((c for c in comps if c["kind"] == "msvc"), None)
         return (True, c["version"]) if c else (False, "")
@@ -739,7 +743,7 @@ def _set_string_keys(path: Path, values: dict[str, str]) -> list[str]:
     for key, value in values.items():
         rx = re.compile(_STR_KEY_TMPL.format(key=re.escape(key)))
         rendered = json.dumps(value, ensure_ascii=False)
-        new = rx.sub(lambda m, r=rendered: m.group(1) + r, raw, count=1)
+        new = rx.sub(lambda m, r=rendered: str(m.group(1)) + r, raw, count=1)  # type: ignore[misc]
         if new != raw:
             raw = new
             changed.append(key)
