@@ -23,7 +23,7 @@
   "gitlens": {
     "gitlens.codeLens.enabled": false
   },
-  "cpp": {
+  "cpp_cpptools": {
     "C_Cpp.intelliSenseEngine": "default",
     "C_Cpp.intelliSense.maxCachedProcesses": 2,
     "C_Cpp.intelliSense.maxMemory": 2048,

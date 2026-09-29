@@ -29,6 +29,7 @@
 - [Запуск](#запуск)
 - [Возможности](#возможности)
 - [Горячие клавиши](#горячие-клавиши)
+- [C++: установка и настройка](#c-установка-и-настройка)
 - [Производительность самого лаунчера](#производительность-самого-лаунчера)
 - [Категории](#категории)
 - [Проверка логики без GUI](#проверка-логики-без-gui)
@@ -100,6 +101,15 @@ flowchart LR
 
 ## Возможности
 
+Окно устроено как панели vscode-bg и cpp-docs-panel: слева навигация по разделам,
+справа страница. **Запуск** — папка проекта, пресет, стеки и баннер с экономией и
+кнопкой запуска. **C / C++** — установка, проверка и настройка проекта. **Языки** —
+компиляторы и SDK через winget. **Расширения** — замер памяти, незнакомые
+расширения, исключения, автонастройка settings.json. **Обслуживание** — уборка,
+проверка PATH, журнал. **Настройки** — тема, палитра (9 наборов с пейзажами),
+язык, параметры запуска и трей. Редкие действия спрятаны в меню «···».
+
+
 - **Стеки расширений** — галочки по категориям из `data/categories.json`. В комплекте идёт готовая карта (Git, Python, C/C++, Java, Web, SQL, Azure, 3D, Markdown, PowerShell, SonarLint и другие) — это стартовый пример, который вы правите под свой набор. У каждого стека бейдж нагрузки (лёгкий / средний / тяжёлый) и кнопка «Подробнее»: список плагинов стека, что каждый делает и установлен ли он.
   <details>
   <summary>Управление расширениями прямо из окна «Подробнее»</summary>
@@ -161,6 +171,16 @@ flowchart LR
 - **Конфиг не теряется** — известные ключи проверяются по типу при загрузке: битое значение сбрасывается в одиночку, а не роняет весь файл (одна кривая правка руками не стирает пресеты). Нечитаемый `launcher_config.json` не затирается молча, а откладывается рядом как `launcher_config.corrupt-<время>.json`. Если папка рядом с exe недоступна на запись (Program Files, сетевой диск, флешка), конфиг и лог уезжают в `%LOCALAPPDATA%\VSCodeLauncher`, а старый конфиг переносится туда один раз.
 - Окно **запоминает размер и позицию** между запусками.
 
+### C++: установка и настройка
+
+Кнопка **«C++…»** над стеками открывает C++-центр: всё для C/C++ в одном окне, с тремя вкладками.
+
+- **Установка.** Компоненты сгруппированы по тому, за что отвечают: компилятор (MinGW, MSYS2, MSVC Build Tools или уже установленный), сборка (CMake + CMake Tools, Ninja), подсказки кода (cpptools или clangd), отладка (GDB, CodeLLDB), анализ и пакеты (cppcheck, ccache, Doxygen, vcpkg, Conan), библиотеки через pacman (SFML, SDL2, raylib, fmt, Boost, GoogleTest, Qt…) и настройка (прописать компилятор в VS Code, сделать его первым в PATH). У каждого пункта — строка «за что отвечает» и статус «уже есть / нет». Три готовых набора: «Учёба и олимпиады», «Проекты на CMake», «Лёгкий и современный». Внизу — сколько будет установлено, сколько весит и нужны ли права администратора; одна кнопка ставит всё по порядку с прогрессом по шагам. Зависимости добавляются сами: clangd ставит или обновляет LLVM, vcpkg — git, MSYS2 сразу приносит GCC, CMake, Ninja и GDB.
+- **Проверка.** Доктор C++: находит все компиляторы (PATH, MSYS2 на любом диске, MSVC через vswhere), ловит смесь тулчейнов в PATH (чужая `libstdc++-6.dll` — «точка входа не найдена»), gdb не от того GCC, устаревшие Clang/clangd/CMake, Clang без MSVC. Пробная сборка C++20 проверяет компиляцию, линковку, запуск и отладчик. У проблем — кнопки исправления: «Навести порядок в PATH» (основной GCC вперёд, остальные в конец или прочь, с предпросмотром и бэкапом) и «Подобрать установку».
+- **Проект.** Генерирует под выбранный компилятор `.vscode/tasks.json` (Ctrl+Shift+B), `launch.json` (F5, отладчик в паре с компилятором), `c_cpp_properties.json` или `.clangd`, `CMakePresets.json`, `.clang-format`, `.clang-tidy`. Существующие файлы без галочки не трогаются, перезаписываемые сохраняются в `.bak`. В режиме clangd IntelliSense cpptools отключается только в этом проекте. Шаблоны нового проекта: один файл, олимпиадная задача (сборка `-O2` и запуск на `input.txt`), CMake, CMake + vcpkg.
+
+Стек C++ разбит на части, чтобы грузить только нужное: база, IntelliSense cpptools, IntelliSense clangd, CMake, Makefile, CodeLLDB, дополнительно. cpptools и clangd помечены как конфликтующие — лаунчер предупредит, если включить оба. Автоопределение по папке выбирает части сам (CMake или Makefile, `.clangd`, SFML/GoogleTest в `#include`) и предлагает настроить C++-проект без `.vscode`.
+
 ### Горячие клавиши
 
 - <kbd>Enter</kbd> — запустить VS Code с текущим выбором.
@@ -194,9 +214,9 @@ flowchart LR
 
 | Нагрузка | Стеки |
 |---|---|
-| ![heavy](https://img.shields.io/badge/тяжёлый-red) | SonarLint, Java, Azure / облако / контейнеры, C / C++, Rust, Данные / Jupyter, C# / .NET |
-| ![medium](https://img.shields.io/badge/средний-yellow) | Python, SQL / данные, Git, Go, Docker / Kubernetes, PHP, Ruby, Terraform / IaC |
-| ![light](https://img.shields.io/badge/лёгкий-brightgreen) | Web / JS / TS / Vue, 3D / графика, Markdown, PowerShell, Удалённая разработка, REST / API, YAML / TOML, Lua, Svelte / Astro, GraphQL |
+| ![heavy](https://img.shields.io/badge/тяжёлый-red) | SonarLint, Java, Azure / облако / контейнеры, C++: IntelliSense cpptools, Rust, Данные / Jupyter, C# / .NET |
+| ![medium](https://img.shields.io/badge/средний-yellow) | Python, C++: clangd / CMake / Makefile, SQL / данные, Git, Go, Docker / Kubernetes, PHP, Ruby, Terraform / IaC |
+| ![light](https://img.shields.io/badge/лёгкий-brightgreen) | C / C++: база, CodeLLDB, дополнительно, Web / JS / TS / Vue, 3D / графика, Markdown, PowerShell, Удалённая разработка, REST / API, YAML / TOML, Lua, Svelte / Astro, GraphQL |
 | ![core](https://img.shields.io/badge/ядро-всегда_вкл-blue) | Косметика, продуктивность, орфография, русский язык — лёгкие, грузятся всегда |
 
 ---
@@ -242,6 +262,14 @@ python vscode_launcher.py --clean-path --yes            # применить ч�
 python vscode_launcher.py --clean-path --machine --yes  # чистить СИСТЕМНЫЙ PATH (нужен админ; поднимется UAC)
 python vscode_launcher.py --clean-path --yes --keep-dead # убрать только дубли, мёртвые записи оставить
 python vscode_launcher.py --fix-java-home               # найти установленный JDK и прописать JAVA_HOME
+python vscode_launcher.py --path-doctor [--yes] [--all] # умная починка PATH: конфликты, мёртвые, дубли
+python vscode_launcher.py --path-undo [N] [--yes]       # список бэкапов PATH / откат к N-му
+python vscode_launcher.py --cpp-doctor                  # доктор C++: компиляторы, смесь в PATH, пробная сборка
+python vscode_launcher.py --cpp-fix-path D:\msys64\ucrt64\bin [--remove] [--yes]  # основной GCC в PATH
+python vscode_launcher.py --cpp-setup D:\proj --engine clangd --build cmake  # .vscode под компилятор
+python vscode_launcher.py --cpp-new D:\code\hello --template olympiad       # новый проект из шаблона
+python vscode_launcher.py --msys2 sfml,fmt              # GCC/CMake/Ninja/gdb и библиотеки через pacman
+python vscode_launcher.py --install-vcpkg               # клон и сборка vcpkg, VCPKG_ROOT и PATH
 ```
 
 Установка тулчейнов идёт через **winget** и, где нужно, сама дописывает PATH (см. раздел «Языки и инструменты»). Коды возврата: `0` — успех/делать нечего; `2` — неизвестный ключ или нет winget; `3` — часть пакетов не обработалась. Все команды принимают `--json` для скриптов.
@@ -306,6 +334,11 @@ VSCodeLauncher/
     winmem.py              нативный (ctypes) замер памяти процессов Windows
     weights.py             реальный вес стеков: размер на диске + калибровка по замерам
     toolchains.py          установка тулчейнов (компиляторы, SDK) через winget
+    path_doctor.py         умная починка PATH: анализ обеих веток, затенение, предпросмотр, откат
+    cpp.py                 доктор C++: компиляторы, смесь в PATH, пробная сборка, MSYS2, vcpkg
+    cpp_setup.py           C++-центр без GUI: компоненты по ролям, план и выполнение установки
+    cpp_project.py         генерация .vscode/CMakePresets под компилятор, шаблоны проектов
+    cli_cpp.py             C++-команды CLI (--cpp-doctor, --cpp-setup, ...)
     env_path.py            запись пользовательского PATH через реестр (без setx)
     launch.py              сборка команды запуска, что выключить
     quicklaunch.py         запуск пресета одной функцией (окно, CLI и трей)
@@ -319,6 +352,9 @@ VSCodeLauncher/
     gui_widgets.py         CategoryCard и фабрики виджетов
     gui_workers.py         фоновые QThread (загрузка/память/размеры/установка)
     gui_tray.py            значок в трее: пресеты без открытия окна
+    gui_path.py            окно «Починка PATH»
+    gui_cpp.py             окно C++-центра (установка, проверка, проект)
+    gui_shell.py           оболочка окна: навигация, секции, плитки, баннер, палитры
     gui.py                 окно PyQt6 (карточки, пресеты, диалоги), run_gui
     core.py                фасад для обратной совместимости (реэкспорт)
   data/
@@ -328,6 +364,9 @@ VSCodeLauncher/
   assets/
     app.ico                иконка окна и exe
     logo.png               логотип в шапке
+    mascots/               талисман C++-центра (из cpp-docs-panel)
+    icons/                 иконки разделов навигации (из vscode-bg и cpp-docs-panel)
+    palettes/              пейзажи палитр для баннера и превью (из cpp-docs-panel)
   scripts/
     Запустить.bat          запуск отдельным процессом
     Собрать_exe.bat        сборка exe через PyInstaller

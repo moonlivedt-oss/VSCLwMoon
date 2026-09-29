@@ -21,6 +21,8 @@
       "properties": {
         "title": { "type": "string" },
         "note": { "type": "string" },
+        "title_en": { "type": "string" },
+        "note_en": { "type": "string" },
         "extensions": { "$ref": "#/$defs/extensionList" }
       },
       "additionalProperties": false
@@ -44,7 +46,14 @@
             "type": "string",
             "description": "Пояснение под именем: чем стек тяжёл, когда его выключать."
           },
-          "extensions": { "$ref": "#/$defs/extensionList" }
+          "title_en": { "type": "string", "description": "Имя стека в английском интерфейсе." },
+          "note_en": { "type": "string", "description": "Пояснение в английском интерфейсе." },
+          "extensions": { "$ref": "#/$defs/extensionList" },
+          "conflicts": {
+            "type": "array",
+            "description": "Ключи стеков, которые мешают этому при одновременном включении (два движка подсказок). Лаунчер предупредит перед запуском.",
+            "items": { "type": "string", "pattern": "^[a-z0-9_]+$" }
+          }
         },
         "additionalProperties": false
       }

@@ -47,6 +47,15 @@ def valid_winget_id(pkg_id: str) -> bool:
     return bool(pkg_id) and bool(_WINGET_ID_RE.match(pkg_id))
 
 
+# Аргумент --override уходит установщику. Разрешаем только флаги и id нагрузок:
+# буквы, цифры, пробел и . _ + - :
+_OVERRIDE_RE = re.compile(r"^[A-Za-z0-9 ._+:-]+$")
+
+
+def valid_override(value: str) -> bool:
+    return bool(value) and bool(_OVERRIDE_RE.match(value)) and len(value) <= 400
+
+
 @dataclass(frozen=True)
 class Package:
     """Один устанавливаемый пакет.
@@ -79,6 +88,17 @@ class Package:
     # установленным, только если запуск `probe[0] --list-sdks` вернул код 0 и
     # непустой stdout. Пусто — проверяем как раньше, лишь по наличию в PATH.
     verify_cmd: tuple[str, ...] = ()
+    # Наличие, которое не видно по PATH (MSYS2 в своём каталоге, MSVC за
+    # vcvars, vcpkg по переменной): ключ из cpp.DETECTORS. Задан — probe не
+    # используется для проверки установки.
+    detector: str = ""
+    # Аргумент `winget --override` (MSVC Build Tools: какие нагрузки ставить).
+    # Проходит строгий фильтр _OVERRIDE_RE.
+    override: str = ""
+    # Пакеты pacman, которые ставятся в окружение MSYS2 после winget (без
+    # префикса окружения: toolchain, cmake…). Нужен detector="msys2".
+    pacman: tuple[str, ...] = ()
+    msys_env: str = "ucrt64"
 
     def tools(self) -> tuple[str, ...]:
         """Все инструменты пакета: provides, если задан, иначе probe."""
@@ -163,6 +183,9 @@ def _package_from_dict(d: dict) -> Package | None:
             and valid_winget_id(v["winget_id"])
         ):
             versions.append((v["winget_id"], str(v.get("title") or v["winget_id"])))
+    override = str(d.get("override") or "")
+    if override and not valid_override(override):
+        override = ""
     return Package(
         winget_id=wid,
         title=str(d.get("title") or wid),
@@ -174,6 +197,10 @@ def _package_from_dict(d: dict) -> Package | None:
         provides=_strs("provides"),
         versions=tuple(versions),
         verify_cmd=_strs("verify_cmd"),
+        detector=str(d.get("detector") or ""),
+        override=override,
+        pacman=_strs("pacman"),
+        msys_env=str(d.get("msys_env") or "ucrt64"),
     )
 
 
@@ -345,10 +372,19 @@ def _verify_cmd_ok(pkg: Package) -> bool:
     return out.returncode == 0 and bool((out.stdout or "").strip())
 
 
+def _detect(pkg: Package) -> tuple[bool, str | None]:
+    from . import cpp
+
+    return cpp.detect(pkg.detector)
+
+
 def package_installed(pkg: Package) -> bool:
     """Пакет считаем установленным, если ЛЮБОЙ его probe-бинарь виден в PATH.
     Если задан verify_cmd — дополнительно требуем, чтобы команда-подтверждение
-    отработала (наличия мультиплексора вроде dotnet.exe без SDK недостаточно)."""
+    отработала (наличия мультиплексора вроде dotnet.exe без SDK недостаточно).
+    У пакетов с detector (MSYS2, MSVC) наличие проверяет детектор."""
+    if pkg.detector:
+        return _detect(pkg)[0]
     if not any(which(exe) is not None for exe in pkg.probe):
         return False
     return _verify_cmd_ok(pkg)
@@ -356,6 +392,9 @@ def package_installed(pkg: Package) -> bool:
 
 def package_status(pkg: Package) -> dict:
     """{'installed': bool, 'version': str|None} — для строки в UI/CLI."""
+    if pkg.detector:
+        ok, info = _detect(pkg)
+        return {"installed": ok, "version": info if ok else None}
     if not package_installed(pkg):
         return {"installed": False, "version": None}
     ver = None
@@ -370,6 +409,9 @@ def verify_package(pkg: Package) -> tuple[bool, str]:
     """Проверить, что пакет реально работает: запустить probe и вернуть версию.
     (успех, текст). Используется после установки и кнопкой «Проверить» — чтобы
     подтвердить, что инструмент не просто на PATH, а действительно запускается."""
+    if pkg.detector:
+        ok, info = _detect(pkg)
+        return (True, f"{pkg.title}: {info}") if ok else (False, f"{pkg.title}: не найден.")
     for exe in pkg.probe:
         ver = probe_version(exe)
         if ver:
@@ -420,6 +462,8 @@ def find_tool_on_disk(pkg: Package, extra_roots: tuple[str, ...] = ()) -> str | 
     известные корни (_DISK_SCAN_ROOTS + extra_roots). Так покрывается и
     «поставили через winget, но PATH не прописался», и «стоит MSYS2/ручной
     MinGW мимо PATH»."""
+    if pkg.detector:
+        return None  # такие пакеты живут вне PATH по замыслу
     found = find_bin_dir_for(pkg)
     if found:
         return found
@@ -535,6 +579,8 @@ def install_package_elevated(pkg: Package, scope: str = "machine") -> tuple[bool
     ]
     if scope in ("user", "machine"):
         inner += ["--scope", scope]
+    if pkg.override and valid_override(pkg.override):
+        inner += ["--override", pkg.override]
     # Массив аргументов PowerShell: каждый в одинарных кавычках с экранированием.
     ps_args = ", ".join("'" + a.replace("'", "''") + "'" for a in inner)
     ps = (
@@ -618,6 +664,8 @@ def _run_winget(action: str, pkg: Package, scope: str | None, repair: bool) -> t
         args += ["--accept-package-agreements"]
     if action in ("install", "upgrade") and scope in ("user", "machine"):
         args += ["--scope", scope]
+    if action == "install" and pkg.override and valid_override(pkg.override):
+        args += ["--override", pkg.override]
     log.info("winget %s %s (scope=%s)", action, pkg.winget_id, scope)
     try:
         out = subprocess.run(
@@ -650,11 +698,25 @@ def _run_winget(action: str, pkg: Package, scope: str | None, repair: bool) -> t
             if note:
                 text = (text + "\n" + note).strip()
                 log.info("%s", note)
+        if action == "install" and pkg.pacman:
+            pok, pmsg = _run_pacman_step(pkg)
+            text = (text + "\n\npacman: " + pmsg).strip()
+            ok = ok and pok
     else:
         reason = explain_winget_code(out.returncode, text)
         log.warning("winget %s %s: код %s — %s", action, pkg.winget_id, out.returncode, reason)
         text = (f"{reason}\n\n{text}").strip() if text else reason
     return ok, text
+
+
+def _run_pacman_step(pkg: Package) -> tuple[bool, str]:
+    """После установки MSYS2 поставить компилятор и прочее через pacman."""
+    from . import cpp
+
+    roots = cpp.msys2_roots()
+    if not roots:
+        return False, "MSYS2 установлен, но его каталог не найден — запустите pacman вручную."
+    return cpp.msys2_pacman(roots[0], pkg.msys_env, pkg.pacman)
 
 
 def _winget_package_roots() -> list[Path]:
@@ -706,7 +768,7 @@ def repair_path_for(pkg: Package) -> str:
     (g++/gcc/gdb) становятся видны из терминала. Возвращает пояснение для
     лога/UI (пустая строка — ничего не делали). Если winget уже прописал PATH,
     probe виден и мы сразу выходим."""
-    if package_installed(pkg):
+    if pkg.detector or package_installed(pkg):
         return ""
     candidates = list(pkg.path_hints)
     found = find_bin_dir_for(pkg)
@@ -764,6 +826,24 @@ def settings_for_toolchain(key: str) -> dict:
             "C_Cpp.default.cppStandard": "c++20",
             "C_Cpp.default.intelliSenseMode": mode,
         }
+    if key == "cpp_msys2":
+        from . import cpp
+
+        st = cpp.msys2_status()
+        gpp = str(Path(st["bin"]) / "g++.exe") if st["has_gcc"] else None
+        if not gpp:
+            return {}
+        return {
+            "C_Cpp.default.compilerPath": gpp,
+            "C_Cpp.default.cStandard": "c17",
+            "C_Cpp.default.cppStandard": "c++20",
+            "C_Cpp.default.intelliSenseMode": "windows-gcc-x64",
+        }
+    if key == "cpp_llvm":
+        # clangd из LLVM: путь нужен расширению, иначе оно предложит скачать
+        # собственную копию и будет её обновлять.
+        clangd = which("clangd") or _compiler_path("clangd")
+        return {"clangd.path": clangd} if clangd else {}
     if key == "python":
         # Расширение Python само ищет интерпретаторы, но явный путь избавляет от
         # «Select Interpreter» на первом запуске и фиксирует нужный python.
@@ -807,8 +887,22 @@ def missing_toolchains_for(folder: str) -> list[str]:
         return []
     from .detect import detect_stacks
 
-    stacks = detect_stacks(folder, available=set(TOOLCHAINS))
-    return [k for k in stacks if missing_required(k)]
+    stacks = detect_stacks(folder)
+    out = []
+    for k in sorted(stacks):
+        if k == "cpp":
+            # Любой компилятор подходит: у кого MSYS2 или MSVC, тому не нужно
+            # навязывать WinLibs только потому, что его g++ нет в PATH.
+            from . import cpp
+
+            if "cpp" in TOOLCHAINS and not cpp.any_compiler():
+                out.append("cpp")
+        elif k == "cpp_clangd":
+            if "cpp_llvm" in TOOLCHAINS and which("clangd") is None:
+                out.append("cpp_llvm")
+        elif k in TOOLCHAINS and missing_required(k):
+            out.append(k)
+    return out
 
 
 # --- менеджеры версий: предупреждение о конфликте (#7) ---------------------

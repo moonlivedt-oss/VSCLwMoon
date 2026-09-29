@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 # Точное имя файла в корне/подпапке -> ключ стека.
@@ -48,8 +49,13 @@ FILENAME_MARKERS: dict[str, str] = {
     "pubspec.yaml": "dart",
     "pubspec.yml": "dart",
     "package.swift": "swift",
-    "cmakelists.txt": "cpp",
-    "meson.build": "cpp",
+    "cmakelists.txt": "cpp_cmake",
+    "cmakepresets.json": "cpp_cmake",
+    "meson.build": "cpp_cmake",
+    "vcpkg.json": "cpp",
+    "conanfile.txt": "cpp",
+    "conanfile.py": "cpp",
+    ".clangd": "cpp_clangd",
     "svelte.config.js": "svelte_astro",
     "azure-pipelines.yml": "azure",
     "azure-pipelines.yaml": "azure",
@@ -76,6 +82,10 @@ SUFFIX_MARKERS: dict[str, str] = {
     ".hh": "cpp",
     ".c": "cpp",
     ".h": "cpp",
+    ".ixx": "cpp",
+    ".cppm": "cpp",
+    ".asm": "cpp_extras",
+    ".nasm": "cpp_extras",
     ".php": "php",
     ".rb": "ruby",
     ".lua": "lua",
@@ -107,6 +117,38 @@ PREFIX_MARKERS: tuple[tuple[str, str], ...] = (
     ("webpack.config.", "web"),
     ("next.config.", "web"),
 )
+
+# Makefile сам по себе не говорит о C++ (им собирают и Go, и документацию):
+# стек Makefile Tools предлагаем, только если в проекте есть C/C++ и нет CMake.
+MAKEFILE_NAMES: frozenset[str] = frozenset({"makefile", "gnumakefile"})
+
+# Стеки, которые означают C/C++-проект сами по себе.
+CPP_IMPLYING: frozenset[str] = frozenset({"cpp_cmake", "cpp_clangd"})
+
+C_SOURCE_SUFFIXES: frozenset[str] = frozenset(
+    {".cpp", ".cxx", ".cc", ".c", ".h", ".hpp", ".hh", ".ixx", ".cppm"}
+)
+
+# Библиотека по #include -> ключ (для подсказок pacman/vcpkg и стека extras).
+INCLUDE_LIBS: tuple[tuple[str, str], ...] = (
+    ("SFML/", "sfml"),
+    ("SDL3/", "sdl3"),
+    ("SDL2/", "sdl2"),
+    ("SDL.h", "sdl2"),
+    ("boost/", "boost"),
+    ("GLFW/", "glfw"),
+    ("fmt/", "fmt"),
+    ("gtest/", "gtest"),
+    ("catch2/", "catch2"),
+    ("doctest", "catch2"),
+    ("Q", "qt6"),  # <QApplication>, <QtWidgets/...> — проверяется отдельно
+    ("opencv2/", "opencv"),
+    ("raylib.h", "raylib"),
+)
+
+# Библиотеки, при которых полезен стек «C++: дополнительно» (SFML-сниппеты,
+# панель тестов для GoogleTest/Catch2).
+EXTRAS_LIBS: frozenset[str] = frozenset({"sfml", "gtest", "catch2"})
 
 # Каталоги, которые не открывают ничего нового, но раздувают обход.
 PRUNE_DIRS: frozenset[str] = frozenset(
@@ -156,6 +198,8 @@ def detect_stacks(folder, available: set[str] | None = None, max_entries: int = 
 
     found: set[str] = set()
     seen = 0
+    has_makefile = False
+    c_sources: list[Path] = []
     for _dirpath, dirnames, filenames in os.walk(root):
         # `.git` в списке каталогов — верный признак git-проекта; отмечаем
         # до того, как выкинем его из обхода.
@@ -165,6 +209,11 @@ def detect_stacks(folder, available: set[str] | None = None, max_entries: int = 
         for name in filenames:
             seen += 1
             low = name.lower()
+            if low in MAKEFILE_NAMES:
+                has_makefile = True
+            suffix = os.path.splitext(low)[1]
+            if suffix in C_SOURCE_SUFFIXES and len(c_sources) < 40:
+                c_sources.append(Path(_dirpath) / name)
             key = FILENAME_MARKERS.get(low)
             if key:
                 found.add(key)
@@ -185,9 +234,109 @@ def detect_stacks(folder, available: set[str] | None = None, max_entries: int = 
     if "markdown" in found:
         found.add("spell")
 
+    _cpp_rules(found, has_makefile, c_sources)
+
     if available is not None:
         found &= available
     return found
+
+
+def _cpp_rules(found: set[str], has_makefile: bool, c_sources: list[Path]) -> None:
+    """C/C++: из маркеров вывести нужные части стека.
+
+    CMake/.clangd означают C++ сам по себе; движок подсказок — clangd, если в
+    проекте есть .clangd, иначе cpptools; Makefile Tools — только для проекта на
+    Makefile без CMake; «дополнительно» — при SFML/тестовых фреймворках."""
+    if found & CPP_IMPLYING:
+        found.add("cpp")
+    if "cpp" not in found:
+        return
+    if "cpp_clangd" not in found:
+        found.add("cpp_cpptools")
+    if has_makefile and "cpp_cmake" not in found:
+        found.add("cpp_make")
+    if scan_includes(c_sources) & EXTRAS_LIBS:
+        found.add("cpp_extras")
+
+
+_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.M)
+
+
+def scan_includes(files: list[Path], max_bytes: int = 16384) -> set[str]:
+    """Ключи библиотек по строкам #include в первых КБ исходников."""
+    libs: set[str] = set()
+    for f in files:
+        try:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                text = fh.read(max_bytes)
+        except OSError:
+            continue
+        for inc in _INCLUDE_RE.findall(text):
+            for pref, lib in INCLUDE_LIBS:
+                if lib == "qt6":
+                    if re.match(r"^Qt[A-Z]\w*/|^Q[A-Z]\w+$", inc):
+                        libs.add("qt6")
+                elif inc.startswith(pref) or inc == pref:
+                    libs.add(lib)
+    return libs
+
+
+def cpp_project_hints(folder, max_entries: int = 4000) -> dict:
+    """Что за C/C++-проект в папке: система сборки, менеджер пакетов, есть ли
+    настройки VS Code и под какие библиотеки. Для подсказок в окне и доктора.
+
+    {'is_cpp', 'build': cmake|meson|make|none, 'vcpkg', 'conan',
+     'has_vscode_cfg', 'has_clangd_cfg', 'has_compile_commands', 'libs', 'asm'}"""
+    out = {
+        "is_cpp": False,
+        "build": "none",
+        "vcpkg": False,
+        "conan": False,
+        "has_vscode_cfg": False,
+        "has_clangd_cfg": False,
+        "has_compile_commands": False,
+        "libs": [],
+        "asm": False,
+    }
+    try:
+        root = Path(folder)
+        if not folder or not root.is_dir():
+            return out
+    except Exception:
+        return out
+    vs = root / ".vscode"
+    out["has_vscode_cfg"] = any(
+        (vs / n).is_file() for n in ("tasks.json", "launch.json", "c_cpp_properties.json")
+    )
+    out["has_clangd_cfg"] = (root / ".clangd").is_file()
+    out["has_compile_commands"] = (root / "compile_commands.json").is_file()
+    names: set[str] = set()
+    c_sources: list[Path] = []
+    seen = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d.lower() not in PRUNE_DIRS]
+        for name in filenames:
+            seen += 1
+            low = name.lower()
+            names.add(low)
+            suf = os.path.splitext(low)[1]
+            if suf in C_SOURCE_SUFFIXES and len(c_sources) < 40:
+                c_sources.append(Path(dirpath) / name)
+            if suf in (".asm", ".nasm", ".s"):
+                out["asm"] = True
+        if seen >= max_entries:
+            break
+    if "cmakelists.txt" in names:
+        out["build"] = "cmake"
+    elif "meson.build" in names:
+        out["build"] = "meson"
+    elif names & MAKEFILE_NAMES:
+        out["build"] = "make"
+    out["vcpkg"] = "vcpkg.json" in names
+    out["conan"] = bool(names & {"conanfile.txt", "conanfile.py"})
+    out["is_cpp"] = bool(c_sources) or out["build"] in ("cmake", "meson")
+    out["libs"] = sorted(scan_includes(c_sources))
+    return out
 
 
 def _loads_jsonc(text: str):

@@ -42,7 +42,7 @@
   "franneck94.c-cpp-runner": "сборка/запуск C/C++ без ручного конфига. Кнопки в статусбаре.",
   "hars.cppsnippets": "сниппеты C/C++.",
   "ms-vscode.cmake-tools": "интеграция CMake (конфиг/сборка/отладка).",
-  "twxs.cmake": "подсветка синтаксиса CMakeLists.txt.",
+  "twxs.cmake": "подсветка CMakeLists.txt. Устарел и не обновляется: CMake Tools сам даёт подсветку — можно удалить.",
   "ms-vscode.makefile-tools": "поддержка Makefile-проектов.",
   "vadimcn.vscode-lldb": "CodeLLDB, отладчик на LLDB (C/C++/Rust).",
   "fougas.msys2": "интеграция MSYS2/MinGW/Clang тулчейнов.",
@@ -119,10 +119,16 @@
   "adpyke.codesnap": "красивые скриншоты кода. Выдели код → CodeSnap.",
   "slevesque.vscode-3dviewer": "просмотр 3D-моделей (obj/stl/…).",
   "ohziinteractivestudio.ohzi-vscode-glb-viewer": "просмотр GLTF/GLB.",
-  "ms-edgedevtools.vscode-edge-devtools": "DevTools Edge внутри VS Code (инспектор DOM/сеть). ⚠️ шумит Failed to load message bundle в логах — безобидно.",
+  "ms-edgedevtools.vscode-edge-devtools": "DevTools Edge внутри VS Code (инспектор DOM/сеть). Шумит «Failed to load message bundle» в логах — безобидно.",
   "bierner.markdown-mermaid": "рендер mermaid-диаграмм в превью Markdown.",
   "bpruitt-goddard.mermaid-markdown-syntax-highlighting": "подсветка mermaid-блоков.",
   "ms-ceintl.vscode-language-pack-ru": "русский язык интерфейса.",
   "ms-vscode.powershell": "язык/отладка PowerShell.",
-  "formulahendry.code-runner": "запуск сниппета на многих языках. Ctrl+Alt+N."
+  "formulahendry.code-runner": "запуск сниппета на многих языках. Ctrl+Alt+N.",
+  "llvm-vs-code-extensions.vscode-clangd": "clangd: подсказки, переход к определению, clang-tidy прямо в редакторе. Легче cpptools; нужен compile_commands.json или .clangd.",
+  "jeff-hykin.better-cpp-syntax": "точная подсветка современного C++ (шаблоны, лямбды, концепты).",
+  "cschlosser.doxdocgen": "генерирует Doxygen-комментарий к функции по /** + Enter.",
+  "mesonbuild.mesonbuild": "подсветка и сборка проектов Meson.",
+  "matepek.vscode-catch2-test-adapter": "тесты GoogleTest/Catch2/doctest в панели «Тестирование»: запуск и отладка по одному.",
+  "ms-vscode.hexeditor": "hex-редактор для бинарных файлов (дампы, выходные файлы)."
 }

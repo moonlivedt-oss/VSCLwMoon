@@ -21,8 +21,8 @@
       ]
     },
     "cpp": {
-      "title": "C / C++",
-      "note": "Компилятор GCC (MinGW-w64), отладчик GDB и make; опционально CMake, Ninja, Clang.",
+      "title": "C / C++: MinGW-w64 (WinLibs)",
+      "note": "Самый простой набор: GCC, GDB и make одним архивом, плюс CMake и Ninja. Подходит для учёбы, олимпиад и небольших проектов. Если уже стоит MSYS2 — второй GCC не нужен (см. «Доктор C++»).",
       "packages": [
         {
           "winget_id": "BrechtSanders.WinLibs.POSIX.UCRT",
@@ -44,14 +44,97 @@
           "probe": ["ninja"],
           "optional": true,
           "note": "Быстрый генератор сборки — часто в паре с CMake."
-        },
+        }
+      ]
+    },
+    "cpp_msys2": {
+      "title": "C / C++: MSYS2 UCRT64",
+      "note": "MSYS2 с пакетным менеджером pacman: после установки лаунчер сам поставит GCC, GDB, CMake и Ninja для окружения UCRT64 и пропишет его в PATH. Библиотеки (SFML, SDL, Boost, fmt) потом ставятся одной командой pacman.",
+      "packages": [
+        {
+          "winget_id": "MSYS2.MSYS2",
+          "title": "MSYS2 + GCC (pacman)",
+          "probe": ["pacman"],
+          "detector": "msys2",
+          "pacman": ["toolchain", "cmake", "ninja", "gdb"],
+          "msys_env": "ucrt64",
+          "note": "Ставит MSYS2 в C:\\msys64, затем pacman -S toolchain cmake ninja gdb для UCRT64. Загрузка около 1 ГБ.",
+          "provides": ["gcc", "g++", "gdb", "cmake", "ninja", "pacman"]
+        }
+      ]
+    },
+    "cpp_llvm": {
+      "title": "C / C++: LLVM (Clang, clangd)",
+      "note": "Clang, clangd, clang-tidy, clang-format и lldb. clangd — лёгкая альтернатива IntelliSense от cpptools. Clang из LLVM по умолчанию нацелен на MSVC: без MSVC Build Tools собирайте с --target=x86_64-w64-mingw32 (настройщик проекта сделает это сам).",
+      "packages": [
         {
           "winget_id": "LLVM.LLVM",
           "title": "LLVM / Clang",
-          "probe": ["clang", "clang++"],
+          "probe": ["clang", "clang++", "clangd"],
+          "note": "Сам прописывает PATH при установке (если отметить в установщике).",
+          "path_hints": ["C:\\Program Files\\LLVM\\bin"],
+          "provides": ["clang", "clang++", "clangd", "clang-tidy", "clang-format", "lldb"]
+        }
+      ]
+    },
+    "cpp_msvc": {
+      "title": "C / C++: MSVC Build Tools",
+      "note": "Компилятор Microsoft (cl.exe) и Windows SDK без полной Visual Studio. Нужен для vcpkg по умолчанию, библиотек под MSVC и Clang с целью MSVC. Большой пакет (несколько ГБ), ставится с правами администратора.",
+      "packages": [
+        {
+          "winget_id": "Microsoft.VisualStudio.BuildTools",
+          "title": "Build Tools 2026 (VC++)",
+          "probe": ["cl"],
+          "detector": "msvc",
+          "override": "--wait --passive --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended",
+          "note": "Нагрузка «Разработка классических приложений на C++» (VCTools).",
+          "versions": [
+            {"winget_id": "Microsoft.VisualStudio.BuildTools", "title": "Build Tools 2026"},
+            {"winget_id": "Microsoft.VisualStudio.2022.BuildTools", "title": "Build Tools 2022"}
+          ]
+        }
+      ]
+    },
+    "cpp_tools": {
+      "title": "C / C++: анализ и пакеты",
+      "note": "Необязательные помощники: статический анализ (cppcheck), кэш компиляции (ccache), документация (Doxygen), менеджер пакетов Conan и система сборки Meson. vcpkg ставится отдельной кнопкой.",
+      "packages": [
+        {
+          "winget_id": "Cppcheck.Cppcheck",
+          "title": "Cppcheck",
+          "probe": ["cppcheck"],
           "optional": true,
-          "note": "Альтернативный компилятор Clang.",
-          "provides": ["clang", "clang++", "clang-format", "lldb"]
+          "path_hints": ["C:\\Program Files\\Cppcheck"],
+          "note": "Статический анализатор: утечки, выход за границы, неинициализированные переменные."
+        },
+        {
+          "winget_id": "Ccache.Ccache",
+          "title": "ccache",
+          "probe": ["ccache"],
+          "optional": true,
+          "note": "Кэш компиляции: повторная сборка CMake-проекта в разы быстрее."
+        },
+        {
+          "winget_id": "DimitriVanHeesch.Doxygen",
+          "title": "Doxygen",
+          "probe": ["doxygen"],
+          "optional": true,
+          "path_hints": ["C:\\Program Files\\doxygen\\bin"],
+          "note": "Документация из комментариев /// и /** */."
+        },
+        {
+          "winget_id": "JFrog.Conan",
+          "title": "Conan",
+          "probe": ["conan"],
+          "optional": true,
+          "note": "Менеджер пакетов C/C++ (альтернатива vcpkg)."
+        },
+        {
+          "winget_id": "mesonbuild.meson",
+          "title": "Meson",
+          "probe": ["meson"],
+          "optional": true,
+          "note": "Система сборки Meson (часто вместе с Ninja)."
         }
       ]
     },

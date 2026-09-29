@@ -49,7 +49,7 @@ def setup_logging() -> Logger:
 
 # Версия схемы launcher_config.json. Растёт, когда меняется форма данных —
 # migrate_config приводит старый конфиг к текущей форме, не теряя настроек.
-CONFIG_VERSION = 4
+CONFIG_VERSION = 5
 
 # Ожидаемый тип и значение по умолчанию для каждого известного ключа.
 # Ключ не в таблице (например, пришедший из будущей версии) сохраняется как
@@ -65,6 +65,7 @@ _SCHEMA: dict[str, tuple[type, object]] = {
     "check_updates": (bool, True),
     "profile": (str, ""),
     "theme": (str, "dark"),
+    "palette": (str, "mocha"),
     "lang": (str, "ru"),
     "geometry": (str, ""),
     "code_cli": (str, ""),
@@ -148,6 +149,11 @@ def migrate_config(cfg: dict) -> dict:
     # кроме орфографии и Code Runner: их вынос из ядра и есть экономия.
     if cfg.get("config_version", 0) < 4:
         _migrate_split_stacks(cfg)
+    # v5: стек C/C++ разделён на базу, движки подсказок (cpptools/clangd),
+    # CMake, Makefile, CodeLLDB и дополнения. Старый выбор «cpp» раскрываем во
+    # всё, что в нём было, — clangd в нём не было, его не добавляем.
+    if cfg.get("config_version", 0) < 5:
+        _migrate_split_stacks(cfg, splits=STACK_SPLITS_V5, from_core=())
     cfg["config_version"] = CONFIG_VERSION
     return cfg
 
@@ -160,32 +166,43 @@ STACK_SPLITS_V4: dict[str, tuple[str, ...]] = {
 }
 # Стеки, вынесенные из ядра, которые до v4 были включены всегда.
 FROM_CORE_V4: tuple[str, ...] = ("appearance",)
+# v5: C/C++ разделён на части.
+STACK_SPLITS_V5: dict[str, tuple[str, ...]] = {
+    "cpp": ("cpp_cpptools", "cpp_cmake", "cpp_make", "cpp_lldb", "cpp_extras"),
+}
 
 
-def _upgrade_stacks(stacks: list) -> list:
+def _upgrade_stacks(stacks: list, splits: dict | None = None,
+                    from_core: tuple[str, ...] | None = None) -> list:
     """Список ключей стеков старого выбора -> эквивалентный новый."""
+    splits = STACK_SPLITS_V4 if splits is None else splits
+    from_core = FROM_CORE_V4 if from_core is None else from_core
     out = [str(s) for s in stacks]
-    for old, extra in STACK_SPLITS_V4.items():
+    for old, extra in splits.items():
         if old in out:
             out += [e for e in extra if e not in out]
-    out += [e for e in FROM_CORE_V4 if e not in out]
+    out += [e for e in from_core if e not in out]
     return out
 
 
-def _migrate_split_stacks(cfg: dict) -> None:
+def _migrate_split_stacks(cfg: dict, splits: dict | None = None,
+                          from_core: tuple[str, ...] | None = None) -> None:
     """Дописать отделившиеся стеки в пресеты, последний выбор и память папок.
     Голый набор (пустой список) не трогаем: это осознанное «только ядро»."""
+    def up(stacks):
+        return _upgrade_stacks(stacks, splits, from_core)
+
     last = cfg.get("last_selected")
     if isinstance(last, list) and last:
-        cfg["last_selected"] = _upgrade_stacks(last)
+        cfg["last_selected"] = up(last)
     for name, value in list(cfg.get("presets", {}).items()):
         if isinstance(value, list) and value:
-            cfg["presets"][name] = _upgrade_stacks(value)
+            cfg["presets"][name] = up(value)
         elif isinstance(value, dict) and isinstance(value.get("stacks"), list)                 and value["stacks"] and not value.get("bare"):
-            value["stacks"] = _upgrade_stacks(value["stacks"])
+            value["stacks"] = up(value["stacks"])
     for key, value in list(cfg.get("folder_stacks", {}).items()):
         if isinstance(value, list) and value:
-            cfg["folder_stacks"][key] = sorted(_upgrade_stacks(value))
+            cfg["folder_stacks"][key] = sorted(up(value))
 
 
 def quarantine_config(path: "Path | None" = None) -> "Path | None":

@@ -201,12 +201,12 @@ def test_scan_root_uses_folder_of_workspace_file(app, tmp_path):
 def test_override_chip_hidden_without_overrides(app):
     w = make_window(app)
     try:
-        assert not w.overrides_btn.isVisible()
+        assert w.overrides_btn.isHidden()  # кнопка на странице «Расширения»
         w.set_override("some.ext", "disable")
-        assert w.overrides_btn.isVisible()
+        assert not w.overrides_btn.isHidden()
         assert "1" in w.overrides_btn.text()
         w.set_override("some.ext", "default")
-        assert not w.overrides_btn.isVisible()
+        assert w.overrides_btn.isHidden()  # кнопка на странице «Расширения»
     finally:
         w.deleteLater()
 

@@ -80,6 +80,26 @@
           "type": "array",
           "description": "Аргументы команды-подтверждения на probe[0] (напр. [\"--list-sdks\"] для .NET): пакет установлен, только если она вернула код 0 и непустой вывод. Нужно, когда probe в PATH есть, а инструмент неполон (рантайм .NET без SDK).",
           "items": { "type": "string" }
+        },
+        "detector": {
+          "type": "string",
+          "enum": ["msys2", "msvc", "vcpkg"],
+          "description": "Проверка установки не по PATH: msys2 (каталог с pacman), msvc (vswhere), vcpkg (VCPKG_ROOT). Задан — probe для проверки не используется."
+        },
+        "override": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9 ._+:-]+$",
+          "description": "Аргумент winget --override для установщика (MSVC Build Tools: какие нагрузки ставить)."
+        },
+        "pacman": {
+          "type": "array",
+          "description": "Пакеты pacman без префикса окружения (toolchain, cmake…): ставятся в MSYS2 после winget.",
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9+._-]*$" }
+        },
+        "msys_env": {
+          "type": "string",
+          "enum": ["ucrt64", "clang64", "mingw64"],
+          "description": "Окружение MSYS2 для пакетов pacman."
         }
       },
       "additionalProperties": false

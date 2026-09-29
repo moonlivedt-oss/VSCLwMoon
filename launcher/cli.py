@@ -23,7 +23,7 @@ import argparse
 import json as _json
 import sys
 
-from .categories import WEIGHT, WEIGHT_LABEL, build_ext_index, load_categories
+from .categories import WEIGHT, WEIGHT_LABEL, build_ext_index, cat_title, load_categories
 from .config import load_config
 from .launch import build_launch_command
 from .weights import estimate_saved_mb, measured_stack_costs, stack_disk_mb
@@ -227,10 +227,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="с --clean-path: чистить СИСТЕМНЫЙ PATH (нужны права админа; поднимется UAC)",
     )
     p.add_argument(
+        "--path-doctor",
+        action="store_true",
+        help="умная починка PATH: конфликты, мёртвые записи, дубли; предпросмотр "
+        "(применить --yes, включить и необязательные пункты --all)",
+    )
+    p.add_argument("--all", action="store_true", help="с --path-doctor: и пункты, снятые по умолчанию")
+    p.add_argument(
+        "--path-undo",
+        nargs="?",
+        const="1",
+        default=None,
+        metavar="N",
+        help="откатить PATH к бэкапу N (1 — самый свежий; без --yes — только список)",
+    )
+    p.add_argument(
         "--fix-java-home",
         action="store_true",
         help="найти установленный JDK и прописать JAVA_HOME (без прав админа)",
     )
+    from .cli_cpp import add_arguments as _add_cpp_arguments
+
+    _add_cpp_arguments(p)
     return p
 
 
@@ -261,7 +279,7 @@ def _list_stacks(cats: dict, installed: list[str], ext_index: dict, as_json: boo
         rows.append(
             {
                 "key": key,
-                "title": cat.get("title", key),
+                "title": cat_title(cat, key),
                 "weight": weight,
                 "extensions": len(exts),
                 "installed": n_inst,
@@ -350,6 +368,73 @@ def _list_toolchains(as_json: bool) -> int:
     print("Проверить:         --doctor (окружение)   |   --outdated (обновления)")
     print("Починить:          --clean-path [--machine] [--yes]  |  --fix-java-home")
     return 0
+
+
+def _path_doctor(apply: bool, include_all: bool, as_json: bool) -> int:
+    """Умная починка PATH (path_doctor): отчёт, предпросмотр, по --yes — запись."""
+    from . import path_doctor as pd
+
+    rep = pd.analyze()
+    ids = {i.id for i in rep.issues if i.fixable and (i.selected or include_all)}
+    pv = pd.preview(rep, ids)
+    if as_json and not apply:
+        print(_json.dumps({
+            "issues": [
+                {"id": i.id, "kind": i.kind, "level": i.level, "title": i.title,
+                 "detail": i.detail, "fixable": i.fixable, "selected": i.id in ids,
+                 "admin": i.admin}
+                for i in rep.issues
+            ],
+            "preview": {k: v for k, v in pv.items() if k not in ("machine", "user")},
+        }, ensure_ascii=False, indent=2))
+        return 0
+    if not rep.issues:
+        print("PATH в порядке: мусора и конфликтов нет.")
+        return 0
+    marks = {"error": "[ошибка]", "warn": "[внимание]", "info": "[инфо]"}
+    for i in rep.issues:
+        box = "[x]" if i.id in ids else ("[ ]" if i.fixable else "   ")
+        print(f"{box} {marks.get(i.level, '-')} {i.title}")
+        print(f"      {i.detail}")
+    print()
+    print("Что изменится:")
+    for line in pd.describe_preview(pv):
+        print("  " + line)
+    if not apply:
+        print("\nЭто предпросмотр. Применить отмеченное: --path-doctor --yes (и --all для всех пунктов).")
+        return 0
+    if not ids:
+        print("Отмеченных исправлений нет.")
+        return 0
+    ok, msg = pd.apply(rep, ids)
+    print(msg)
+    return 0 if ok else 3
+
+
+def _path_undo(which: str, apply: bool) -> int:
+    from . import path_doctor as pd
+
+    backups = pd.list_backups()
+    if not backups:
+        print("Бэкапов PATH нет.")
+        return 0
+    try:
+        n = max(1, int(which))
+    except ValueError:
+        n = 1
+    if not apply:
+        print("Бэкапы PATH (свежие первыми):")
+        for k, b in enumerate(backups, 1):
+            scope = "системный" if b["scope"] == "machine" else "ваш"
+            print(f"  {k}. {b['time']} · {scope} · {b['file']}")
+        print("\nОткатить: --path-undo N --yes")
+        return 0
+    if n > len(backups):
+        print(f"Нет бэкапа с номером {n}.")
+        return 2
+    ok, msg = pd.restore_backup(backups[n - 1]["file"])
+    print(msg)
+    return 0 if ok else 3
 
 
 def _doctor(as_json: bool) -> int:
@@ -552,8 +637,9 @@ def _install_toolchain(key: str, include_optional: bool, out) -> int:
         ok, info = _tc.verify_package(pkg)
         out(f"    проверка {pkg.title}: {'OK — ' + info if ok else 'не отвечает в PATH'}")
     out("Готово. Откройте новый терминал, чтобы PATH подхватился.")
-    if key == "cpp":
-        out("Подсказка: пропишите компилятор в VS Code — --configure-vscode cpp")
+    if key in ("cpp", "cpp_msys2", "cpp_llvm"):
+        out(f"Подсказка: пропишите тулчейн в VS Code — --configure-vscode {key}")
+        out("Проверить окружение C++ целиком: --cpp-doctor")
     return 0
 
 
@@ -671,7 +757,7 @@ def _measure_extensions(cfg: dict, as_json: bool) -> int:
         print(_json.dumps({"ok": True, **data, "tree": tree}, ensure_ascii=False, indent=2))
         return 0
     if tree:
-        titles = {k: c.get("title", k) for k, c in cats.get("categories", {}).items()}
+        titles = {k: cat_title(c, k) for k, c in cats.get("categories", {}).items()}
         print(f"Дерево процессов VS Code: {tree['total_mb']} МБ "
               f"(расширения {tree['ext_mb']} МБ, редактор {tree['editor_mb']} МБ)")
         print("По стекам:")
@@ -741,7 +827,7 @@ def _stack_sizes(cfg: dict, as_json: bool) -> int:
     rows = [
         {
             "key": k,
-            "title": cats.get("categories", {}).get(k, {}).get("title", k),
+            "title": cat_title(cats.get("categories", {}).get(k, {}), k),
             "disk_mb": mb,
             "measured_ram_mb": measured.get(k),
         }
@@ -781,7 +867,12 @@ def cli_main(argv: list[str] | None = None) -> int:
     quiet = args.quiet
     out = (lambda *a: None) if quiet else print
 
-    # Тулчейны не зависят от VS Code — обрабатываем до поиска его CLI.
+    # Тулчейны и C++ не зависят от VS Code — обрабатываем до поиска его CLI.
+    from .cli_cpp import dispatch as _cpp_dispatch
+
+    rc = _cpp_dispatch(args)
+    if rc is not None:
+        return rc
     if args.list_toolchains:
         return _list_toolchains(args.json)
     if args.toolchain_status is not None:
@@ -804,6 +895,10 @@ def cli_main(argv: list[str] | None = None) -> int:
         return _clean_path(args.yes, args.keep_dead, args.machine, args.json)
     if args.fix_java_home:
         return _fix_java_home(args.json)
+    if args.path_doctor:
+        return _path_doctor(args.yes, args.all, args.json)
+    if args.path_undo is not None:
+        return _path_undo(args.path_undo, args.yes)
     if args.measure_extensions:
         return _measure_extensions(cfg, args.json)
     if args.stack_sizes:

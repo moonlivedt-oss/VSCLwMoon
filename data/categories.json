@@ -4,6 +4,8 @@
   "always_on": {
     "title": "Ядро (всегда вкл)",
     "note": "Тема, иконки, Claude, закладки, ErrorLens, русский язык — лёгкие и нужны везде. Всё, что стартует вместе с редактором и нужно не всегда, вынесено в отдельные стеки.",
+    "title_en": "Core (always on)",
+    "note_en": "Theme, icons, Claude, bookmarks, ErrorLens, Russian language pack — light and needed everywhere. Anything that starts with the editor but is not always needed lives in its own stack.",
     "extensions": [
       "catppuccin.catppuccin-vsc",
       "pkief.material-icon-theme",
@@ -23,6 +25,8 @@
     "git": {
       "title": "Git (лёгкий)",
       "note": "Граф, история, blame по строке, шаблоны .gitignore. Почти ничего не держит в памяти.",
+      "title_en": "Git (light)",
+      "note_en": "Graph, history, per-line blame, .gitignore templates. Holds almost nothing in memory.",
       "extensions": [
         "mhutchie.git-graph",
         "donjayamanne.githistory",
@@ -33,6 +37,8 @@
     "gitlens": {
       "title": "GitLens / GitHub",
       "note": "GitLens индексирует историю репозитория, GitHub PR и Actions держат фоновую синхронизацию. Включай, когда нужна работа с PR и историей.",
+      "title_en": "GitLens / GitHub",
+      "note_en": "GitLens indexes repository history; GitHub PRs and Actions keep syncing in the background. Turn on when you work with PRs and history.",
       "extensions": [
         "eamodio.gitlens",
         "github.vscode-pull-request-github",
@@ -42,6 +48,8 @@
     "python": {
       "title": "Python",
       "note": "Pylance индексирует проект — заметная память.",
+      "title_en": "Python",
+      "note_en": "Pylance indexes the project — noticeable memory.",
       "extensions": [
         "ms-python.python",
         "ms-python.vscode-pylance",
@@ -56,29 +64,89 @@
       ]
     },
     "cpp": {
-      "title": "C / C++",
-      "note": "cpptools IntelliSense — тяжёлый.",
+      "title": "C / C++: база",
+      "note": "Лёгкое общее для любого движка подсказок: форматирование clang-format, подсветка современного C++, Doxygen-комментарии, MSYS2. Подсказки кода — отдельно: cpptools или clangd.",
+      "title_en": "C / C++: base",
+      "note_en": "Light shared tools for any code-intelligence engine: clang-format, modern C++ highlighting, Doxygen comments, MSYS2. Code intelligence itself is separate: cpptools or clangd.",
+      "extensions": [
+        "xaver.clang-format",
+        "jeff-hykin.better-cpp-syntax",
+        "cschlosser.doxdocgen",
+        "fougas.msys2"
+      ]
+    },
+    "cpp_cpptools": {
+      "title": "C++: IntelliSense cpptools",
+      "note": "Microsoft C/C++: подсказки, навигация и отладчик gdb/MSVC (cppdbg). Тяжёлый: cpptools.exe и cpptools-srv держат сотни МБ, на больших проектах до 2 ГБ. Code Runner для C++ зависит от него.",
+      "title_en": "C++: IntelliSense cpptools",
+      "note_en": "Microsoft C/C++: code intelligence, navigation and the gdb/MSVC debugger (cppdbg). Heavy: cpptools.exe and cpptools-srv hold hundreds of MB, up to 2 GB on large projects. Code Runner for C++ depends on it.",
       "extensions": [
         "ms-vscode.cpptools",
         "ms-vscode.cpptools-extension-pack",
-        "ms-vscode.cpp-devtools",
         "ms-vscode.cpptools-themes",
         "amiralizadeh9480.cpp-helper",
-        "franneck94.c-cpp-runner",
-        "hars.cppsnippets",
+        "franneck94.c-cpp-runner"
+      ],
+      "conflicts": ["cpp_clangd"]
+    },
+    "cpp_clangd": {
+      "title": "C++: IntelliSense clangd",
+      "note": "clangd из LLVM: подсказки, clang-tidy, быстрый индекс. Обычно легче cpptools. Вместе с cpptools включать только если в проекте задано C_Cpp.intelliSenseEngine: disabled (раздел C / C++ → «Проект» делает это сам).",
+      "title_en": "C++: IntelliSense clangd",
+      "note_en": "clangd from LLVM: code intelligence, clang-tidy, fast index. Usually lighter than cpptools. Enable together with cpptools only if the project sets C_Cpp.intelliSenseEngine: disabled (C / C++ → Project does this for you).",
+      "extensions": [
+        "llvm-vs-code-extensions.vscode-clangd"
+      ],
+      "conflicts": ["cpp_cpptools"]
+    },
+    "cpp_cmake": {
+      "title": "C++: CMake",
+      "note": "CMake Tools: конфигурация, сборка, запуск целей, пресеты. Нужен для CMake-проектов, в одиночных файлах не нужен. twxs.cmake устарел — подсветку CMake теперь даёт сам CMake Tools.",
+      "title_en": "C++: CMake",
+      "note_en": "CMake Tools: configure, build, run targets, presets. Needed for CMake projects, not for single files. twxs.cmake is outdated — CMake Tools highlights CMake itself now.",
+      "extensions": [
         "ms-vscode.cmake-tools",
+        "ms-vscode.cpp-devtools",
         "twxs.cmake",
-        "ms-vscode.makefile-tools",
-        "vadimcn.vscode-lldb",
-        "fougas.msys2",
-        "xaver.clang-format",
+        "mesonbuild.mesonbuild"
+      ]
+    },
+    "cpp_make": {
+      "title": "C++: Makefile",
+      "note": "Makefile Tools: при открытии проекта прогоняет make в холостую, чтобы понять флаги. Нужен только для проектов на голом Makefile.",
+      "title_en": "C++: Makefile",
+      "note_en": "Makefile Tools: runs make in dry-run mode when a project opens to learn the flags. Only needed for plain Makefile projects.",
+      "extensions": [
+        "ms-vscode.makefile-tools"
+      ]
+    },
+    "cpp_lldb": {
+      "title": "C++: отладчик CodeLLDB",
+      "note": "Отладчик на LLDB — для Clang и режима clangd (не требует cpptools). Также нужен Rust и Code Runner.",
+      "title_en": "C++: CodeLLDB debugger",
+      "note_en": "LLDB-based debugger — for Clang and clangd mode (does not need cpptools). Rust and Code Runner use it too.",
+      "extensions": [
+        "vadimcn.vscode-lldb"
+      ]
+    },
+    "cpp_extras": {
+      "title": "C++: дополнительно",
+      "note": "Сниппеты, SFML, ассемблер x86-64, тесты GoogleTest/Catch2 в панели тестов, hex-редактор для бинарных файлов.",
+      "title_en": "C++: extras",
+      "note_en": "Snippets, SFML, x86-64 assembly, GoogleTest/Catch2 tests in the Testing panel, a hex editor for binary files.",
+      "extensions": [
+        "hars.cppsnippets",
+        "nicolascapel.sfml",
         "13xforever.language-x86-64-assembly",
-        "nicolascapel.sfml"
+        "matepek.vscode-catch2-test-adapter",
+        "ms-vscode.hexeditor"
       ]
     },
     "java": {
       "title": "Java",
       "note": "redhat.java поднимает JDK Language Server — сотни МБ.",
+      "title_en": "Java",
+      "note_en": "redhat.java starts the JDK Language Server — hundreds of MB.",
       "extensions": [
         "vscjava.vscode-java-pack",
         "redhat.java",
@@ -92,6 +160,8 @@
     "web": {
       "title": "Web / JS / TS / Vue",
       "note": "ESLint, Vue Volar, Tailwind, Live Server, метрики кода, подсветка тегов.",
+      "title_en": "Web / JS / TS / Vue",
+      "note_en": "ESLint, Vue Volar, Tailwind, Live Server, code metrics, tag highlighting.",
       "extensions": [
         "dbaeumer.vscode-eslint",
         "denoland.vscode-deno",
@@ -110,6 +180,8 @@
     "sql": {
       "title": "SQL Server / SQLTools",
       "note": "MSSQL поднимает отдельный SQL Tools Service на .NET — сотни МБ. Для SQLite и CSV хватит лёгкого стека.",
+      "title_en": "SQL Server / SQLTools",
+      "note_en": "MSSQL starts a separate SQL Tools Service on .NET — hundreds of MB. For SQLite and CSV the light stack is enough.",
       "extensions": [
         "ms-mssql.mssql",
         "ms-mssql.data-workspace-vscode",
@@ -122,6 +194,8 @@
     "sqlite": {
       "title": "SQLite / CSV",
       "note": "Просмотр .db/.sqlite и цветные колонки CSV. Лёгкий.",
+      "title_en": "SQLite / CSV",
+      "note_en": "View .db/.sqlite files and colored CSV columns. Light.",
       "extensions": [
         "alexcvzz.vscode-sqlite",
         "qwtel.sqlite-viewer",
@@ -131,6 +205,8 @@
     "azure": {
       "title": "Azure / облако / контейнеры",
       "note": "Ресурсы, функции, хранилища, контейнеры. Тянут .NET рантайм. Нужны редко.",
+      "title_en": "Azure / cloud / containers",
+      "note_en": "Resources, functions, storage, containers. Pull in the .NET runtime. Rarely needed.",
       "extensions": [
         "ms-vscode.vscode-node-azure-pack",
         "ms-azuretools.vscode-azureresourcegroups",
@@ -151,6 +227,8 @@
     "azure_ai": {
       "title": "Azure AI / MCP",
       "note": "AI Toolkit, Azure Copilot и MCP-сервер Azure: ~540 МБ на диске, стартуют вместе с редактором.",
+      "title_en": "Azure AI / MCP",
+      "note_en": "AI Toolkit, Azure Copilot and the Azure MCP server: ~540 MB on disk, start together with the editor.",
       "extensions": [
         "ms-windows-ai-studio.windows-ai-studio",
         "ms-azuretools.vscode-azure-github-copilot",
@@ -160,6 +238,8 @@
     "graphics3d": {
       "title": "3D / графика",
       "note": "Просмотрщики glTF/GLB/3D-моделей.",
+      "title_en": "3D / graphics",
+      "note_en": "glTF/GLB/3D model viewers.",
       "extensions": [
         "cesium.gltf-vscode",
         "slevesque.vscode-3dviewer",
@@ -169,6 +249,8 @@
     "markdown": {
       "title": "Markdown / докум.",
       "note": "Mermaid-диаграммы, просмотр PDF.",
+      "title_en": "Markdown / docs",
+      "note_en": "Mermaid diagrams, PDF viewer.",
       "extensions": [
         "bierner.markdown-mermaid",
         "bpruitt-goddard.mermaid-markdown-syntax-highlighting",
@@ -178,6 +260,8 @@
     "spell": {
       "title": "Орфография (RU/EN)",
       "note": "Code Spell Checker — отдельный языковой сервер, проверяет каждый открытый файл. Нужен для текстов и документации.",
+      "title_en": "Spelling (RU/EN)",
+      "note_en": "Code Spell Checker — a separate language server that checks every open file. Needed for texts and documentation.",
       "extensions": [
         "streetsidesoftware.code-spell-checker",
         "streetsidesoftware.code-spell-checker-russian"
@@ -186,6 +270,8 @@
     "appearance": {
       "title": "Оформление / анимации",
       "note": "Анимации интерфейса и Custom CSS. Встраиваются в окно при старте; выключи для самого быстрого запуска. Уже внедрённый CSS остаётся.",
+      "title_en": "Appearance / animations",
+      "note_en": "UI animations and Custom CSS. They inject into the window at startup; turn off for the fastest start. CSS that is already injected stays.",
       "extensions": [
         "brandonkirbyson.vscode-animations",
         "be5invis.vscode-custom-css"
@@ -194,6 +280,8 @@
     "runner": {
       "title": "Code Runner",
       "note": "Запуск файла одной кнопкой на любом языке. Стартует вместе с редактором.",
+      "title_en": "Code Runner",
+      "note_en": "Run a file in any language with one button. Starts together with the editor.",
       "extensions": [
         "formulahendry.code-runner"
       ]
@@ -201,6 +289,8 @@
     "powershell": {
       "title": "PowerShell",
       "note": "Язык и отладка PowerShell.",
+      "title_en": "PowerShell",
+      "note_en": "PowerShell language support and debugging.",
       "extensions": [
         "ms-vscode.powershell"
       ]
@@ -208,20 +298,26 @@
     "sonar": {
       "title": "SonarLint (тяжёлый!)",
       "note": "Запускает Java (~880 МБ). Держи выключенным, если не нужен.",
+      "title_en": "SonarLint (heavy!)",
+      "note_en": "Starts Java (~880 MB). Keep it off unless you need it.",
       "extensions": [
         "sonarsource.sonarlint-vscode"
       ]
     },
     "go": {
       "title": "Go",
-      "note": "Ещё не установлен. Официальное расширение Go (gopls). «Подробнее» → «Установить недостающие».",
+      "note": "Ещё не установлен. Официальное расширение Go (gopls). «›» → «Установить недостающие».",
+      "title_en": "Go",
+      "note_en": "Not installed yet. Official Go extension (gopls). Install via '›' → 'Install missing'.",
       "extensions": [
         "golang.go"
       ]
     },
     "rust": {
       "title": "Rust",
-      "note": "Ещё не установлен. rust-analyzer тяжёлый, но мощный. Ставится из «Подробнее».",
+      "note": "Ещё не установлен. rust-analyzer тяжёлый, но мощный. Ставится через «›».",
+      "title_en": "Rust",
+      "note_en": "Not installed yet. rust-analyzer is heavy but powerful. Install via '›'.",
       "extensions": [
         "rust-lang.rust-analyzer",
         "serayuzgur.crates"
@@ -230,6 +326,8 @@
     "docker": {
       "title": "Docker / Kubernetes",
       "note": "Ещё не установлен. Образы, контейнеры, кластеры.",
+      "title_en": "Docker / Kubernetes",
+      "note_en": "Not installed yet. Images, containers, clusters.",
       "extensions": [
         "ms-azuretools.vscode-docker",
         "ms-kubernetes-tools.vscode-kubernetes-tools"
@@ -238,6 +336,8 @@
     "data": {
       "title": "Данные / Jupyter",
       "note": "Ещё не установлен. Ноутбуки и просмотр данных — тяжёлый набор.",
+      "title_en": "Data / Jupyter",
+      "note_en": "Not installed yet. Notebooks and data viewers — a heavy set.",
       "extensions": [
         "ms-toolsai.jupyter",
         "ms-toolsai.datawrangler"
@@ -246,6 +346,8 @@
     "remote": {
       "title": "Удалённая разработка",
       "note": "Ещё не установлен. Работа по SSH и в WSL.",
+      "title_en": "Remote development",
+      "note_en": "Not installed yet. Work over SSH and in WSL.",
       "extensions": [
         "ms-vscode-remote.remote-ssh",
         "ms-vscode-remote.remote-wsl"
@@ -254,6 +356,8 @@
     "api": {
       "title": "REST / API",
       "note": "Ещё не установлен. Отправка HTTP-запросов из редактора.",
+      "title_en": "REST / API",
+      "note_en": "Not installed yet. Send HTTP requests from the editor.",
       "extensions": [
         "humao.rest-client",
         "rangav.vscode-thunder-client"
@@ -262,6 +366,8 @@
     "config": {
       "title": "YAML / TOML / конфиги",
       "note": "Схемы и подсветка YAML/TOML-конфигов.",
+      "title_en": "YAML / TOML / configs",
+      "note_en": "Schemas and highlighting for YAML/TOML configs.",
       "extensions": [
         "redhat.vscode-yaml",
         "tamasfe.even-better-toml"
@@ -270,6 +376,8 @@
     "dotnet": {
       "title": "C# / .NET",
       "note": "Ещё не установлен. C# Dev Kit — тяжёлый, но полноценная IDE для .NET.",
+      "title_en": "C# / .NET",
+      "note_en": "Not installed yet. C# Dev Kit — heavy, but a full IDE for .NET.",
       "extensions": [
         "ms-dotnettools.csharp",
         "ms-dotnettools.csdevkit"
@@ -278,6 +386,8 @@
     "php": {
       "title": "PHP",
       "note": "Ещё не установлен. Intelephense и отладка Xdebug.",
+      "title_en": "PHP",
+      "note_en": "Not installed yet. Intelephense and Xdebug debugging.",
       "extensions": [
         "bmewburn.vscode-intelephense-client",
         "xdebug.php-debug"
@@ -286,6 +396,8 @@
     "ruby": {
       "title": "Ruby",
       "note": "Ещё не установлен. Ruby LSP: анализ и автодополнение.",
+      "title_en": "Ruby",
+      "note_en": "Not installed yet. Ruby LSP: analysis and completion.",
       "extensions": [
         "shopify.ruby-lsp"
       ]
@@ -293,6 +405,8 @@
     "lua": {
       "title": "Lua",
       "note": "Ещё не установлен. Языковой сервер Lua (sumneko).",
+      "title_en": "Lua",
+      "note_en": "Not installed yet. Lua language server (sumneko).",
       "extensions": [
         "sumneko.lua"
       ]
@@ -300,6 +414,8 @@
     "terraform": {
       "title": "Terraform / IaC",
       "note": "Ещё не установлен. Подсветка и подсказки для Terraform.",
+      "title_en": "Terraform / IaC",
+      "note_en": "Not installed yet. Highlighting and hints for Terraform.",
       "extensions": [
         "hashicorp.terraform"
       ]
@@ -307,6 +423,8 @@
     "svelte_astro": {
       "title": "Svelte / Astro",
       "note": "Ещё не установлен. Современные веб-фреймворки.",
+      "title_en": "Svelte / Astro",
+      "note_en": "Not installed yet. Modern web frameworks.",
       "extensions": [
         "svelte.svelte-vscode",
         "astro-build.astro-vscode"
@@ -315,6 +433,8 @@
     "graphql": {
       "title": "GraphQL",
       "note": "Ещё не установлен. Подсветка и автодополнение GraphQL.",
+      "title_en": "GraphQL",
+      "note_en": "Not installed yet. GraphQL highlighting and completion.",
       "extensions": [
         "graphql.vscode-graphql",
         "graphql.vscode-graphql-syntax"

@@ -65,7 +65,15 @@ def test_catalog_keys_match_known_stack_keys():
 
     stack_keys = set(detect.FILENAME_MARKERS.values()) | set(detect.SUFFIX_MARKERS.values())
     stack_keys.add("git")  # git детектится по каталогу .git, а не по маркеру файла
-    EXTRA = {"deno", "bun", "zig"}  # внестековые, но устанавливаемые
+    EXTRA = {
+        "deno",
+        "bun",
+        "zig",
+        "cpp_msys2",
+        "cpp_llvm",
+        "cpp_msvc",
+        "cpp_tools",
+    }  # наборы C++ и внестековые, но устанавливаемые
     for key in tc.TOOLCHAINS:
         assert key in stack_keys or key in EXTRA, (
             f"тулчейн {key!r} не соответствует ни стеку, ни списку внестековых"
@@ -240,10 +248,22 @@ def test_settings_for_toolchain_cpp_empty_when_no_compiler(monkeypatch):
 
 def test_missing_toolchains_for_detects_cpp(tmp_path, monkeypatch):
     (tmp_path / "main.cpp").write_text("int main(){}")
-    # g++ якобы не установлен → cpp попадает в «не хватает»
+    # Ни одного компилятора (ни g++, ни clang++, ни MSVC) → cpp попадает в «не хватает»
+    from launcher import cpp
+
     monkeypatch.setattr(tc, "which", lambda e: None)
+    monkeypatch.setattr(cpp, "any_compiler", lambda: False)
     missing = tc.missing_toolchains_for(str(tmp_path))
     assert "cpp" in missing
+
+
+def test_missing_toolchains_for_cpp_satisfied_by_any_compiler(tmp_path, monkeypatch):
+    # MSYS2/MSVC вместо WinLibs: компилятор есть — WinLibs не навязываем.
+    (tmp_path / "main.cpp").write_text("int main(){}")
+    from launcher import cpp
+
+    monkeypatch.setattr(cpp, "any_compiler", lambda: True)
+    assert "cpp" not in tc.missing_toolchains_for(str(tmp_path))
 
 
 def test_upgrade_and_uninstall_without_winget(monkeypatch):

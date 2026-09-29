@@ -6,6 +6,7 @@ data/recommended_settings.json, живёт здесь. Ориентировоч�
 стеков на память (WEIGHT/WEIGHT_MB) — тоже здесь: это данные о картe,
 а не о VS Code как таковом.
 """
+
 import json
 
 from .paths import CATEGORIES_FILE, DESCRIPTIONS_FILE, RECOMMENDED_FILE, ROOT
@@ -14,16 +15,43 @@ from .paths import CATEGORIES_FILE, DESCRIPTIONS_FILE, RECOMMENDED_FILE, ROOT
 # Ключи — как в categories.json. Значения — грубые оценки для UI-подсказок,
 # не точный прогноз: реальный расход зависит от проекта и версии расширения.
 WEIGHT = {
-    "sonar": "heavy", "java": "heavy", "azure": "heavy", "cpp": "heavy",
-    "rust": "heavy", "data": "heavy", "dotnet": "heavy", "sql": "heavy",
+    "sonar": "heavy",
+    "java": "heavy",
+    "azure": "heavy",
+    "cpp_cpptools": "heavy",
+    "rust": "heavy",
+    "data": "heavy",
+    "dotnet": "heavy",
+    "sql": "heavy",
     "azure_ai": "heavy",
-    "python": "medium", "gitlens": "medium", "spell": "medium",
-    "go": "medium", "docker": "medium", "php": "medium", "ruby": "medium",
+    "python": "medium",
+    "gitlens": "medium",
+    "spell": "medium",
+    "cpp_clangd": "medium",
+    "cpp_cmake": "medium",
+    "cpp_make": "medium",
+    "go": "medium",
+    "docker": "medium",
+    "php": "medium",
+    "ruby": "medium",
     "terraform": "medium",
-    "web": "light", "git": "light", "sqlite": "light", "appearance": "light",
-    "runner": "light", "graphics3d": "light", "markdown": "light",
-    "powershell": "light", "remote": "light", "api": "light", "config": "light",
-    "lua": "light", "svelte_astro": "light", "graphql": "light",
+    "cpp": "light",
+    "cpp_lldb": "light",
+    "cpp_extras": "light",
+    "web": "light",
+    "git": "light",
+    "sqlite": "light",
+    "appearance": "light",
+    "runner": "light",
+    "graphics3d": "light",
+    "markdown": "light",
+    "powershell": "light",
+    "remote": "light",
+    "api": "light",
+    "config": "light",
+    "lua": "light",
+    "svelte_astro": "light",
+    "graphql": "light",
 }
 WEIGHT_LABEL = {"heavy": "тяжёлый", "medium": "средний", "light": "лёгкий"}
 WEIGHT_MB = {"heavy": 500, "medium": 150, "light": 30}
@@ -32,12 +60,12 @@ WEIGHT_MB = {"heavy": 500, "medium": 150, "light": 30}
 # смыслом: чем тяжелее стек, тем больше выигрыш от того, что он выключен.
 WEIGHT_HELP = {
     "heavy": "Тяжёлый стек: языковые серверы и анализаторы держат в памяти "
-             "сотни МБ, даже когда вы их не трогаете. Наибольшая экономия — "
-             "когда он выключен и сегодня не нужен.",
+    "сотни МБ, даже когда вы их не трогаете. Наибольшая экономия — "
+    "когда он выключен и сегодня не нужен.",
     "medium": "Средний стек: заметный, но умеренный расход памяти. Держите "
-              "включённым для своих языков, выключайте на чужих проектах.",
+    "включённым для своих языков, выключайте на чужих проектах.",
     "light": "Лёгкий стек: почти не влияет на память. Можно спокойно держать "
-             "включённым — на экономию он влияет мало.",
+    "включённым — на экономию он влияет мало.",
 }
 
 
@@ -62,18 +90,70 @@ def load_categories() -> tuple[dict, str]:
     return data, ""
 
 
+def cat_title(cat: dict, fallback: str = "") -> str:
+    """Имя стека на языке интерфейса: title_en в английском режиме, если задан."""
+    from .i18n import get_language
+
+    if get_language() == "en" and cat.get("title_en"):
+        return cat["title_en"]
+    return cat.get("title") or fallback
+
+
+def cat_note(cat: dict) -> str:
+    """Пояснение к стеку на языке интерфейса."""
+    from .i18n import get_language
+
+    if get_language() == "en" and cat.get("note_en"):
+        return cat["note_en"]
+    return cat.get("note", "")
+
+
+class Descriptions(dict):
+    """Описания расширений: русские — основная карта, английские — рядом.
+
+    get()/[] отдают текст на текущем языке интерфейса, поэтому смена RU/EN
+    в окне сразу видна без перечитывания файлов. Нет английского — русский."""
+
+    def __init__(self, ru: dict[str, str], en: dict[str, str] | None = None):
+        super().__init__(ru)
+        self.en = en or {}
+
+    def _pick(self, key):
+        from .i18n import get_language
+
+        if get_language() == "en" and key in self.en:
+            return self.en[key]
+        return None
+
+    def get(self, key, default=None):
+        hit = self._pick(key)
+        return hit if hit is not None else super().get(key, default)
+
+    def __getitem__(self, key):
+        hit = self._pick(key)
+        return hit if hit is not None else super().__getitem__(key)
+
+
+def _read_desc(path) -> dict[str, str]:
+    try:
+        return {k.lower(): v for k, v in json.loads(path.read_text(encoding="utf-8")).items()}
+    except Exception:
+        return {}
+
+
 def load_descriptions() -> dict[str, str]:
-    """Карта id(lower) -> «что делает». Берётся из plugin_descriptions.json,
-    иначе разбирается соседний VS_code_Info/Extensions.md, иначе пусто."""
+    """Карта id(lower) -> «что делает». Берётся из plugin_descriptions.json (и
+    английская — из plugin_descriptions.en.json), иначе разбирается соседний
+    VS_code_Info/Extensions.md, иначе пусто."""
     if DESCRIPTIONS_FILE.exists():
-        try:
-            return {k.lower(): v for k, v in
-                    json.loads(DESCRIPTIONS_FILE.read_text(encoding="utf-8")).items()}
-        except Exception:
-            pass
+        ru = _read_desc(DESCRIPTIONS_FILE)
+        if ru:
+            return Descriptions(ru, _read_desc(DESCRIPTIONS_FILE.with_name(
+                "plugin_descriptions.en.json")))
     md = ROOT.parent / "VS_code_Info" / "Extensions.md"
     if md.exists():
         import re
+
         rx = re.compile(r"^-\s+\*\*`([^`]+)`\*\*.*?—\s*(.+)$")
         out = {}
         for raw in md.read_text(encoding="utf-8").splitlines():
@@ -98,8 +178,7 @@ def load_recommended() -> dict:
     return {}
 
 
-def build_ext_index(cats: dict,
-                    overlay: dict[str, str] | None = None) -> dict[str, str]:
+def build_ext_index(cats: dict, overlay: dict[str, str] | None = None) -> dict[str, str]:
     """id -> ключ категории ('always_on' или ключ из categories).
     При дубликатах побеждает последнее упоминание; find_duplicate_extensions
     возвращает такие расширения для явного предупреждения.
@@ -139,11 +218,25 @@ def find_duplicate_extensions(cats: dict) -> dict[str, list[str]]:
     return {ext: keys for ext, keys in seen.items() if len(keys) > 1}
 
 
+def stack_conflicts(selected, cats: dict) -> list[tuple[str, str]]:
+    """Пары выбранных стеков, которые мешают друг другу (поле conflicts в
+    categories.json: например, два движка подсказок C++). Каждая пара — один раз."""
+    sel = set(selected)
+    pairs: set[tuple[str, str]] = set()
+    for key in sel:
+        cat = cats.get("categories", {}).get(key, {})
+        for other in cat.get("conflicts", []) or []:
+            if other in sel and other != key:
+                pairs.add(tuple(sorted((key, other))))
+    return sorted(pairs)
+
+
 def categories_present(installed: list[str], ext_index: dict[str, str]) -> set[str]:
     """Категории, у которых есть хотя бы одно установленное расширение
     (без always_on) — для рекомендаций settings.json."""
-    present = {cat for e in installed
-               if (cat := ext_index.get(e)) is not None and cat != "always_on"}
+    present = {
+        cat for e in installed if (cat := ext_index.get(e)) is not None and cat != "always_on"
+    }
     return present
 
 

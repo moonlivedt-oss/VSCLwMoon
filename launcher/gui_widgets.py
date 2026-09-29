@@ -5,26 +5,35 @@ CategoryCard — кликабельная карточка стека, сама�
 Три _card/_hline/_wrap — микро-фабрики, чтобы не повторять
 setObjectName и setSizePolicy повсюду.
 """
+
 from PyQt6.QtCore import QRect, QSize, Qt
 from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import (
-    QCheckBox, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLayout,
-    QPushButton, QSizePolicy, QVBoxLayout, QWidget,
+    QCheckBox,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QHBoxLayout,
+    QLabel,
+    QLayout,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
 )
 
-from .categories import WEIGHT, WEIGHT_HELP, WEIGHT_LABEL
+from .categories import WEIGHT, WEIGHT_HELP, WEIGHT_LABEL, cat_note, cat_title
 from .i18n import _
 
 
 # Цвета переключателя берём из активной палитры (обновляется при смене темы).
-_SWITCH = {"track": "#45475a", "accent": "#cba6f7", "knob": "#11111b",
-           "knob_off": "#cdd6f4"}
+_SWITCH = {"track": "#45475a", "accent": "#cba6f7", "knob": "#11111b", "knob_off": "#cdd6f4"}
 
 
 def set_switch_palette(p: dict) -> None:
     """Синхронизировать цвета ToggleSwitch с текущей палитрой темы."""
-    _SWITCH.update(track=p["track"], accent=p["accent"],
-                   knob=p["accent_text"], knob_off=p["subtext"])
+    _SWITCH.update(
+        track=p["track"], accent=p["accent"], knob=p["accent_text"], knob_off=p["subtext"]
+    )
 
 
 class ToggleSwitch(QCheckBox):
@@ -65,9 +74,11 @@ class ToggleSwitch(QCheckBox):
 
 # --- микро-фабрики виджетов ------------------------------------------------
 
+
 def _card() -> QFrame:
     """QFrame с закруглённой рамкой (QSS: #Card)."""
-    f = QFrame(); f.setObjectName("Card")
+    f = QFrame()
+    f.setObjectName("Card")
     return f
 
 
@@ -131,7 +142,7 @@ class FlowLayout(QLayout):
         right = rect.right() - m.right()
         x = x0
         y = rect.y() + m.top()
-        row: list = []          # элементы текущего ряда: (item, x, width)
+        row: list = []  # элементы текущего ряда: (item, x, width)
         line_height = 0
 
         def flush():
@@ -143,12 +154,14 @@ class FlowLayout(QLayout):
                 for it, ix, iw in row:
                     it.setGeometry(QRect(ix, y, iw, line_height))
             y += line_height + self._spacing
-            row = []; line_height = 0; x = x0
+            row = []
+            line_height = 0
+            x = x0
 
         for item in self._items:
             w = item.widget()
             if w is not None and not w.isVisible():
-                continue   # скрытые фильтром — не занимают место
+                continue  # скрытые фильтром — не занимают место
             hint = item.sizeHint()
             iw = hint.width()
             # heightForWidth даёт корректную высоту при фактической ширине.
@@ -165,7 +178,9 @@ class FlowLayout(QLayout):
 
 def _hline() -> QFrame:
     """Тонкая горизонтальная линия-разделитель (QSS: #HLine)."""
-    ln = QFrame(); ln.setObjectName("HLine"); ln.setFixedHeight(1)
+    ln = QFrame()
+    ln.setObjectName("HLine")
+    ln.setFixedHeight(1)
     return ln
 
 
@@ -179,11 +194,11 @@ def _wrap(lbl: QLabel) -> QLabel:
 
 # --- CategoryCard ----------------------------------------------------------
 
+
 class CategoryCard(QFrame):
     """Кликабельная карточка стека: галочка + название + бейджи."""
 
-    def __init__(self, key: str, cat: dict, inst: int, total: int,
-                 on_toggle, on_details):
+    def __init__(self, key: str, cat: dict, inst: int, total: int, on_toggle, on_details):
         super().__init__()
         self.setObjectName("CatCard")
         self.setProperty("on", "false")
@@ -199,19 +214,28 @@ class CategoryCard(QFrame):
         self._on_toggle = on_toggle
         weight = WEIGHT.get(key, "light")
         # Текст для поиска: ключ, название, заметка и id расширений стека.
-        self.search_text = " ".join([
-            key, cat.get("title", ""), cat.get("note", ""),
-            " ".join(cat.get("extensions", [])),
-        ]).lower()
+        self.search_text = " ".join(
+            [
+                key,
+                cat.get("title", ""),
+                cat.get("note", ""),
+                cat.get("title_en", ""),
+                cat.get("note_en", ""),
+                " ".join(cat.get("extensions", [])),
+            ]
+        ).lower()
 
         # Внешний контейнер: цветная полоска нагрузки слева (flush) + контент.
         outer = QHBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(0)
-        strip = QFrame(); strip.setObjectName(f"Strip_{weight}")
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        strip = QFrame()
+        strip.setObjectName(f"Strip_{weight}")
         strip.setFixedWidth(4)
         strip.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         outer.addWidget(strip)
-        inner = QWidget(); inner.setObjectName("CatInner")
+        inner = QWidget()
+        inner.setObjectName("CatInner")
         # Вертикальная структура: верхний ряд (тумблер + название + бейджи +
         # «Подробнее») и заметка под ним на всю ширину. Прижим кверху (stretch)
         # держит содержимое сверху, когда карточку растягивают до высоты ряда —
@@ -223,28 +247,34 @@ class CategoryCard(QFrame):
 
         # Ряд 1: тумблер + название (растягивается) + счётчик установленных.
         # Название держим на своей строке почти во всю ширину — не обрезается.
-        top = QHBoxLayout(); top.setSpacing(10)
+        top = QHBoxLayout()
+        top.setSpacing(10)
         self.cb = ToggleSwitch()
-        note_txt = cat.get("note", "")
-        check_help = _("Галочка ВКЛючает этот стек в запускаемом VS Code. "
-                       "Снятая — расширения стека уйдут в --disable-extension "
-                       "(не удалятся, только не загрузятся в этой сессии).")
+        note_txt = cat_note(cat)
+        check_help = _(
+            "Галочка ВКЛючает этот стек в запускаемом VS Code. "
+            "Снятая — расширения стека уйдут в --disable-extension "
+            "(не удалятся, только не загрузятся в этой сессии)."
+        )
         self.cb.setToolTip(check_help + (f"\n\n{note_txt}" if note_txt else ""))
         self.cb.stateChanged.connect(self._changed)
         top.addWidget(self.cb, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        self._title_text = cat.get("title", key)
-        title = QLabel(self._title_text); title.setObjectName("CatTitle")
+        self._title_text = cat_title(cat, key)
+        title = QLabel(self._title_text)
+        title.setObjectName("CatTitle")
         title.setToolTip(self._title_text)
         top.addWidget(title, 1, Qt.AlignmentFlag.AlignVCenter)
 
         self._total = total
-        self.cnt = QLabel(); self.cnt.setObjectName("Count")
+        self.cnt = QLabel()
+        self.cnt.setObjectName("Count")
         top.addWidget(self.cnt, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addLayout(top)
 
         # Ряд 2: метка нагрузки + заметка (растягивается) + «Подробнее».
-        bottom = QHBoxLayout(); bottom.setSpacing(10)
+        bottom = QHBoxLayout()
+        bottom.setSpacing(10)
         # Метка нагрузки; сюда же дописывается реальный размер стека на диске
         # («тяжёлый · 865 МБ»). Отдельным бейджем он не помещался: карточка в
         # три колонки узкая, и лишний элемент отбирал ширину то у названия, то
@@ -257,7 +287,8 @@ class CategoryCard(QFrame):
         self.weight_lbl.setToolTip(_(WEIGHT_HELP.get(weight, "")))
         bottom.addWidget(self.weight_lbl, 0, Qt.AlignmentFlag.AlignTop)
 
-        note = QLabel(cat.get("note", "")); note.setObjectName("CatNote")
+        note = QLabel(cat_note(cat))
+        note.setObjectName("CatNote")
         note.setWordWrap(True)
         # Preferred/Minimum + wordWrap: высота считается по фактической ширине
         # карточки (heightForWidth), без раздувания, как было с Ignored.
@@ -265,10 +296,17 @@ class CategoryCard(QFrame):
         note.setAlignment(Qt.AlignmentFlag.AlignTop)
         bottom.addWidget(note, 1)
 
-        info = QPushButton(_("Подробнее")); info.setObjectName("Ghost")
+        # Круглая «›» вместо кнопки с текстом: на двух десятках карточек ряды
+        # «Подробнее» создавали шум, а действие и так читается как «открыть».
+        info = QPushButton("›")
+        info.setObjectName("Round")
         info.setCursor(Qt.CursorShape.PointingHandCursor)
-        info.setToolTip(_("Что за расширения в стеке и зачем они: описание "
-                          "каждого, ссылка на маркетплейс, установка и удаление."))
+        info.setToolTip(
+            _(
+                "Что за расширения в стеке и зачем они: описание "
+                "каждого, ссылка на маркетплейс, установка и удаление."
+            )
+        )
         info.clicked.connect(on_details)
         bottom.addWidget(info, 0, Qt.AlignmentFlag.AlignTop)
         lay.addLayout(bottom)
@@ -285,21 +323,33 @@ class CategoryCard(QFrame):
         self._inst = inst
         total = self._total
         if inst:
-            self.cnt.setText(f"{inst}/{total}"); self.cnt.setObjectName("Count")
-            self.cnt.setToolTip(_("Установлено {inst} из {total} расширений стека. "
-                                  "Выключение стека коснётся только этих "
-                                  "установленных.").format(inst=inst, total=total))
+            self.cnt.setText(f"{inst}/{total}")
+            self.cnt.setObjectName("Count")
+            self.cnt.setToolTip(
+                _(
+                    "Установлено {inst} из {total} расширений стека. "
+                    "Выключение стека коснётся только этих "
+                    "установленных."
+                ).format(inst=inst, total=total)
+            )
             self.setToolTip("")
         else:
-            self.cnt.setText(_("нет")); self.cnt.setObjectName("Woff")
-            self.cnt.setToolTip(_("Ни одно из {total} расширений стека не "
-                                  "установлено.").format(total=total))
-            self.setToolTip(_("Расширения этого стека не установлены — галочка "
-                              "ни на что не влияет. Поставить их можно в "
-                              "«Подробнее» → «Установить недостающие»."))
+            self.cnt.setText(_("нет"))
+            self.cnt.setObjectName("Woff")
+            self.cnt.setToolTip(
+                _("Ни одно из {total} расширений стека не установлено.").format(total=total)
+            )
+            self.setToolTip(
+                _(
+                    "Расширения этого стека не установлены — галочка "
+                    "ни на что не влияет. Поставить их можно в "
+                    "«Подробнее» → «Установить недостающие»."
+                )
+            )
         style = self.cnt.style()
         if style is not None:
-            style.unpolish(self.cnt); style.polish(self.cnt)
+            style.unpolish(self.cnt)
+            style.polish(self.cnt)
         self._refresh_accessible()
 
     def set_disk_mb(self, mb: int):
@@ -312,8 +362,9 @@ class CategoryCard(QFrame):
         tip = _(WEIGHT_HELP.get(self._weight, ""))
         if self._disk_mb > 0:
             label = f"{label} · " + _("{mb} МБ").format(mb=self._disk_mb)
-            tip += "\n\n" + _("Установленные расширения этого стека занимают "
-                               "{mb} МБ на диске.").format(mb=self._disk_mb)
+            tip += "\n\n" + _(
+                "Установленные расширения этого стека занимают {mb} МБ на диске."
+            ).format(mb=self._disk_mb)
         self.weight_lbl.setText(label)
         self.weight_lbl.setToolTip(tip)
         self._refresh_accessible()
@@ -327,15 +378,19 @@ class CategoryCard(QFrame):
         Qt озвучивает accessibleName, а не набор вложенных лейблов."""
         state = _("включён") if self.cb.isChecked() else _("выключен")
         self.setAccessibleName(f"{self._title_text}: {state}")
-        parts = [_("установлено {inst} из {total}").format(
-            inst=getattr(self, "_inst", 0), total=self._total)]
+        parts = [
+            _("установлено {inst} из {total}").format(
+                inst=getattr(self, "_inst", 0), total=self._total
+            )
+        ]
         if getattr(self, "_disk_mb", 0):
             parts.append(_("{mb} МБ на диске").format(mb=self._disk_mb))
         self.setAccessibleDescription(", ".join(parts))
 
     def _changed(self):
         self.setProperty("on", "true" if self.cb.isChecked() else "false")
-        self.style().unpolish(self); self.style().polish(self)
+        self.style().unpolish(self)
+        self.style().polish(self)
         self._refresh_accessible()
         self._on_toggle()
 
@@ -358,10 +413,13 @@ class CategoryCard(QFrame):
     def enterEvent(self, e):
         # Приподнимаем карточку тенью при наведении.
         eff = QGraphicsDropShadowEffect(self)
-        eff.setBlurRadius(26); eff.setXOffset(0); eff.setYOffset(6)
+        eff.setBlurRadius(26)
+        eff.setXOffset(0)
+        eff.setYOffset(6)
         # Тонированная под акцент мягкая тень — карточка «приподнимается»
         # заметно, но без грубого чёрного пятна.
-        c = QColor(_SWITCH["accent"]); c.setAlpha(70)
+        c = QColor(_SWITCH["accent"])
+        c.setAlpha(70)
         eff.setColor(c)
         self.setGraphicsEffect(eff)
         super().enterEvent(e)

@@ -40,6 +40,8 @@ from PyQt6.QtWidgets import (
     QDialog,
     QProgressBar,
     QSystemTrayIcon,
+    QGridLayout,
+    QStackedWidget,
 )
 
 from . import __version__
@@ -95,6 +97,7 @@ from .core import (
     vscode_user_settings_path,
     load_installed,
 )
+from .categories import cat_note, cat_title
 from .cli import _launcher_invocation
 from .i18n import _, get_language, set_language
 from .settings_apply import missing_settings as _missing_settings
@@ -102,11 +105,23 @@ from .updates import RELEASES_URL, build_update_swap_bat
 from .gui_widgets import (
     CategoryCard,
     FlowLayout,
-    _card,
+    ToggleSwitch,
     _hline,
     _wrap,
     set_switch_palette,
 )
+from .gui_shell import (
+    Banner,
+    NavRail,
+    PaletteCard,
+    Pill,
+    Section,
+    Tile,
+    menu_button,
+    page_header,
+    segmented,
+)
+from .gui_shell import icon as shell_icon
 from .gui_workers import (
     ElevatedInstaller,
     ExtLoader,
@@ -120,7 +135,7 @@ from .gui_workers import (
     UpdateDownloader,
 )
 from . import weights as _w
-from .theme import PALETTES, apply_titlebar, build_qss
+from .theme import PALETTE_SETS, PALETTES, apply_titlebar, build_qss, make_palette, palette_name
 from . import toolchains as _tc
 
 
@@ -130,22 +145,44 @@ from . import toolchains as _tc
 # тесты — с подставленным состоянием (см. tests/test_gui_smoke.py).
 
 
+def _note_lbl(text: str) -> QLabel:
+    lbl = _wrap(QLabel(text))
+    lbl.setObjectName("CatNote")
+    return lbl
+
+
+def _switch_row(switch, title: str, desc: str = "") -> QHBoxLayout:
+    """Строка настройки: тумблер, название, пояснение под ним (как в vscode-bg)."""
+    row = QHBoxLayout()
+    row.setSpacing(12)
+    row.addWidget(switch, 0, Qt.AlignmentFlag.AlignTop)
+    col = QVBoxLayout()
+    col.setSpacing(1)
+    t = QLabel(title)
+    t.setObjectName("TileTitle")
+    col.addWidget(t)
+    if desc:
+        col.addWidget(_note_lbl(desc))
+    row.addLayout(col, 1)
+    return row
+
+
 def _launcher_factory(
     cats, cats_err, cfg, ext_index, code_cli, descriptions, duplicates, log, _lang_switch
 ):
     def show_details(parent, key, cat, installed):
         """Диалог со списком плагинов стека: описания + установка/удаление."""
         dlg = QDialog(parent)
-        dlg.setWindowTitle(_("Стек: {title}").format(title=cat.get("title", key)))
+        dlg.setWindowTitle(_("Стек: {title}").format(title=cat_title(cat, key)))
         dlg.resize(820, 660)
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(18, 18, 18, 16)
         lay.setSpacing(12)
 
-        title = QLabel(cat.get("title", key))
+        title = QLabel(cat_title(cat, key))
         title.setObjectName("Title")
         lay.addWidget(title)
-        note = _wrap(QLabel(cat.get("note", "")))
+        note = _wrap(QLabel(cat_note(cat)))
         note.setObjectName("Subtitle")
         lay.addWidget(note)
 
@@ -247,7 +284,7 @@ def _launcher_factory(
                     else _(
                         "Установить {n} недостающих расширений стека «{title}»?"
                         "\n\nВсе они будут скачаны из маркетплейса."
-                    ).format(n=len(todo), title=cat.get("title", key))
+                    ).format(n=len(todo), title=cat_title(cat, key))
                 )
                 if (
                     QMessageBox.question(
@@ -579,7 +616,11 @@ def _launcher_factory(
             self._theme = cfg.get("theme", "dark")
             if self._theme not in PALETTES:
                 self._theme = "dark"
-            self._pal = PALETTES[self._theme]
+            self._palette_key = cfg.get("palette", "mocha")
+            if self._palette_key not in PALETTE_SETS:
+                self._palette_key = "mocha"
+            self._pal = make_palette(self._theme, self._palette_key)
+            self._page = "launch"
             set_switch_palette(self._pal)  # цвета тумблеров под тему
             self.setAcceptDrops(True)  # папку проекта можно просто перетащить в окно
             self._build_ui()
@@ -595,6 +636,7 @@ def _launcher_factory(
                 self._probe_memory()
                 self._start_size_probe()
                 self._start_update_check()  # #8
+                self._scan_path_badge()
             geo = cfg.get("geometry")
             if geo:  # запоминаем размер и позицию окна между запусками
                 try:
@@ -607,15 +649,40 @@ def _launcher_factory(
             self.theme_btn.setText(_("Светлая") if self._theme == "light" else _("Тёмная"))
 
         def _toggle_theme(self):
-            self._theme = "light" if self._theme == "dark" else "dark"
-            self._pal = PALETTES[self._theme]
+            self._set_theme("light" if self._theme == "dark" else "dark")
+
+        def _set_theme(self, theme: str):
+            if theme not in PALETTES or theme == self._theme:
+                return
+            self._theme = theme
+            cfg["theme"] = theme
+            self._apply_look()
+
+        def _set_palette(self, key: str):
+            if key not in PALETTE_SETS:
+                return
+            self._palette_key = key
+            cfg["palette"] = key
+            self._apply_look()
+
+        def _apply_look(self):
+            """Перекрасить окно под тему и палитру без пересборки."""
+            self._pal = make_palette(self._theme, self._palette_key)
             set_switch_palette(self._pal)  # тумблеры перекрашиваем под новую тему
-            QApplication.instance().setStyleSheet(build_qss(self._pal))
+            app = QApplication.instance()
+            if app is not None:
+                app.setStyleSheet(build_qss(self._pal))
             apply_titlebar(self, self._theme == "dark")
             self._update_theme_btn()
-            for card in self.cat_checks.values():  # перерисовать тумблеры
-                card.cb.update()
-            cfg["theme"] = self._theme
+            if hasattr(self, "banner"):
+                self.banner.set_palette(self._palette_key, self._pal["bg"], self._pal["accent"])
+            for key, card in getattr(self, "_pal_cards", {}).items():
+                card.set_selected(key == self._palette_key)
+            seg = getattr(self, "theme_seg", None)
+            if seg is not None and self._theme in seg.buttons:
+                seg.buttons[self._theme].setChecked(True)
+            for w in self.findChildren(ToggleSwitch):  # перерисовать тумблеры
+                w.update()
             save_config(cfg)
 
         # --- реальный вес стеков: размер на диске -------------------------
@@ -684,8 +751,8 @@ def _launcher_factory(
             unit = _("МБ")
             lines: list[str] = []
             tree = data.get("tree") or {}
-            titles = {k: c.get("title", k) for k, c in cats.get("categories", {}).items()}
-            titles["always_on"] = cats.get("always_on", {}).get("title", _("Ядро"))
+            titles = {k: cat_title(c, k) for k, c in cats.get("categories", {}).items()}
+            titles["always_on"] = cat_title(cats.get("always_on", {}), _("Ядро"))
             if tree:
                 lines += [
                     _("Дерево процессов VS Code: {mb} МБ").format(mb=tree["total_mb"]),
@@ -750,7 +817,15 @@ def _launcher_factory(
 
         def _open_cleanup(self):
             from .gui_cleanup import CleanupDialog
+
             CleanupDialog(self, code_cli).exec()
+
+        def _open_cpp(self, tab: str = "install", preselect: str = ""):
+            """Открыть страницу C / C++ (установка, проверка, проект)."""
+            self._goto("cpp")
+            center = getattr(self, "cpp_center", None)
+            if center is not None:
+                center.open_tab(tab, preselect)
 
         def _text_dialog(self, title: str, subtitle: str, text: str):
             """Диалог «заголовок + пояснение + текстовый блок + копировать».
@@ -1019,7 +1094,7 @@ def _launcher_factory(
             if keys:
                 self.log.appendPlainText(
                     _("Авто-набор для папки: {stacks}").format(
-                        stacks=", ".join(cats["categories"][k].get("title", k) for k in keys)
+                        stacks=", ".join(cat_title(cats["categories"][k], k) for k in keys)
                     )
                 )
             self._sync_auto_cb(True)
@@ -1091,7 +1166,7 @@ def _launcher_factory(
             if not useful:
                 return
             self._suggested_keys = useful
-            titles = ", ".join(sorted(cats["categories"][k].get("title", k) for k in useful))
+            titles = ", ".join(sorted(cat_title(cats["categories"][k], k) for k in useful))
             self.suggest_lbl.setText(
                 _("Похоже на проект: {stacks}. Включить эти стеки?").format(stacks=titles)
             )
@@ -1111,8 +1186,27 @@ def _launcher_factory(
                 missing = _tc.missing_toolchains_for(folder)
             except Exception:
                 return
-            if not missing:
+            cpp_missing = [k for k in missing if k == "cpp" or k.startswith("cpp_")]
+            if cpp_missing:
+                self._tool_action = lambda: self._open_cpp(preselect="install:" + cpp_missing[0])
+                self.tool_open.setText(_("Выбрать и поставить"))
+                self.tool_lbl.setText(
+                    _(
+                        "Это C/C++-проект, а подходящего инструмента нет: {tools}. "
+                        "Открыть C++-центр?"
+                    ).format(
+                        tools=", ".join(
+                            _tc.get_toolchain(k).title for k in cpp_missing if _tc.get_toolchain(k)
+                        )
+                    )
+                )
+                self.tool_bar.setVisible(True)
                 return
+            if not missing:
+                self._suggest_cpp_setup(folder)
+                return
+            self._tool_action = None
+            self.tool_open.setText(_("Поставить"))
             self._tool_target = missing[0]
             titles = ", ".join(_tc.get_toolchain(k).title for k in missing if _tc.get_toolchain(k))
             self.tool_lbl.setText(
@@ -1121,6 +1215,39 @@ def _launcher_factory(
                 ).format(tools=titles)
             )
             self.tool_bar.setVisible(True)
+
+        def _suggest_cpp_setup(self, folder):
+            """C/C++-проект без настроек VS Code — предложить настроить."""
+            try:
+                from .detect import cpp_project_hints
+
+                h = cpp_project_hints(folder)
+            except Exception:
+                return
+            if not h.get("is_cpp") or h.get("has_vscode_cfg") or h.get("has_clangd_cfg"):
+                return
+            self._tool_action = lambda: self._open_cpp(tab="project")
+            self.tool_open.setText(_("Настроить"))
+            self.tool_lbl.setText(
+                _(
+                    "C/C++-проект без настроек VS Code: сборка (Ctrl+Shift+B), отладка (F5) "
+                    "и подсказки не настроены. Сгенерировать их под ваш компилятор?"
+                )
+            )
+            self.tool_bar.setVisible(True)
+
+        def _tool_bar_clicked(self):
+            if getattr(self, "_tool_action", None):
+                self.tool_bar.setVisible(False)
+                self._tool_action()
+            else:
+                self._show_toolchains(target=self._tool_target)
+
+        def _open_tools_page(self, target=None):
+            self._goto("tools")
+            scroll_to = getattr(self, "_tools_scroll_to", None)
+            if target and scroll_to is not None:
+                QTimer.singleShot(0, lambda: scroll_to(target))
 
         def _maybe_auto_suggest(self):
             """#1: один раз при старте показать подсказку для уже подставленной
@@ -1140,7 +1267,7 @@ def _launcher_factory(
                 if card is not None:
                     card.setChecked(True)
             titles = ", ".join(
-                sorted(cats["categories"][k].get("title", k) for k in self._suggested_keys)
+                sorted(cat_title(cats["categories"][k], k) for k in self._suggested_keys)
             )
             self.log.appendPlainText(
                 _("Включены стеки по типу проекта: {stacks}").format(stacks=titles)
@@ -1300,274 +1427,384 @@ def _launcher_factory(
                 self._update_summary()
 
         def _build_ui(self):
-            root = QVBoxLayout(self)
-            root.setContentsMargins(18, 18, 18, 14)
-            root.setSpacing(14)
-            self._build_header(root)
-            self._build_stacks_area(root)
-            self._build_footer(root)
+            """Окно-оболочка: шапка, навигация слева, страницы справа.
 
-        def _build_header(self, root):
-            """Шапка: логотип, заголовок, баннер обновления, строка памяти."""
-            header = QFrame()
-            header.setObjectName("Header")
-            hl = QHBoxLayout(header)
-            hl.setContentsMargins(22, 18, 22, 18)
-            hl.setSpacing(16)
+            Раньше всё жило одной длинной лентой с рядами кнопок. Теперь каждое
+            дело — своя страница: «Запуск» (стеки и кнопка запуска), «C / C++»,
+            «Языки», «Расширения», «Обслуживание», «Настройки». Редкие действия
+            убраны в меню «⋯»."""
+            root = QVBoxLayout(self)
+            root.setContentsMargins(0, 0, 0, 0)
+            root.setSpacing(0)
+            self._build_topbar(root)
+            body = QHBoxLayout()
+            body.setContentsMargins(0, 0, 0, 0)
+            body.setSpacing(0)
+            self.nav = NavRail()
+            self.pages = QStackedWidget()
+            self._page_of: dict[str, QWidget] = {}
+            self._page_builders = {}
+            nav_items = (
+                (
+                    "launch",
+                    _("Запуск"),
+                    "launch",
+                    _("Стеки расширений, папка проекта и запуск VS Code"),
+                ),
+                (
+                    "cpp",
+                    "C / C++",
+                    "cpp",
+                    _("Компилятор, подсказки, отладка, проверка и настройка проекта"),
+                ),
+                ("tools", _("Языки"), "tools", _("Компиляторы и SDK других языков через winget")),
+                (
+                    "ext",
+                    _("Расширения"),
+                    "ext",
+                    _("Замер памяти, незнакомые расширения, исключения, settings.json"),
+                ),
+                (
+                    "clean",
+                    _("Обслуживание"),
+                    "clean",
+                    _("Уборка мусора VS Code, проверка PATH, журнал"),
+                ),
+            )
+            for key, text, ic, tip in nav_items:
+                self.nav.add(key, text, ic, tip)
+            self.nav.add(
+                "settings",
+                _("Настройки"),
+                "settings",
+                _("Вид, палитра, язык и параметры запуска"),
+                bottom=True,
+            )
+            self.nav.page_changed.connect(self._goto)
+            body.addWidget(self.nav)
+            body.addWidget(self.pages, 1)
+            root.addLayout(body, 1)
+
+            # Страницы: «Запуск», «Расширения», «Обслуживание» и «Настройки»
+            # собираем сразу (на них живут виджеты, с которыми работает остальной
+            # код), C++ и «Языки» — лениво, при первом открытии: они медленные.
+            self._add_page("launch", self._build_launch_page())
+            self._add_page("cpp", None, self._build_cpp_page)
+            self._add_page("tools", None, self._build_tools_page)
+            self._add_page("ext", self._build_ext_page())
+            self._add_page("clean", self._build_maint_page())
+            self._add_page("settings", self._build_settings_page())
+            self._goto("launch")
+
+        def _add_page(self, key, widget, builder=None):
+            holder = QWidget()
+            lay = QVBoxLayout(holder)
+            lay.setContentsMargins(0, 0, 0, 0)
+            if widget is not None:
+                lay.addWidget(widget)
+            else:
+                self._page_builders[key] = builder
+            self._page_of[key] = holder
+            self.pages.addWidget(holder)
+
+        def _goto(self, key: str):
+            """Открыть страницу; медленные собираются при первом заходе."""
+            holder = self._page_of.get(key)
+            if holder is None:
+                return
+            builder = self._page_builders.pop(key, None)
+            if builder is not None:
+                try:
+                    holder.layout().addWidget(builder())
+                except Exception:
+                    log.exception("Страница %s не собралась", key)
+            self.pages.setCurrentWidget(holder)
+            if key == "launch":
+                QTimer.singleShot(0, self._relayout_cards)
+            self.nav.select(key)
+            self._page = key
+
+        def _page_scroll(self, header: QWidget) -> tuple[QScrollArea, QVBoxLayout]:
+            """Прокручиваемая страница с заголовком; возвращает (скролл, раскладку)."""
+            sc = QScrollArea()
+            sc.setWidgetResizable(True)
+            sc.setFrameShape(QFrame.Shape.NoFrame)
+            sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            inner = QWidget()
+            inner.setObjectName("CatInner")
+            v = QVBoxLayout(inner)
+            v.setContentsMargins(20, 16, 18, 16)
+            v.setSpacing(12)
+            v.addWidget(header)
+            sc.setWidget(inner)
+            return sc, v
+
+        # --- шапка -------------------------------------------------------
+        def _build_topbar(self, root):
+            """Шапка: значок, название, живой замер памяти и три маленькие
+            кнопки (обновить замер, язык, тема). Всё остальное — в навигации."""
+            top = QWidget()
+            top.setObjectName("TopBar")
+            top.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            hl = QHBoxLayout(top)
+            hl.setContentsMargins(14, 12, 14, 12)
+            hl.setSpacing(10)
+            tile = QLabel()
+            tile.setObjectName("AppTile")
+            tile.setFixedSize(42, 42)
+            tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
             if LOGO_FILE.exists():
-                logo = QLabel()
-                logo.setPixmap(
+                tile.setPixmap(
                     QPixmap(str(LOGO_FILE)).scaled(
-                        54,
-                        54,
+                        30,
+                        30,
                         Qt.AspectRatioMode.KeepAspectRatio,
                         Qt.TransformationMode.SmoothTransformation,
                     )
                 )
-                hl.addWidget(logo, 0, Qt.AlignmentFlag.AlignVCenter)
+            hl.addWidget(tile)
             htext = QVBoxLayout()
-            htext.setSpacing(4)
+            htext.setSpacing(0)
             title = QLabel("VS Code Launcher")
-            title.setObjectName("Title")
-            sub = _wrap(
-                QLabel(
-                    _(
-                        "Открой редактор только с нужными стеками — остальные "
-                        "тяжёлые серверы не грузятся, память свободна."
-                    )
-                )
-            )
-            sub.setObjectName("Subtitle")
+            title.setObjectName("AppTitle")
+            self.mem_lbl = QLabel(_("VS Code сейчас: замеряю…"))
+            self.mem_lbl.setObjectName("AppSub")
             htext.addWidget(title)
-            htext.addWidget(sub)
+            htext.addWidget(self.mem_lbl)
             hl.addLayout(htext, 1)
-            root.addWidget(header)
+            mem_ref = QPushButton(_("Обновить"))
+            mem_ref.setObjectName("HBtn")
+            mem_ref.setCursor(Qt.CursorShape.PointingHandCursor)
+            mem_ref.setToolTip(_("Обновить замер памяти запущенного VS Code"))
+            mem_ref.clicked.connect(self._probe_memory)
+            self.lang_btn = QPushButton("EN" if get_language() == "ru" else "RU")
+            self.lang_btn.setObjectName("HBtn")
+            self.lang_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.lang_btn.setToolTip(_("Переключить язык интерфейса (RU/EN)"))
+            self.lang_btn.clicked.connect(self._switch_language)
+            self.theme_btn = QPushButton()
+            self.theme_btn.setObjectName("HBtn")
+            self.theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.theme_btn.setToolTip(_("Переключить светлую/тёмную тему"))
+            self.theme_btn.clicked.connect(self._toggle_theme)
+            self._update_theme_btn()
+            for b in (mem_ref, self.lang_btn, self.theme_btn):
+                hl.addWidget(b, 0, Qt.AlignmentFlag.AlignVCenter)
+            root.addWidget(top)
 
-            # #8: баннер новой версии (скрыт, пока фоновая проверка не найдёт обновление).
+            # Баннер новой версии и предупреждения — под шапкой, на всю ширину.
+            warn_box = QWidget()
+            wl = QVBoxLayout(warn_box)
+            wl.setContentsMargins(14, 0, 14, 0)
+            wl.setSpacing(6)
             self.update_bar = QPushButton()
             self.update_bar.setObjectName("Accent")
             self.update_bar.setCursor(Qt.CursorShape.PointingHandCursor)
             self.update_bar.setVisible(False)
             self.update_bar.clicked.connect(self._on_update_clicked)
-            root.addWidget(self.update_bar)
-
+            wl.addWidget(self.update_bar)
+            has_warn = False
             if not code_cli:
                 warn = _wrap(QLabel(_("Не найден CLI VS Code (code.cmd). Добавь его в PATH.")))
                 warn.setObjectName("Warn")
-                root.addWidget(warn)
-
+                wl.addWidget(warn)
+                has_warn = True
             if cats_err:
                 cwarn = _wrap(QLabel(cats_err))
                 cwarn.setObjectName("Warn")
-                root.addWidget(cwarn)
+                wl.addWidget(cwarn)
+                has_warn = True
+            if has_warn:
+                wl.setContentsMargins(14, 10, 14, 4)
+            root.addWidget(warn_box)
 
-            if duplicates:
-                dup_row = QHBoxLayout()
-                dup_row.setSpacing(8)
-                dup_lbl = _wrap(
-                    QLabel(
-                        _(
-                            "В categories.json дубли расширений: {n}. Расширение "
-                            "попадёт только в один стек — последний по порядку."
-                        ).format(n=len(duplicates))
-                    )
-                )
-                dup_lbl.setObjectName("Warn")
-                dup_row.addWidget(dup_lbl, 1)
-                dup_btn = QPushButton(_("Показать"))
-                dup_btn.setObjectName("Ghost")
-                dup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                dup_btn.clicked.connect(self._show_duplicates)
-                dup_row.addWidget(dup_btn, 0, Qt.AlignmentFlag.AlignVCenter)
-                root.addLayout(dup_row)
-
-            mem_row = QHBoxLayout()
-            mem_row.setSpacing(8)
-            self.mem_lbl = QLabel(_("VS Code сейчас: замеряю…"))
-            self.mem_lbl.setObjectName("Section")
-            self.lang_btn = QPushButton("EN" if get_language() == "ru" else "RU")
-            self.lang_btn.setObjectName("Ghost")
-            self.lang_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.lang_btn.setFixedWidth(52)
-            self.lang_btn.setToolTip(_("Переключить язык интерфейса (RU/EN)"))
-            self.lang_btn.clicked.connect(self._switch_language)
-            self.theme_btn = QPushButton()
-            self.theme_btn.setObjectName("Ghost")
-            self.theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.theme_btn.setFixedWidth(104)
-            self.theme_btn.setToolTip(_("Переключить светлую/тёмную тему"))
-            self.theme_btn.clicked.connect(self._toggle_theme)
-            self._update_theme_btn()
-            mem_ref = QPushButton(_("Обновить"))
-            mem_ref.setObjectName("Ghost")
-            mem_ref.setToolTip(_("Обновить замер памяти запущенного VS Code"))
-            mem_ref.clicked.connect(self._probe_memory)
-            self.ext_measure_btn = QPushButton(_("Замерить расширения"))
-            self.ext_measure_btn.setObjectName("Ghost")
-            self.ext_measure_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.ext_measure_btn.setToolTip(
-                _(
-                    "Спросить у запущенного VS Code (code --status), сколько "
-                    "памяти едят именно расширения, а сколько — сам редактор. "
-                    "Это факт, а не оценка по таблице весов."
+        # --- страница «Запуск» ---------------------------------------------
+        def _build_launch_page(self) -> QWidget:
+            page = QWidget()
+            pv = QVBoxLayout(page)
+            pv.setContentsMargins(0, 0, 0, 0)
+            pv.setSpacing(0)
+            scroll, cv = self._page_scroll(
+                page_header(
+                    _("Запуск"),
+                    _(
+                        "Отметь стеки на сегодня — остальные расширения не загрузятся, и "
+                        "память останется свободной. Ничего не удаляется."
+                    ),
                 )
             )
-            self.ext_measure_btn.clicked.connect(self._measure_extensions)
-            clean_btn = QPushButton(_("Уборка…"))
-            clean_btn.setObjectName("Ghost")
-            clean_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            clean_btn.setToolTip(
-                _(
-                    "Найти, что VS Code накопил на диске: копии установщиков, "
-                    "данные удалённых проектов, кэши, старые логи и версии "
-                    "расширений. Удаление — в Корзину."
-                )
-            )
-            clean_btn.clicked.connect(self._open_cleanup)
-            code_btn = QPushButton(_("VS Code…"))
-            code_btn.setObjectName("Ghost")
-            code_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            code_btn.setToolTip(
-                _(
-                    "Выбрать установку VS Code (стабильная/Insiders/"
-                    "портативная) — если автопоиск нашёл не ту или "
-                    "не нашёл вовсе."
-                )
-            )
-            code_btn.clicked.connect(self._choose_code_cli)
-            mem_row.addWidget(self.mem_lbl)
-            mem_row.addStretch()
-            mem_row.addWidget(self.ext_measure_btn)
-            mem_row.addWidget(clean_btn)
-            mem_row.addWidget(code_btn)
-            mem_row.addWidget(self.lang_btn)
-            mem_row.addWidget(self.theme_btn)
-            mem_row.addWidget(mem_ref)
-            root.addLayout(mem_row)
-
-            # Середина (пресеты → параметры) — в одном скролле, чтобы шапка и
-            # нижняя панель «Запустить» всегда были видны, а окно оставалось
-            # адаптивным при любой высоте.
-
-        def _build_stacks_area(self, root):
-            """Прокручиваемая середина: пресеты, сегменты/фильтр, сетка карточек-
-            стеков и карточки папки/опций/автонастройки."""
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setFrameShape(QFrame.Shape.NoFrame)
             self._scroll = scroll
-            content = QWidget()
-            cv = QVBoxLayout(content)
-            cv.setContentsMargins(0, 0, 6, 0)
-            cv.setSpacing(12)
 
-            pre_card = _card()
-            pre = QHBoxLayout(pre_card)
-            pre.setContentsMargins(14, 10, 14, 10)
-            pre.setSpacing(8)
-            plbl = QLabel(_("Пресет"))
-            plbl.setObjectName("Section")
-            pre.addWidget(plbl)
+            # Проект и пресет — одна секция, по строке на каждое.
+            sec = Section(_("Проект и пресет"))
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(10)
+            grid.setVerticalSpacing(8)
+            lbl_f = QLabel(_("Папка"))
+            lbl_f.setObjectName("CatNote")
+            grid.addWidget(lbl_f, 0, 0)
+            self.folder_edit = QLineEdit()
+            self.folder_edit.setPlaceholderText(
+                _("путь к проекту или .code-workspace — можно перетащить сюда")
+            )
+            self.folder_edit.editingFinished.connect(
+                lambda: self._suggest_for_folder(self.folder_edit.text().strip())
+            )
+            grid.addWidget(self.folder_edit, 0, 1)
+            # Недавние папки: скрытый список для совместимости (_pick_recent) и
+            # меню у кнопки «Обзор».
+            self.recent_box = QComboBox()
+            self.recent_box.addItem(_("— недавние папки —"), "")
+            for p in cfg.get("recent_folders", []):
+                self.recent_box.addItem(p, p)
+            self.recent_box.activated.connect(self._pick_recent)
+            self.recent_box.setVisible(False)
+            browse_items = [
+                (_("Выбрать папку…"), self._browse),
+                (_("Открыть рабочую область (.code-workspace)…"), self._browse_workspace),
+            ]
+            recent = cfg.get("recent_folders", [])
+            if recent:
+                browse_items.append(None)
+                for p in recent[:8]:
+                    browse_items.append((p, lambda p=p: self._use_recent(p)))
+            b_browse = menu_button(
+                browse_items,
+                tip=_(
+                    "Выбрать папку, рабочую область или недавний проект. Папку можно и "
+                    "просто перетащить в окно."
+                ),
+                text=_("Обзор…"),
+                obj="HBtn",
+            )
+            grid.addWidget(b_browse, 0, 2)
+            lbl_p = QLabel(_("Пресет"))
+            lbl_p.setObjectName("CatNote")
+            grid.addWidget(lbl_p, 1, 0)
             self.preset_box = QComboBox()
             self.preset_box.setMinimumWidth(180)
             self._reload_presets()
             self.preset_box.activated.connect(self._apply_preset)
-            pre.addWidget(self.preset_box, 1)
-            b_save = QPushButton(_("Сохранить…"))
-            b_save.clicked.connect(self._save_preset)
-            b_del = QPushButton(_("Удалить"))
-            b_del.setObjectName("Ghost")
-            b_del.clicked.connect(self._delete_preset)
-            b_exp = QPushButton(_("Экспорт"))
-            b_exp.setObjectName("Ghost")
-            b_exp.setToolTip(_("Экспортировать все пресеты в файл"))
-            b_exp.clicked.connect(self._export_presets)
-            b_imp = QPushButton(_("Импорт"))
-            b_imp.setObjectName("Ghost")
-            b_imp.setToolTip(_("Импортировать пресеты из файла (объединяются с текущими)"))
-            b_imp.clicked.connect(self._import_presets)
-            b_short = QPushButton(_("Ярлык"))
-            b_short.setObjectName("Ghost")
-            b_short.setToolTip(
-                _(
-                    "Создать .cmd-файл, открывающий VS Code с выбранным "
-                    "пресетом одним двойным кликом (без окна лаунчера)"
-                )
+            grid.addWidget(self.preset_box, 1, 1)
+            preset_menu = menu_button(
+                [
+                    (_("Сохранить текущий выбор как пресет…"), self._save_preset),
+                    (_("Удалить выбранный пресет"), self._delete_preset),
+                    None,
+                    (_("Экспорт пресетов в файл…"), self._export_presets),
+                    (_("Импорт пресетов из файла…"), self._import_presets),
+                    None,
+                    (
+                        _("Ярлык .cmd для пресета…"),
+                        self._make_shortcut,
+                        _("Файл, открывающий VS Code с пресетом двойным кликом"),
+                    ),
+                    (
+                        _("Экспорт профиля VS Code…"),
+                        self._export_profile,
+                        _("Нативный профиль .code-profile ровно с включёнными расширениями"),
+                    ),
+                ],
+                tip=_("Пресеты: сохранить, удалить, экспорт, ярлык, профиль"),
+                text=_("Пресеты ▾"),
+                obj="HBtn",
             )
-            b_short.clicked.connect(self._make_shortcut)
-            b_prof = QPushButton(_("Профиль…"))
-            b_prof.setObjectName("Ghost")
-            b_prof.setToolTip(
-                _(
-                    "Экспортировать текущий выбор стеков как нативный "
-                    "профиль VS Code (.code-profile). Импортируется через "
-                    "«Profiles: Import Profile…» — постоянный профиль "
-                    "ровно с включёнными расширениями."
-                )
-            )
-            b_prof.clicked.connect(self._export_profile)
-            pre.addWidget(b_save)
-            pre.addWidget(b_del)
-            pre.addWidget(b_exp)
-            pre.addWidget(b_imp)
-            pre.addWidget(b_short)
-            pre.addWidget(b_prof)
-            cv.addWidget(pre_card)
+            grid.addWidget(preset_menu, 1, 2)
+            grid.setColumnStretch(1, 1)
+            sec.body.addLayout(grid)
+            sec.body.addWidget(self.recent_box)
 
-            sec_row = QHBoxLayout()
-            sec_row.setSpacing(8)
-            sec = QLabel(_("СТЕКИ РАСШИРЕНИЙ"))
-            sec.setObjectName("Section")
-            sec_row.addWidget(sec)
+            # Подсказки по папке: автодетект стеков и недостающие инструменты.
+            self.suggest_bar = QFrame()
+            self.suggest_bar.setObjectName("CatCard")
+            sbl = QHBoxLayout(self.suggest_bar)
+            sbl.setContentsMargins(12, 8, 12, 8)
+            sbl.setSpacing(8)
+            hint_ic = QLabel()
+            pm = shell_icon("hint", 24)
+            if pm is not None:
+                hint_ic.setPixmap(pm)
+            sbl.addWidget(hint_ic)
+            self.suggest_lbl = _wrap(QLabel())
+            self.suggest_lbl.setObjectName("CatNote")
+            sbl.addWidget(self.suggest_lbl, 1)
+            self.auto_cb = QCheckBox(_("всегда для этой папки"))
+            self.auto_cb.setToolTip(
+                _("Запоминать набор для этой папки и включать его при выборе без подсказки")
+            )
+            self.auto_cb.toggled.connect(self._toggle_folder_auto)
+            sbl.addWidget(self.auto_cb)
+            self._sug_apply = QPushButton(_("Включить"))
+            self._sug_apply.setObjectName("HBtn")
+            self._sug_apply.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._sug_apply.clicked.connect(self._apply_suggestion)
+            sug_hide = QPushButton("×")
+            sug_hide.setObjectName("Round")
+            sug_hide.setToolTip(_("Скрыть"))
+            sug_hide.clicked.connect(self._dismiss_suggestion)
+            sbl.addWidget(self._sug_apply)
+            sbl.addWidget(sug_hide)
+            self.suggest_bar.setVisible(False)
+            sec.body.addWidget(self.suggest_bar)
+
+            self.tool_bar = QFrame()
+            self.tool_bar.setObjectName("CatCard")
+            tbl = QHBoxLayout(self.tool_bar)
+            tbl.setContentsMargins(12, 8, 12, 8)
+            tbl.setSpacing(8)
+            tool_ic = QLabel()
+            pm = shell_icon("steps", 24)
+            if pm is not None:
+                tool_ic.setPixmap(pm)
+            tbl.addWidget(tool_ic)
+            self.tool_lbl = _wrap(QLabel())
+            self.tool_lbl.setObjectName("CatNote")
+            tbl.addWidget(self.tool_lbl, 1)
+            self._tool_target = None
+            tool_open = QPushButton(_("Поставить"))
+            tool_open.setObjectName("HBtn")
+            tool_open.setCursor(Qt.CursorShape.PointingHandCursor)
+            tool_open.clicked.connect(self._tool_bar_clicked)
+            self.tool_open = tool_open
+            self._tool_action = None
+            tool_hide = QPushButton("×")
+            tool_hide.setObjectName("Round")
+            tool_hide.setToolTip(_("Скрыть"))
+            tool_hide.clicked.connect(lambda: self.tool_bar.setVisible(False))
+            tbl.addWidget(tool_open)
+            tbl.addWidget(tool_hide)
+            self.tool_bar.setVisible(False)
+            sec.body.addWidget(self.tool_bar)
+            cv.addWidget(sec)
+
+            # Стеки.
             self.sel_count = QLabel()
             self.sel_count.setObjectName("SelCount")
             self.sel_count.setToolTip(_("Сколько стеков сейчас отмечено из всех."))
-            sec_row.addWidget(self.sel_count)
-            sec_row.addStretch()
-            b_tools = QPushButton(_("Языки и инструменты…"))
-            b_tools.setObjectName("Ghost")
-            b_tools.setCursor(Qt.CursorShape.PointingHandCursor)
-            b_tools.setToolTip(
+            trail = QWidget()
+            tl = QHBoxLayout(trail)
+            tl.setContentsMargins(0, 0, 0, 0)
+            tl.setSpacing(6)
+            tl.addWidget(self.sel_count)
+            tl.addWidget(
+                menu_button(
+                    [
+                        (_("Включить все (с учётом поиска)"), lambda: self._set_all(True)),
+                        (_("Оставить минимум (только ядро)"), lambda: self._set_all(False)),
+                    ],
+                    tip=_("Быстрый выбор стеков"),
+                )
+            )
+            stacks = Section(_("Стеки расширений"), trailing=trail)
+            stacks.setToolTip(
                 _(
-                    "Установить компиляторы и SDK (C/C++, Java, Go, Rust…) "
-                    "через winget и прописать их в PATH."
+                    "Полоска слева у карточки — нагрузка на память: красная тяжёлый, "
+                    "жёлтая средний, зелёная лёгкий. Снятые галочки не удаляют расширения — "
+                    "они просто не грузятся в этот запуск. Кнопка «›» — что внутри стека."
                 )
             )
-            b_tools.clicked.connect(lambda: self._show_toolchains())
-            sec_row.addWidget(b_tools)
-            b_all = QPushButton(_("Всё вкл"))
-            b_all.setObjectName("Ghost")
-            b_all.clicked.connect(lambda: self._set_all(True))
-            b_none = QPushButton(_("Минимум"))
-            b_none.setObjectName("Ghost")
-            b_none.clicked.connect(lambda: self._set_all(False))
-            b_all.setToolTip(_("Отметить все стеки (с учётом фильтра поиска)"))
-            b_none.setToolTip(
-                _(
-                    "Снять все галочки — останется только ядро "
-                    "(always_on) и незамапленные расширения"
-                )
-            )
-            sec_row.addWidget(b_all)
-            sec_row.addWidget(b_none)
-            cv.addLayout(sec_row)
-
-            # Легенда-подсказка: как читать карточки — снимает вопрос «а что тут
-            # вообще делать» у нового пользователя.
-            legend = _wrap(
-                QLabel(
-                    _(
-                        "Отметь стеки, нужные сегодня. Полоска слева — нагрузка на память: "
-                        "красная тяжёлый, жёлтая средний, зелёная лёгкий; чем тяжелее "
-                        "выключенный стек, тем больше экономия. Снятые галочки не удаляют "
-                        "расширения — они просто не грузятся в этот запуск. «Подробнее» — "
-                        "что внутри стека и установка/удаление."
-                    )
-                )
-            )
-            legend.setObjectName("CatNote")
-            cv.addWidget(legend)
-
+            srow = QHBoxLayout()
+            srow.setSpacing(8)
             self.search_edit = QLineEdit()
             self.search_edit.setPlaceholderText(_("Поиск стека или расширения…"))
             self.search_edit.setClearButtonEnabled(True)
@@ -1575,14 +1812,7 @@ def _launcher_factory(
                 _("Фильтрует карточки по названию, заметке и id расширений. На выбор не влияет.")
             )
             self.search_edit.textChanged.connect(self._filter_cards)
-            cv.addWidget(self.search_edit)
-
-            # Сегментированный фильтр: разделяем установленные и неустановленные
-            # стеки. Установленные — то, чем реально управляешь память в этой
-            # сессии; неустановленные — что можно доставить. Работает вместе с
-            # поиском (пересечение условий).
-            filt_row = QHBoxLayout()
-            filt_row.setSpacing(8)
+            srow.addWidget(self.search_edit, 1)
             seg = QFrame()
             seg.setObjectName("Segmented")
             sl = QHBoxLayout(seg)
@@ -1603,28 +1833,24 @@ def _launcher_factory(
                 sl.addWidget(sb)
                 self.seg_btns[fkey] = sb
             self.seg_btns["all"].setChecked(True)
-            filt_row.addWidget(seg)
-            filt_row.addStretch()
+            srow.addWidget(seg)
+            stacks.body.addLayout(srow)
             self.search_status = QLabel()
             self.search_status.setObjectName("CatNote")
-            filt_row.addWidget(self.search_status)
-            cv.addLayout(filt_row)
+            stacks.body.addWidget(self.search_status)
 
             installed_set = set(self.installed)
-            # Сначала установленные стеки (по ним и есть что выключать), внутри —
-            # тяжёлые вверх (максимум экономии). Неустановленные сборки — ниже.
             weight_rank = {"heavy": 0, "medium": 1, "light": 2}
             ordered = sorted(
                 cats.get("categories", {}).items(),
                 key=lambda kv: (
                     0 if any(e.lower() in installed_set for e in kv[1]["extensions"]) else 1,
                     weight_rank.get(WEIGHT.get(kv[0], "light"), 2),
-                    kv[1].get("title", kv[0]).lower(),
+                    cat_title(kv[1], kv[0]).lower(),
                 ),
             )
-            # Карточки — в отзывчивую сетку-флоу: на широком окне 2–3 колонки,
-            # на узком — одна. Меньше скролла, горизонталь не пустует.
             self.cards_host = QWidget()
+            self.cards_host.setObjectName("CatInner")
             self._cards_flow = FlowLayout(self.cards_host, margin=0, spacing=10)
             for key, cat in ordered:
                 exts = cat["extensions"]
@@ -1639,226 +1865,463 @@ def _launcher_factory(
                 )
                 self.cat_checks[key] = card
                 self._cards_flow.addWidget(card)
-            cv.addWidget(self.cards_host)
+            stacks.body.addWidget(self.cards_host)
             self._update_seg_counts()
+            cv.addWidget(stacks)
+            cv.addStretch()
+            pv.addWidget(scroll, 1)
+            pv.addWidget(self._build_launch_footer())
+            return page
 
+        def _build_launch_footer(self) -> QWidget:
+            """Низ «Запуска»: баннер с пейзажем палитры — экономия, два главных
+            переключателя и кнопка запуска. Остальное — в меню «⋯»."""
+            wrap = QWidget()
+            wv = QVBoxLayout(wrap)
+            wv.setContentsMargins(16, 6, 16, 12)
+            wv.setSpacing(4)
+            self.banner = Banner(self._palette_key)
+            self.banner.set_palette(self._palette_key, self._pal["bg"], self._pal["accent"])
+            bl = QHBoxLayout(self.banner)
+            bl.setContentsMargins(20, 14, 16, 14)
+            bl.setSpacing(16)
+            left = QVBoxLayout()
+            left.setSpacing(6)
+            hero = QHBoxLayout()
+            hero.setSpacing(4)
+            self.savings_num = QLabel("—")
+            self.savings_num.setObjectName("SavingsNumber")
+            self.savings_unit = QLabel(_("МБ"))
+            self.savings_unit.setObjectName("SavingsUnit")
+            hero.addWidget(self.savings_num)
+            hero.addWidget(self.savings_unit, 0, Qt.AlignmentFlag.AlignBottom)
+            cap = QLabel(_("ЭКОНОМИЯ ПАМЯТИ"))
+            cap.setObjectName("SavingsCaption")
+            hero.addSpacing(10)
+            hero.addWidget(cap, 0, Qt.AlignmentFlag.AlignBottom)
+            hero.addStretch()
+            left.addLayout(hero)
+            chips = QHBoxLayout()
+            chips.setSpacing(6)
+            self.stat_en = QLabel()
+            self.stat_en.setObjectName("Stat")
+            self.stat_dis = QLabel()
+            self.stat_dis.setObjectName("StatAccent")
+            self.stat_extra = QLabel()
+            self.stat_extra.setObjectName("Stat")
+            self.stat_extra.setVisible(False)
+            for w in (self.stat_en, self.stat_dis, self.stat_extra):
+                chips.addWidget(w)
+            chips.addStretch()
+            left.addLayout(chips)
+            pills = QHBoxLayout()
+            pills.setSpacing(8)
+            self.kill_cb = ToggleSwitch()
+            self.kill_cb.setChecked(cfg.get("kill_first", True))
+            pills.addWidget(
+                Pill(
+                    self.kill_cb,
+                    _("Закрыть VS Code перед стартом"),
+                    _(
+                        "Закроет все окна VS Code ({exe}) перед стартом, чтобы память "
+                        "освободилась. Запускай этот тул НЕ из терминала VS Code. Как "
+                        "закрывать (мягко или принудительно) — в «Настройках»."
+                    ).format(exe=code_image_name(code_cli)),
+                )
+            )
+            self.bare_cb = ToggleSwitch()
+            self.bare_cb.stateChanged.connect(self._update_summary)
+            pills.addWidget(
+                Pill(
+                    self.bare_cb,
+                    _("Голый режим"),
+                    _(
+                        "Отключит ВСЕ расширения, включая ядро — максимальная скорость. "
+                        "Галочки стеков при этом игнорируются."
+                    ),
+                )
+            )
+            pills.addStretch()
+            left.addLayout(pills)
+            bl.addLayout(left, 1)
+            right = QVBoxLayout()
+            right.setSpacing(8)
+            right.addStretch()
+            rrow = QHBoxLayout()
+            rrow.setSpacing(8)
+            rrow.addWidget(
+                menu_button(
+                    [
+                        (
+                            _("Что выключится"),
+                            self._show_diff,
+                            _("Список расширений, которые будут выключены"),
+                        ),
+                        (
+                            _("Показать команду"),
+                            self._show_cmd,
+                            _("Эквивалентная команда для cmd/ярлыка"),
+                        ),
+                    ],
+                    tip=_("Что выключится, команда запуска"),
+                ),
+                0,
+                Qt.AlignmentFlag.AlignVCenter,
+            )
+            self.b_run = QPushButton(_("Запустить VS Code"))
+            self.b_run.setObjectName("Accent")
+            self.b_run.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.b_run.clicked.connect(self._run)
+            rrow.addWidget(self.b_run)
+            right.addLayout(rrow)
+            right.addStretch()
+            bl.addLayout(right)
+            wv.addWidget(self.banner)
+            self.status_lbl = QLabel()
+            self.status_lbl.setObjectName("Status")
+            self.status_lbl.setContentsMargins(6, 0, 0, 0)
+            wv.addWidget(self.status_lbl)
+            # Скрытый summary — совместимость со старым кодом статуса.
+            self.summary = QLabel()
+            self.summary.setVisible(False)
+            return wrap
+
+        # --- страница «C / C++» ------------------------------------------------
+        def _build_cpp_page(self) -> QWidget:
+            from .gui_cpp import CppCenter
+
+            def use_folder(folder):
+                self.folder_edit.setText(folder.replace("/", "\\"))
+                self._suggest_for_folder(folder)
+                self.log.appendPlainText(_("Папка проекта: {folder}").format(folder=folder))
+                self._goto("launch")
+
+            self.cpp_center = CppCenter(
+                self,
+                code_cli,
+                folder=self.folder_edit.text().strip(),
+                on_folder=use_folder,
+                on_installed=self.refresh_installed,
+                on_issues=lambda n: self.nav.items["cpp"].set_badge(n),
+            )
+            return self.cpp_center
+
+        # --- страница «Языки» ----------------------------------------------------
+        def _build_tools_page(self) -> QWidget:
+            host = QWidget()
+            host.setObjectName("CatInner")
+            self._show_toolchains(host=host)
+            return host
+
+        # --- страница «Расширения» ----------------------------------------------
+        def _build_ext_page(self) -> QWidget:
+            scroll, v = self._page_scroll(
+                page_header(
+                    _("Расширения"),
+                    _(
+                        "Сколько на самом деле весит каждое расширение, что делать с "
+                        "незнакомыми и какие настройки VS Code снимают фоновую нагрузку."
+                    ),
+                )
+            )
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(10)
+            grid.setVerticalSpacing(10)
+            t_measure = Tile(
+                "ext",
+                _("Замерить расширения"),
+                _(
+                    "Спросить у запущенного VS Code, сколько памяти держит каждое "
+                    "расширение и каждый стек. Это факт, а не оценка."
+                ),
+            )
+            t_measure.clicked.connect(self._measure_extensions)
+            t_auto = Tile(
+                "hint",
+                _("Автонастройка settings.json"),
+                _(
+                    "Рекомендованные настройки для установленных стеков и против фоновой "
+                    "нагрузки. Только недостающие ключи, с бэкапом."
+                ),
+            )
+            t_auto.clicked.connect(self._show_autoconfig)
+            grid.addWidget(t_measure, 0, 0)
+            grid.addWidget(t_auto, 0, 1)
+            v.addLayout(grid)
+            # Кнопка замера живёт здесь (её текст меняется на «Замеряю…»).
+            self.ext_measure_btn = QPushButton(_("Замерить расширения"))
+            self.ext_measure_btn.setObjectName("Ghost")
+            self.ext_measure_btn.setVisible(False)
+            self.ext_measure_btn.clicked.connect(self._measure_extensions)
+            v.addWidget(self.ext_measure_btn)
+            self.autoconf_btn = QPushButton(_("Автонастройка settings.json"))
+            self.autoconf_btn.setVisible(False)
+            self.autoconf_btn.clicked.connect(self._show_autoconfig)
+            v.addWidget(self.autoconf_btn)
+
+            unk = Section(_("Незнакомые расширения"))
+            unk.body.addWidget(
+                _note_lbl(
+                    _(
+                        "Расширения, которых нет в data/categories.json, лаунчер всегда "
+                        "оставляет включёнными. Их можно разложить по стекам автоматически — "
+                        "по манифесту; сама карта при этом не меняется."
+                    )
+                )
+            )
+            urow = QHBoxLayout()
             self.unknown_btn = QPushButton()
-            self.unknown_btn.setObjectName("Ghost")
+            self.unknown_btn.setObjectName("HBtn")
             self.unknown_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.unknown_btn.setToolTip(
-                _(
-                    "Установленные расширения, которых нет в "
-                    "data/categories.json — лаунчер всегда оставляет "
-                    "их включёнными"
-                )
-            )
             self.unknown_btn.clicked.connect(self._show_unknown)
-            # #6: мастер авто-раскладки незнакомых расширений по стекам.
             self.classify_btn = QPushButton()
-            self.classify_btn.setObjectName("Ghost")
+            self.classify_btn.setObjectName("HBtn")
             self.classify_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.classify_btn.setToolTip(
-                _(
-                    "Автоматически разложить незнакомые "
-                    "расширения по стекам (по их манифесту). "
-                    "Ничего не навязывается — ты подтверждаешь "
-                    "раскладку; categories.json не меняется."
-                )
-            )
             self.classify_btn.clicked.connect(self._classify_wizard)
             self.classify_btn.setVisible(False)
-            # Персональные исключения по расширениям раньше были видны только
-            # изнутри «Подробнее» нужного стека. Счётчик рядом с картой делает
-            # их заметными: их легко забыть, а они сильнее галочек.
-            self.overrides_btn = QPushButton()
-            self.overrides_btn.setObjectName("Ghost")
-            self.overrides_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.overrides_btn.setToolTip(
-                _(
-                    "Расширения с личным режимом «всегда включать/выключать» — "
-                    "показать список и снять лишние."
-                )
-            )
-            self.overrides_btn.clicked.connect(self._show_overrides)
-            self.overrides_btn.setVisible(False)
-            urow = QHBoxLayout()
+            self.unknown_none = _note_lbl(_("Все установленные расширения уже в карте."))
             urow.addWidget(self.unknown_btn)
             urow.addWidget(self.classify_btn)
-            urow.addWidget(self.overrides_btn)
+            urow.addWidget(self.unknown_none)
             urow.addStretch()
-            cv.addLayout(urow)
+            unk.body.addLayout(urow)
+            v.addWidget(unk)
+
+            ovr = Section(_("Личные исключения"))
+            ovr.body.addWidget(
+                _note_lbl(
+                    _(
+                        "Режим «всегда включать / всегда выключать» для отдельных "
+                        "расширений задаётся в «›» у стека и сильнее галочек."
+                    )
+                )
+            )
+            orow = QHBoxLayout()
+            self.overrides_btn = QPushButton()
+            self.overrides_btn.setObjectName("HBtn")
+            self.overrides_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.overrides_btn.clicked.connect(self._show_overrides)
+            self.overrides_btn.setVisible(False)
+            orow.addWidget(self.overrides_btn)
+            orow.addStretch()
+            ovr.body.addLayout(orow)
+            v.addWidget(ovr)
+
+            if duplicates:
+                dup = Section(_("Дубли в карте"))
+                dup.body.addWidget(
+                    _note_lbl(
+                        _(
+                            "В categories.json дубли расширений: {n}. Расширение "
+                            "попадёт только в один стек — последний по порядку."
+                        ).format(n=len(duplicates))
+                    )
+                )
+                drow = QHBoxLayout()
+                dup_btn = QPushButton(_("Показать"))
+                dup_btn.setObjectName("HBtn")
+                dup_btn.clicked.connect(self._show_duplicates)
+                drow.addWidget(dup_btn)
+                drow.addStretch()
+                dup.body.addLayout(drow)
+                v.addWidget(dup)
+            v.addStretch()
             self._refresh_unknown()
             self._refresh_override_chip()
+            return scroll
 
-            fold_card = _card()
-            fv = QVBoxLayout(fold_card)
-            fv.setContentsMargins(14, 12, 14, 12)
-            fv.setSpacing(8)
-            flbl = QLabel(_("ПАПКА ПРОЕКТА (НЕОБЯЗАТЕЛЬНО)"))
-            flbl.setObjectName("Section")
-            fv.addWidget(flbl)
-            fbox = QHBoxLayout()
-            fbox.setSpacing(8)
-            self.folder_edit = QLineEdit()
-            self.folder_edit.setPlaceholderText(
-                _("путь к проекту или .code-workspace — можно перетащить сюда")
+        # --- страница «Обслуживание» ---------------------------------------
+        def _build_maint_page(self) -> QWidget:
+            scroll, v = self._page_scroll(
+                page_header(
+                    _("Обслуживание"),
+                    _("Уборка того, что VS Code копит на диске, проверка PATH и журнал."),
+                )
             )
-            self.folder_edit.editingFinished.connect(
-                lambda: self._suggest_for_folder(self.folder_edit.text().strip())
-            )
-            fbox.addWidget(self.folder_edit)
-            b_browse = QPushButton(_("Обзор…"))
-            b_browse.setToolTip(_("Выбрать папку проекта. Папку можно и просто перетащить в окно."))
-            b_browse.clicked.connect(self._browse)
-            fbox.addWidget(b_browse)
-            b_ws = QPushButton(_("Рабочая область…"))
-            b_ws.setObjectName("Ghost")
-            b_ws.setToolTip(_("Открыть файл .code-workspace — многопапочный проект VS Code."))
-            b_ws.clicked.connect(self._browse_workspace)
-            fbox.addWidget(b_ws)
-            fv.addLayout(fbox)
-            self.recent_box = QComboBox()
-            self.recent_box.addItem(_("— недавние папки —"), "")
-            for p in cfg.get("recent_folders", []):
-                self.recent_box.addItem(p, p)
-            self.recent_box.activated.connect(self._pick_recent)
-            fv.addWidget(self.recent_box)
-
-            # #1: строка-подсказка автодетекта стеков (скрыта, пока нет папки).
-            self.suggest_bar = QFrame()
-            self.suggest_bar.setObjectName("CatCard")
-            sbl = QHBoxLayout(self.suggest_bar)
-            sbl.setContentsMargins(12, 8, 12, 8)
-            sbl.setSpacing(8)
-            self.suggest_lbl = _wrap(QLabel())
-            self.suggest_lbl.setObjectName("CatNote")
-            sbl.addWidget(self.suggest_lbl, 1)
-            # #5: чекбокс «всегда для этой папки» — пометить папку авто-набором.
-            self.auto_cb = QCheckBox(_("всегда для этой папки"))
-            self.auto_cb.setToolTip(
-                _("Запоминать набор для этой папки и включать его при выборе без подсказки")
-            )
-            self.auto_cb.toggled.connect(self._toggle_folder_auto)
-            sbl.addWidget(self.auto_cb)
-            self._sug_apply = QPushButton(_("Включить"))
-            self._sug_apply.setObjectName("Accent")
-            self._sug_apply.setCursor(Qt.CursorShape.PointingHandCursor)
-            self._sug_apply.clicked.connect(self._apply_suggestion)
-            sug_hide = QPushButton(_("Скрыть"))
-            sug_hide.setObjectName("Ghost")
-            sug_hide.clicked.connect(self._dismiss_suggestion)
-            sbl.addWidget(self._sug_apply)
-            sbl.addWidget(sug_hide)
-            self.suggest_bar.setVisible(False)
-            fv.addWidget(self.suggest_bar)
-
-            # Подсказка: у проекта есть язык, но его тулчейн (компилятор/SDK) не
-            # установлен — предложить поставить прямо из окна «Языки и инструменты».
-            self.tool_bar = QFrame()
-            self.tool_bar.setObjectName("CatCard")
-            tbl = QHBoxLayout(self.tool_bar)
-            tbl.setContentsMargins(12, 8, 12, 8)
-            tbl.setSpacing(8)
-            self.tool_lbl = _wrap(QLabel())
-            self.tool_lbl.setObjectName("CatNote")
-            tbl.addWidget(self.tool_lbl, 1)
-            self._tool_target = None
-            tool_open = QPushButton(_("Поставить"))
-            tool_open.setObjectName("Accent")
-            tool_open.setCursor(Qt.CursorShape.PointingHandCursor)
-            tool_open.clicked.connect(lambda: self._show_toolchains(target=self._tool_target))
-            tool_hide = QPushButton(_("Скрыть"))
-            tool_hide.setObjectName("Ghost")
-            tool_hide.clicked.connect(lambda: self.tool_bar.setVisible(False))
-            tbl.addWidget(tool_open)
-            tbl.addWidget(tool_hide)
-            self.tool_bar.setVisible(False)
-            fv.addWidget(self.tool_bar)
-            cv.addWidget(fold_card)
-
-            opt_card = _card()
-            ov = QVBoxLayout(opt_card)
-            ov.setContentsMargins(14, 12, 14, 12)
-            ov.setSpacing(8)
-            olbl = QLabel(_("ПАРАМЕТРЫ ЗАПУСКА"))
-            olbl.setObjectName("Section")
-            ov.addWidget(olbl)
-            self.kill_cb = QCheckBox(_("Закрыть VS Code перед стартом (чтобы память освободилась)"))
-            self.kill_cb.setChecked(cfg.get("kill_first", True))
-            self.kill_cb.setToolTip(
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(10)
+            grid.setVerticalSpacing(10)
+            t_clean = Tile(
+                "clean",
+                _("Уборка VS Code"),
                 _(
-                    "Закроет все окна VS Code ({exe}) перед стартом. "
-                    "Запускай этот тул НЕ из терминала VS Code."
-                ).format(exe=code_image_name(code_cli))
+                    "Копии установщиков, данные удалённых проектов, кэши, старые логи и "
+                    "версии расширений. Предпросмотр, удаление в Корзину."
+                ),
             )
-            ov.addWidget(self.kill_cb)
-            self.soft_cb = QCheckBox(_("   Мягко: дать VS Code сохранить (иначе принудительно)"))
+            t_clean.clicked.connect(self._open_cleanup)
+            t_env = Tile(
+                "steps",
+                _("Проверить окружение"),
+                _("Тулчейны и версии, дубли и мёртвые записи в PATH, JAVA_HOME."),
+            )
+            t_env.clicked.connect(self._run_env_doctor)
+            self.t_path = Tile(
+                "steps",
+                _("Починить PATH"),
+                _(
+                    "Мусор, мёртвые записи и главное — кто кого перекрывает: заглушка Microsoft "
+                    "Store вместо Python, компилятор вместо ваших python/cmake, чужой java. "
+                    "С предпросмотром и откатом."
+                ),
+            )
+            self.t_path.clicked.connect(self._open_path_doctor)
+            t_code = Tile(
+                "settings",
+                _("Установка VS Code"),
+                _("Выбрать, какой VS Code запускать: стабильный, Insiders или портативный."),
+            )
+            t_code.clicked.connect(self._choose_code_cli)
+            grid.addWidget(self.t_path, 0, 0)
+            grid.addWidget(t_clean, 0, 1)
+            grid.addWidget(t_env, 1, 0)
+            grid.addWidget(t_code, 1, 1)
+            v.addLayout(grid)
+            jr = Section(_("Журнал"))
+            self.log = QPlainTextEdit()
+            self.log.setObjectName("Log")
+            self.log.setReadOnly(True)
+            self.log.setMinimumHeight(220)
+            self.log.setPlaceholderText(_("Здесь появится итоговая команда и статус запуска."))
+            # Последняя строка журнала видна на «Запуске» под баннером.
+            self.log.textChanged.connect(self._mirror_log)
+            jr.body.addWidget(self.log)
+            v.addWidget(jr)
+            v.addStretch()
+            return scroll
+
+        def _open_path_doctor(self):
+            from .gui_path import PathDoctorDialog
+
+            PathDoctorDialog(self).exec()
+            self._scan_path_badge()
+
+        def _scan_path_badge(self):
+            """Быстрая проверка PATH в фоне (без запуска программ) — счётчик на
+            вкладке «Обслуживание» и на плитке «Починить PATH»."""
+            from . import path_doctor as _pd
+
+            w = FnWorker(lambda: _pd.analyze(probe_versions=False))
+
+            def _d(rep):
+                if not isinstance(rep, _pd.Report):
+                    return
+                n = sum(1 for i in rep.issues if i.level in ("error", "warn") and i.fixable)
+                self.nav.items["clean"].set_badge(n)
+                self.t_path.set_num(n or "")
+
+            w.done.connect(_d)
+            w.finished.connect(lambda x=w: self._reap_installer(x))
+            self._install_threads.append(w)
+            w.start()
+
+        def _mirror_log(self):
+            lines = [ln for ln in self.log.toPlainText().splitlines() if ln.strip()]
+            if hasattr(self, "status_lbl"):
+                self.status_lbl.setText(lines[-1][:160] if lines else "")
+
+        def _run_env_doctor(self):
+            """Проверка окружения (тулчейны, PATH, JAVA_HOME) в фоне."""
+            w = FnWorker(_tc.environment_report)
+
+            def _d(res):
+                if isinstance(res, dict):
+                    self._show_doctor_report(res)
+                else:
+                    QMessageBox.warning(
+                        self, _("Проверка окружения"), _("Не удалось собрать отчёт.")
+                    )
+
+            w.done.connect(_d)
+            w.finished.connect(lambda x=w: self._reap_installer(x))
+            self._install_threads.append(w)
+            w.start()
+
+        # --- страница «Настройки» ------------------------------------------
+        def _build_settings_page(self) -> QWidget:
+            scroll, v = self._page_scroll(
+                page_header(_("Настройки"), _("Вид и поведение — всё меняется сразу."))
+            )
+            view = Section(_("Вид"))
+            row = QHBoxLayout()
+            row.addWidget(QLabel(_("Тема")))
+            row.addStretch()
+            self.theme_seg = segmented(
+                [("dark", _("Тёмная")), ("light", _("Светлая"))],
+                self._theme,
+                self._set_theme,
+            )
+            row.addWidget(self.theme_seg)
+            view.body.addLayout(row)
+            row2 = QHBoxLayout()
+            row2.addWidget(QLabel(_("Язык")))
+            row2.addStretch()
+            row2.addWidget(
+                segmented(
+                    [("ru", _("Русский")), ("en", "English")],
+                    get_language(),
+                    lambda k: k != get_language() and self._switch_language(),
+                )
+            )
+            view.body.addLayout(row2)
+            view.body.addWidget(_note_lbl(_("Палитра — цвета окна и пейзаж на баннере запуска.")))
+            pal_host = QWidget()
+            pal_host.setObjectName("CatInner")
+            flow = FlowLayout(pal_host, margin=0, spacing=10)
+            self._pal_cards = {}
+            lang = get_language()
+            for key, ps in PALETTE_SETS.items():
+                card = PaletteCard(
+                    key,
+                    palette_name(key, lang),
+                    [ps["ac"], ps["glow"], ps["ok"], ps["warn"]],
+                    key == self._palette_key,
+                )
+                card.picked.connect(self._set_palette)
+                flow.addWidget(card)
+                self._pal_cards[key] = card
+            view.body.addWidget(pal_host)
+            view.body.addWidget(_note_lbl(_("В светлой теме палитра меняет только акцент.")))
+            v.addWidget(view)
+
+            run = Section(_("Запуск VS Code"))
+            self.soft_cb = ToggleSwitch()
             self.soft_cb.setChecked(cfg.get("soft_close", False))
-            self.soft_cb.setToolTip(
-                _(
-                    "Пошлёт окну обычный запрос на закрытие — VS Code сам спросит про "
-                    "несохранённые файлы. Лаунчер подождёт, пока редактор закроется, и "
-                    "только потом стартует новый. Если оставить открытым диалог сохранения, "
-                    "запуск отменится (ничего не потеряется). Выкл — жёсткое закрытие (/F): "
-                    "быстро и надёжно освобождает память, но несохранённое теряется."
+            run.body.addLayout(
+                _switch_row(
+                    self.soft_cb,
+                    _("Закрывать мягко"),
+                    _(
+                        "VS Code получит обычный запрос на закрытие и сам спросит про "
+                        "несохранённое; лаунчер дождётся выхода. Выключено — "
+                        "принудительно (/F): быстро, но несохранённое теряется."
+                    ),
                 )
             )
             self.kill_cb.stateChanged.connect(
                 lambda: self.soft_cb.setEnabled(self.kill_cb.isChecked())
             )
             self.soft_cb.setEnabled(self.kill_cb.isChecked())
-            ov.addWidget(self.soft_cb)
-            self.newwin_cb = QCheckBox(_("Открыть в новом окне (--new-window)"))
+            self.newwin_cb = ToggleSwitch()
             self.newwin_cb.setChecked(cfg.get("new_window", True))
-            ov.addWidget(self.newwin_cb)
-            self.gpu_cb = QCheckBox(_("Без GPU-ускорения (--disable-gpu) — для слабых видеокарт"))
+            run.body.addLayout(
+                _switch_row(self.newwin_cb, _("Открывать в новом окне"), "--new-window")
+            )
+            self.gpu_cb = ToggleSwitch()
             self.gpu_cb.setChecked(cfg.get("disable_gpu", False))
-            self.gpu_cb.setToolTip(
-                _(
-                    "Отключает аппаратное ускорение отрисовки. "
-                    "Иногда лечит артефакты/лаги на старых GPU и экономит немного памяти."
+            run.body.addLayout(
+                _switch_row(
+                    self.gpu_cb,
+                    _("Без GPU-ускорения"),
+                    _(
+                        "--disable-gpu: лечит артефакты на старых видеокартах, "
+                        "экономит немного памяти."
+                    ),
                 )
             )
-            ov.addWidget(self.gpu_cb)
-            self.bare_cb = QCheckBox(
-                _("Голый режим: полностью без расширений (--disable-extensions)")
-            )
-            self.bare_cb.setToolTip(
-                _(
-                    "Отключит ВСЕ расширения, включая ядро — максимальная скорость. "
-                    "Галочки стеков при этом игнорируются."
-                )
-            )
-            self.bare_cb.stateChanged.connect(self._update_summary)
-            ov.addWidget(self.bare_cb)
-
-            self.tray_cb = QCheckBox(_("Значок в трее: запускать пресеты без окна"))
-            self.tray_cb.setChecked(cfg.get("tray", True))
-            self.tray_cb.setToolTip(
-                _(
-                    "Правый клик по значку — список пресетов; выбрал, и VS Code "
-                    "открылся нужным набором. Окно нужно только когда набор "
-                    "действительно меняешь. Применится после перезапуска лаунчера."
-                )
-            )
-            self.tray_cb.stateChanged.connect(self._toggle_tray_setting)
-            ov.addWidget(self.tray_cb)
-            self.close_tray_cb = QCheckBox(_("   Крестик сворачивает в трей, а не закрывает"))
-            self.close_tray_cb.setChecked(cfg.get("close_to_tray", False))
-            self.close_tray_cb.setEnabled(self.tray_cb.isChecked())
-            self.close_tray_cb.setToolTip(
-                _(
-                    "Лаунчер останется в трее и будет открываться мгновенно. "
-                    "Выйти совсем — «Выход» в меню значка."
-                )
-            )
-            self.close_tray_cb.stateChanged.connect(self._toggle_tray_setting)
-            ov.addWidget(self.close_tray_cb)
-
-            prof_row = QHBoxLayout()
-            prof_row.setSpacing(8)
-            prof_lbl = QLabel(_("Профиль"))
-            prof_lbl.setObjectName("Section")
+            prow = QHBoxLayout()
+            prow.setSpacing(10)
+            plbl = QLabel(_("Профиль"))
             self.profile_edit = QLineEdit()
             self.profile_edit.setText(cfg.get("profile", ""))
             self.profile_edit.setPlaceholderText(
@@ -1870,125 +2333,39 @@ def _launcher_factory(
                     "в VS Code (шестерёнка → Profiles). Пусто — профиль по умолчанию."
                 )
             )
-            prof_row.addWidget(prof_lbl)
-            prof_row.addWidget(self.profile_edit, 1)
-            ov.addLayout(prof_row)
-            cv.addWidget(opt_card)
+            prow.addWidget(plbl)
+            prow.addWidget(self.profile_edit, 1)
+            run.body.addLayout(prow)
+            v.addWidget(run)
 
-            cfg_card = _card()
-            cvv = QVBoxLayout(cfg_card)
-            cvv.setContentsMargins(14, 12, 14, 12)
-            cvv.setSpacing(8)
-            aclbl = QLabel(_("НАСТРОЙКА VS CODE"))
-            aclbl.setObjectName("Section")
-            cvv.addWidget(aclbl)
-            ac_row = QHBoxLayout()
-            self.autoconf_btn = QPushButton(_("Автонастройка settings.json"))
-            self.autoconf_btn.setObjectName("Ghost")
-            self.autoconf_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.autoconf_btn.setToolTip(
-                _("Добавить рекомендованные настройки для установленных стеков")
-            )
-            self.autoconf_btn.clicked.connect(self._show_autoconfig)
-            ac_row.addWidget(self.autoconf_btn)
-            ac_row.addStretch()
-            cvv.addLayout(ac_row)
-            ac_hint = _wrap(
-                QLabel(
+            tray = Section(_("Трей"))
+            self.tray_cb = ToggleSwitch()
+            self.tray_cb.setChecked(cfg.get("tray", True))
+            self.tray_cb.stateChanged.connect(self._toggle_tray_setting)
+            tray.body.addLayout(
+                _switch_row(
+                    self.tray_cb,
+                    _("Значок в трее"),
                     _(
-                        "Пропишет базовые настройки для установленных стеков (формат при "
-                        "сохранении и т.п.). Существующие настройки не трогаются, перед "
-                        "записью делается бэкап settings.json."
-                    )
+                        "Правый клик по значку — список пресетов: VS Code открывается "
+                        "нужным набором без окна. Применится после перезапуска."
+                    ),
                 )
             )
-            ac_hint.setObjectName("CatNote")
-            cvv.addWidget(ac_hint)
-            cv.addWidget(cfg_card)
-
-            cv.addStretch()
-            scroll.setWidget(content)
-            root.addWidget(scroll, 1)
-
-        def _build_footer(self, root):
-            """Низ окна: hero-панель экономии, кнопки запуска и лог."""
-
-            # Hero-панель экономии: слева крупное число сэкономленных МБ, справа
-            # чипы (включено/выключено/замер) и действия. Ключевая ценность —
-            # экономия памяти — теперь читается с одного взгляда.
-            action_card = QFrame()
-            action_card.setObjectName("SavingsCard")
-            acv = QVBoxLayout(action_card)
-            acv.setContentsMargins(18, 12, 16, 12)
-            acv.setSpacing(10)
-
-            # Ряд 1: крупное число экономии + подпись + чипы статистики.
-            row1 = QHBoxLayout()
-            row1.setSpacing(14)
-            hero = QHBoxLayout()
-            hero.setSpacing(4)
-            self.savings_num = QLabel("—")
-            self.savings_num.setObjectName("SavingsNumber")
-            self.savings_unit = QLabel(_("МБ"))
-            self.savings_unit.setObjectName("SavingsUnit")
-            self.savings_unit.setAlignment(Qt.AlignmentFlag.AlignBottom)
-            hero.addWidget(self.savings_num)
-            hero.addWidget(self.savings_unit, 0, Qt.AlignmentFlag.AlignBottom)
-            hero_box = QVBoxLayout()
-            hero_box.setSpacing(0)
-            cap = QLabel(_("ЭКОНОМИЯ ПАМЯТИ"))
-            cap.setObjectName("SavingsCaption")
-            hero_box.addLayout(hero)
-            hero_box.addWidget(cap)
-            row1.addLayout(hero_box)
-            vsep = QFrame()
-            vsep.setObjectName("HLine")
-            vsep.setFixedWidth(1)
-            vsep.setFixedHeight(44)
-            row1.addWidget(vsep)
-            self.stat_en = QLabel()
-            self.stat_en.setObjectName("Stat")
-            self.stat_dis = QLabel()
-            self.stat_dis.setObjectName("StatAccent")
-            self.stat_extra = QLabel()
-            self.stat_extra.setObjectName("Stat")
-            self.stat_extra.setVisible(False)
-            row1.addWidget(self.stat_en)
-            row1.addWidget(self.stat_dis)
-            row1.addWidget(self.stat_extra)
-            row1.addStretch()
-            acv.addLayout(row1)
-
-            # Ряд 2: действия справа — вторичные «призрачные», основная акцентная.
-            row2 = QHBoxLayout()
-            row2.setSpacing(10)
-            row2.addStretch()
-            b_diff = QPushButton(_("Что выключится"))
-            b_diff.setObjectName("Ghost")
-            b_diff.setToolTip(_("Показать список расширений, которые будут выключены"))
-            b_diff.clicked.connect(self._show_diff)
-            b_cmd = QPushButton(_("Показать команду"))
-            b_cmd.setObjectName("Ghost")
-            b_cmd.clicked.connect(self._show_cmd)
-            self.b_run = QPushButton(_("Запустить VS Code"))
-            self.b_run.setObjectName("Accent")
-            self.b_run.clicked.connect(self._run)
-            row2.addWidget(b_diff)
-            row2.addWidget(b_cmd)
-            row2.addWidget(self.b_run)
-            acv.addLayout(row2)
-            root.addWidget(action_card)
-            # Держим скрытый self.summary для обратной совместимости (код, что
-            # писал в него текст статуса, продолжает работать без падений).
-            self.summary = QLabel()
-            self.summary.setVisible(False)
-
-            self.log = QPlainTextEdit()
-            self.log.setObjectName("Log")
-            self.log.setReadOnly(True)
-            self.log.setMaximumHeight(90)
-            self.log.setPlaceholderText(_("Здесь появится итоговая команда и статус запуска."))
-            root.addWidget(self.log)
+            self.close_tray_cb = ToggleSwitch()
+            self.close_tray_cb.setChecked(cfg.get("close_to_tray", False))
+            self.close_tray_cb.setEnabled(self.tray_cb.isChecked())
+            self.close_tray_cb.stateChanged.connect(self._toggle_tray_setting)
+            tray.body.addLayout(
+                _switch_row(
+                    self.close_tray_cb,
+                    _("Крестик сворачивает в трей"),
+                    _("Лаунчер останется в трее; выйти совсем — «Выход» в меню значка."),
+                )
+            )
+            v.addWidget(tray)
+            v.addStretch()
+            return scroll
 
         def _selected(self) -> set[str]:
             return {k for k, cb in self.cat_checks.items() if cb.isChecked()}
@@ -2071,6 +2448,9 @@ def _launcher_factory(
         def resizeEvent(self, e):
             super().resizeEvent(e)
             self._relayout_cards()
+            # Ширина области карточек становится известна только после того,
+            # как раскладка страницы пересчитается, — повторяем на следующем такте.
+            QTimer.singleShot(0, self._relayout_cards)
 
         def _get_dep_map(self) -> dict:
             """Карта зависимостей расширений для #1. Строится один раз (читает
@@ -2106,6 +2486,10 @@ def _launcher_factory(
             unk = self._unknown()
             self.unknown_btn.setText(_("Не в карте: {n} — показать").format(n=len(unk)))
             self.unknown_btn.setVisible(bool(unk))
+            if getattr(self, "unknown_none", None) is not None:
+                self.unknown_none.setVisible(not unk)
+            if getattr(self, "nav", None) is not None:
+                self.nav.items["ext"].set_badge(len(unk))
             # #6: кнопку мастера показываем, когда есть что раскладывать; сами
             # предложения считаем лениво (при клике), чтобы не читать манифесты
             # на каждый refresh.
@@ -2160,7 +2544,7 @@ def _launcher_factory(
                     )
                 )
             )
-            key_titles = [(k, cats["categories"][k].get("title", k)) for k in sorted(valid_keys)]
+            key_titles = [(k, cat_title(cats["categories"][k], k)) for k in sorted(valid_keys)]
             keys_order = [k for k, _t in key_titles]
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
@@ -2217,23 +2601,35 @@ def _launcher_factory(
             self._update_summary()
             self.log.appendPlainText(_("Разложено расширений: {n}").format(n=len(approved)))
 
-        def _show_toolchains(self, target=None):
+        def _show_toolchains(self, target=None, host=None):
             """Диалог языковых тулчейнов: установка, обновление, удаление, проверка.
 
             По карточке на тулчейн; у каждого пакета — статус и действия (winget).
             Операции идут в фоне (ToolchainInstaller), прогресс/отмена общие внизу.
             `target` — ключ тулчейна, к которому проскроллить (из подсказки в окне).
             Пока идёт winget-операция, кнопки действий заблокированы (одна за раз)."""
-            dlg = QDialog(self)
-            dlg.setWindowTitle(_("Языки и инструменты"))
-            dlg.resize(720, 700)
+            if host is None and getattr(self, "_page_of", None) is not None:
+                # В окне с навигацией «Языки» — страница, а не отдельный диалог.
+                self._open_tools_page(target)
+                return
+            embedded = host is not None
+            dlg = host if embedded else QDialog(self)
+            if not embedded:
+                dlg.setWindowTitle(_("Языки и инструменты"))
+                dlg.resize(720, 700)
             lay = QVBoxLayout(dlg)
-            lay.setContentsMargins(18, 18, 18, 16)
+            if embedded:
+                lay.setContentsMargins(20, 16, 18, 14)
+            else:
+                lay.setContentsMargins(18, 18, 18, 16)
             lay.setSpacing(10)
 
-            title = QLabel(_("Языки и инструменты"))
-            title.setObjectName("Title")
-            lay.addWidget(title)
+            if embedded:
+                lay.addWidget(page_header(_("Языки"), ""))
+            else:
+                title = QLabel(_("Языки и инструменты"))
+                title.setObjectName("Title")
+                lay.addWidget(title)
             intro = _wrap(
                 QLabel(
                     _(
@@ -2264,7 +2660,10 @@ def _launcher_factory(
             lay.addWidget(_hline())
 
             state = {"open": True, "busy": False}
-            dlg.finished.connect(lambda _=0: state.update(open=False))
+            if embedded:
+                dlg.destroyed.connect(lambda _=None: state.update(open=False))
+            else:
+                dlg.finished.connect(lambda _=0: state.update(open=False))
             rows: dict[str, dict] = {}  # winget_id -> {widgets...}
             action_btns: list = []  # все кнопки действий (для блокировки)
             card_of: dict[str, QWidget] = {}  # key -> карточка (для скролла к target)
@@ -2308,9 +2707,11 @@ def _launcher_factory(
                 on_disk = (not installed) and bool(_tc.find_tool_on_disk(pkg))
                 r["install"].setVisible(not installed and wg_ok)
                 r["addpath"].setVisible(not installed and on_disk)
-                r["verify"].setVisible(installed)
-                r["upgrade"].setVisible(installed and wg_ok)
-                r["uninstall"].setVisible(installed and wg_ok)
+                # Установленному пакету — одно меню «⋯» (проверить, обновить,
+                # удалить) вместо трёх кнопок; выбор версии нужен только до установки.
+                r["more"].setVisible(installed)
+                if r.get("ver_combo") is not None:
+                    r["ver_combo"].setVisible(not installed)
 
             def do_add_existing(pkg):
                 bindir = _tc.find_tool_on_disk(pkg)
@@ -2547,7 +2948,19 @@ def _launcher_factory(
             vb = QVBoxLayout(holder)
             vb.setContentsMargins(0, 0, 6, 0)
             vb.setSpacing(8)
+            cpp_card_done = False
             for key in _tc.toolchain_keys():
+                if key == "cpp" or key.startswith("cpp_"):
+                    if cpp_card_done:
+                        continue
+                    cpp_card_done = True
+                    card = self._cpp_toolchain_card(dlg)
+                    card_of["cpp"] = card
+                    for k in _tc.toolchain_keys():
+                        if k.startswith("cpp_"):
+                            card_of[k] = card
+                    vb.addWidget(card)
+                    continue
                 tc = _tc.get_toolchain(key)
                 statuses = _tc.toolchain_status(key)
                 card = QFrame()
@@ -2561,22 +2974,10 @@ def _launcher_factory(
                 nm = QLabel(f"{tc.title}  ·  {key}")
                 nm.setObjectName("CatTitle")
                 head.addWidget(nm, 1)
-                if key in ("cpp", "python"):
-                    cfgbtn = mk_btn(
-                        _("Настроить VS Code"),
-                        "Ghost",
-                        lambda _=False, k=key: do_configure_vscode(k),
-                        _(
-                            "Прописать путь к тулчейну (компилятор C++ / интерпретатор "
-                            "Python) в settings.json VS Code, чтобы IntelliSense и "
-                            "сборка/запуск заработали без ручной настройки."
-                        ),
-                    )
-                    head.addWidget(cfgbtn, 0, Qt.AlignmentFlag.AlignVCenter)
                 req_missing = [
                     p for p in tc.packages if not p.optional and not _tc.package_installed(p)
                 ]
-                if wg_ok and req_missing:
+                if wg_ok and len(req_missing) > 1:
                     allbtn = mk_btn(
                         _("Установить всё ({n})").format(n=len(req_missing)),
                         "Ghost",
@@ -2630,33 +3031,44 @@ def _launcher_factory(
                             "в PATH без повторной загрузки."
                         ),
                     )
-                    vf = mk_btn(
-                        _("Проверить"),
-                        "Ghost",
-                        lambda _=False, p=pkg: do_verify(p),
-                        _("Запустить инструмент и показать его версию."),
-                    )
-                    up = mk_btn(
-                        _("Обновить"),
-                        "Ghost",
-                        lambda _=False, p=pkg: start_winget([p], "upgrade"),
-                        _("winget upgrade --id {id}").format(id=pkg.winget_id),
-                    )
-                    un = mk_btn(
-                        _("Удалить"),
-                        "Danger",
-                        lambda _=False, p=pkg: start_winget([p], "uninstall"),
-                        _("winget uninstall --id {id}").format(id=pkg.winget_id),
-                    )
-                    for b in (ib, ap, vf, up, un):
+                    items = [
+                        (
+                            _("Проверить"),
+                            lambda p=pkg: do_verify(p),
+                            _("Запустить инструмент и показать его версию."),
+                        ),
+                    ]
+                    if key == "python":
+                        items.append(
+                            (
+                                _("Настроить VS Code"),
+                                lambda k=key: do_configure_vscode(k),
+                                _("Прописать путь к интерпретатору в settings.json VS Code."),
+                            )
+                        )
+                    if wg_ok:
+                        items += [
+                            (
+                                _("Обновить"),
+                                lambda p=pkg: start_winget([p], "upgrade"),
+                                _("winget upgrade --id {id}").format(id=pkg.winget_id),
+                            ),
+                            None,
+                            (
+                                _("Удалить"),
+                                lambda p=pkg: start_winget([p], "uninstall"),
+                                _("winget uninstall --id {id}").format(id=pkg.winget_id),
+                            ),
+                        ]
+                    more = menu_button(items, tip=_("Проверить, обновить или удалить"))
+                    action_btns.append(more)
+                    for b in (ib, ap, more):
                         prow.addWidget(b, 0, Qt.AlignmentFlag.AlignVCenter)
                     rows[pkg.winget_id] = {
                         "tag": tag,
                         "install": ib,
                         "addpath": ap,
-                        "verify": vf,
-                        "upgrade": up,
-                        "uninstall": un,
+                        "more": more,
                         "ver_combo": ver_combo,
                         "pkg": pkg,
                     }
@@ -2751,16 +3163,73 @@ def _launcher_factory(
                     _("Спросить winget, для каких тулчейнов доступно обновление, и отметить их."),
                 )
                 bar.addWidget(upd_btn)
-            close = QPushButton(_("Закрыть"))
-            close.setObjectName("Accent")
-            close.clicked.connect(dlg.accept)
-            bar.addWidget(close)
+            if not embedded:
+                close = QPushButton(_("Закрыть"))
+                close.setObjectName("Accent")
+                close.clicked.connect(dlg.accept)
+                bar.addWidget(close)
             lay.addLayout(bar)
 
+            def _scroll_to(key):
+                if key in card_of:
+                    scroll.ensureWidgetVisible(card_of[key])
+
             # Прокрутка к нужному тулчейну (из подсказки в главном окне).
+            if embedded:
+                self._tools_scroll_to = _scroll_to
+                if target:
+                    QTimer.singleShot(0, lambda: _scroll_to(target))
+                return
             if target and target in card_of:
-                QTimer.singleShot(0, lambda: scroll.ensureWidgetVisible(card_of[target]))
+                QTimer.singleShot(0, lambda: _scroll_to(target))
             dlg.exec()
+
+        def _cpp_toolchain_card(self, dlg):
+            """Карточка C/C++ в окне тулчейнов: коротко что стоит и кнопка в
+            C++-центр, где всё ставится одним списком по ролям."""
+            from shutil import which
+
+            card = QFrame()
+            card.setObjectName("CatCard")
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(12, 10, 12, 10)
+            cl.setSpacing(4)
+            head = QHBoxLayout()
+            nm = QLabel("C / C++")
+            nm.setObjectName("CatTitle")
+            head.addWidget(nm, 1)
+            go = QPushButton(_("Открыть C++-центр"))
+            go.setObjectName("Accent")
+            go.setCursor(Qt.CursorShape.PointingHandCursor)
+
+            def _go():
+                if isinstance(dlg, QDialog):
+                    dlg.accept()
+                self._open_cpp()
+
+            go.clicked.connect(_go)
+            head.addWidget(go, 0, Qt.AlignmentFlag.AlignVCenter)
+            cl.addLayout(head)
+            found = [n for n in ("g++", "clang++", "cmake", "ninja", "gdb", "clangd") if which(n)]
+            status = (
+                _("В PATH: {tools}.").format(tools=", ".join(found))
+                if found
+                else _("Компилятор C++ в PATH не найден.")
+            )
+            note = _wrap(
+                QLabel(
+                    _(
+                        "Компиляторы (MinGW, MSYS2, MSVC), CMake и Ninja, подсказки cpptools "
+                        "или clangd, отладчики, библиотеки и vcpkg ставятся в C++-центре одним "
+                        "списком: у каждого пункта написано, за что он отвечает."
+                    )
+                    + " "
+                    + status
+                )
+            )
+            note.setObjectName("CatNote")
+            cl.addWidget(note)
+            return card
 
         def _show_doctor_report(self, rep: dict):
             """#8: показать отчёт environment_report в читаемом виде."""
@@ -2822,70 +3291,25 @@ def _launcher_factory(
             box.setReadOnly(True)
             lay.addWidget(box, 1)
             b = QHBoxLayout()
-            # #5: резервные каталоги тулчейнов (path_hints) чистка не удаляет.
-            keep_hints = _tc.catalog_path_hints()
-
-            def _run_clean(machine: bool):
-                fn = _tc.env_path.clean_machine_path if machine else _tc.env_path.clean_user_path
-                scope = _("системный") if machine else _("ваш")
-                prev = fn(dry_run=True, keep=keep_hints)
-                if not prev["removed"]:
-                    QMessageBox.information(dlg, _("Чистка PATH"), prev["message"])
-                    return
-                listing = "\n".join(
-                    f"  − {d}" for d in (prev["removed_duplicates"] + prev["removed_missing"])[:30]
-                )
-                extra = (
-                    _("\n\nПотребуются права администратора (появится запрос UAC).")
-                    if machine and prev.get("needs_elevation")
-                    else ""
-                )
-                if (
-                    QMessageBox.question(
-                        dlg,
-                        _("Почистить {scope} PATH?").format(scope=scope),
-                        _(
-                            "Будут убраны записи (с бэкапом в файл):\n\n{listing}{extra}\n\n"
-                            "Продолжить?"
-                        ).format(listing=listing, extra=extra),
-                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                        QMessageBox.StandardButton.No,
-                    )
-                    != QMessageBox.StandardButton.Yes
-                ):
-                    return
-                res = fn(dry_run=False, keep=keep_hints)
-                (QMessageBox.information if res["applied"] else QMessageBox.warning)(
-                    dlg, _("Чистка PATH"), res["message"]
-                )
-                box.setPlainText(box.toPlainText() + "\n\n— " + res["message"])
 
             def do_fix_java():
                 ok, msg = _tc.repair_java_home()
                 (QMessageBox.information if ok else QMessageBox.warning)(dlg, _("JAVA_HOME"), msg)
                 box.setPlainText(box.toPlainText() + "\n\n— " + msg)
 
-            if u_dups or u_miss:
-                clean_btn = QPushButton(_("Почистить свой PATH"))
-                clean_btn.setObjectName("Ghost")
-                clean_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                clean_btn.setToolTip(
-                    _("Убрать дубли и мёртвые записи из пользовательского PATH (с бэкапом).")
-                )
-                clean_btn.clicked.connect(lambda: _run_clean(False))
-                b.addWidget(clean_btn)
-            if m_dups or m_miss:
-                mclean_btn = QPushButton(_("Почистить системный PATH"))
-                mclean_btn.setObjectName("Ghost")
-                mclean_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                mclean_btn.setToolTip(
-                    _(
-                        "Убрать дубли и мёртвые записи из системного PATH. "
-                        "Нужны права администратора — появится запрос UAC."
-                    )
-                )
-                mclean_btn.clicked.connect(lambda: _run_clean(True))
-                b.addWidget(mclean_btn)
+            if u_dups or u_miss or m_dups or m_miss:
+                # Одна кнопка вместо двух «почистить»: умная починка видит обе ветки
+                # PATH, конфликты и показывает, что изменится.
+                fix_btn = QPushButton(_("Починить PATH…"))
+                fix_btn.setObjectName("Ghost")
+                fix_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+
+                def _open_fix():
+                    dlg.accept()
+                    self._open_path_doctor()
+
+                fix_btn.clicked.connect(_open_fix)
+                b.addWidget(fix_btn)
             # JAVA_HOME сломан/не задан, но JDK на машине есть — можно прописать.
             if (not jh.get("ok")) and _tc.find_jdk_home():
                 java_btn = QPushButton(_("Исправить JAVA_HOME"))
@@ -3011,7 +3435,7 @@ def _launcher_factory(
                 rl.addWidget(badge, 0)
                 cat = ext_index.get(ext_id)
                 if cat:
-                    title = cats.get("categories", {}).get(cat, {}).get("title", cat)
+                    title = cat_title(cats.get("categories", {}).get(cat, {}), cat)
                     stack_lbl = QLabel(title)
                     stack_lbl.setObjectName("CatNote")
                     rl.addWidget(stack_lbl, 0)
@@ -3362,6 +3786,10 @@ def _launcher_factory(
             self.log.appendPlainText(_("Папка проекта: {folder}").format(folder=target))
             e.acceptProposedAction()
 
+        def _use_recent(self, path: str):
+            self.folder_edit.setText(path)
+            self._suggest_for_folder(path)
+
         def _pick_recent(self):
             path = self.recent_box.currentData() or ""
             self.folder_edit.setText(path)
@@ -3386,7 +3814,7 @@ def _launcher_factory(
 
             lines = []
             for cat, exts in groups:
-                title = cats.get("categories", {}).get(cat, {}).get("title", cat)
+                title = cat_title(cats.get("categories", {}).get(cat, {}), cat)
                 lines.append(f"— {title} ({len(exts)}) —")
                 lines.extend(f"    {e}" for e in exts)
                 lines.append("")
@@ -3437,10 +3865,10 @@ def _launcher_factory(
                 self.kill_cb.isChecked(),
                 **self._cmd_kwargs(),
             )
-            self.log.setPlainText(
-                _("Эквивалент для cmd (сам лаунчер запускает Code.exe напрямую, без оболочки):")
-                + "\n"
-                + cmd
+            self._text_dialog(
+                _("Команда запуска"),
+                _("Эквивалент для cmd (сам лаунчер запускает Code.exe напрямую, без оболочки):"),
+                cmd,
             )
 
         def _run(self):
@@ -3488,6 +3916,8 @@ def _launcher_factory(
                 )
                 if r != QMessageBox.StandardButton.Yes:
                     return
+            if not self._confirm_stack_conflicts(folder):
+                return
             bare = self._bare()
             # Один путь сборки запуска с CLI и треем (quicklaunch.plan_launch),
             # иначе три места считают выключаемое по чуть-чуть по-разному.
@@ -3535,6 +3965,48 @@ def _launcher_factory(
             else:
                 do_launch()
             self._persist()
+
+        def _confirm_stack_conflicts(self, folder: str) -> bool:
+            """cpptools и clangd вместе дают двойные подсказки и двойную память,
+            если в проекте IntelliSense cpptools не отключён. Спросить."""
+            if self._bare():
+                return True
+            from .categories import stack_conflicts
+
+            pairs = stack_conflicts(self._selected(), cats)
+            if not pairs:
+                return True
+            if {"cpp_cpptools", "cpp_clangd"} <= set(self._selected()) and folder:
+                try:
+                    from .detect import _loads_jsonc
+
+                    ws = Path(folder) / ".vscode" / "settings.json"
+                    data = _loads_jsonc(ws.read_text(encoding="utf-8-sig")) if ws.is_file() else {}
+                    if (
+                        isinstance(data, dict)
+                        and data.get("C_Cpp.intelliSenseEngine") == "disabled"
+                    ):
+                        return True  # в проекте cpptools уже без IntelliSense
+                except Exception:
+                    pass
+            names = "; ".join(
+                " + ".join(cat_title(cats["categories"].get(k, {}), k) for k in pair)
+                for pair in pairs
+            )
+            box = QMessageBox(self)
+            box.setWindowTitle(_("Стеки мешают друг другу"))
+            box.setText(
+                _(
+                    "Включены вместе: {pairs}.\n\nДва движка подсказок C++ дублируют "
+                    "подсказки и память. Оставьте один, или настройте проект (кнопка "
+                    "«C++…» → «Проект» с clangd) — там IntelliSense cpptools отключается "
+                    "только для этой папки."
+                ).format(pairs=names)
+            )
+            run = box.addButton(_("Запустить как есть"), QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(_("Отмена"), QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            return box.clickedButton() is run
 
         def _graceful_close_then(self, cont):
             """Мягко закрыть VS Code (с запросом на сохранение) и дождаться выхода,
@@ -3793,7 +4265,7 @@ def _launcher_factory(
             # Ctrl+F — фокус в поле поиска стеков (полезно, когда карточек много).
             # Опасный путь (закрыть VS Code) всё равно спрашивает подтверждение в _run.
             if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                if self.b_run.isEnabled():
+                if getattr(self, "_page", "launch") == "launch" and self.b_run.isEnabled():
                     self._run()
                 return
             if e.key() == Qt.Key.Key_Escape:
@@ -3955,7 +4427,7 @@ def run_gui():
     theme_name = cfg.get("theme", "dark")
     if theme_name not in PALETTES:
         theme_name = "dark"
-    app.setStyleSheet(build_qss(PALETTES[theme_name]))
+    app.setStyleSheet(build_qss(make_palette(theme_name, cfg.get("palette", "mocha"))))
 
     def build_window():
         win = Launcher()
