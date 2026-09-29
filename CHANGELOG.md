@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-09-29
+
 ### Добавлено
 - **Память по стекам.** «Замерить расширения» обходит дерево процессов VS Code
   и относит каждый процесс к расширению по пути в командной строке: видно,
@@ -43,6 +45,8 @@
   Runner) и ломал файл.
 - GUI-тесты перезаписывали настоящий `launcher_config.json` тестовым; теперь
   конфиг в тестах изолирован.
+- Уборка считала «удалёнными» проекты на отключённом диске (флешка, сетевой
+  диск) и предлагала выбросить их данные. Теперь такие проекты не трогаются.
 
 ## [1.4.0] — 2026-09-08
 
@@ -145,7 +149,8 @@
 - Ранняя публичная версия: переключение нагрузки расширений VS Code по стекам,
   пресеты, автоопределение стеков по папке проекта. Подробности — в истории git.
 
-[Unreleased]: https://github.com/moonlivedt-oss/VSCLwMoon/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/moonlivedt-oss/VSCLwMoon/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/moonlivedt-oss/VSCLwMoon/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/moonlivedt-oss/VSCLwMoon/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/moonlivedt-oss/VSCLwMoon/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/moonlivedt-oss/VSCLwMoon/compare/v1.1.0...v1.2.0

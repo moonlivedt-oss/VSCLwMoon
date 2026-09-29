@@ -87,7 +87,7 @@ def attribute_tree(
 
     def is_editor(pid: int) -> bool:
         p = by_pid.get(pid)
-        return bool(p) and p["name"].lower() == image
+        return p is not None and p["name"].lower() == image
 
     roots = [p["pid"] for p in procs if p["name"].lower() == image and not is_editor(p["ppid"])]
 

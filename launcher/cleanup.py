@@ -70,7 +70,9 @@ def uri_to_local_path(uri: str) -> Path | None:
 
 def stale_workspaces(storage: Path) -> list[Path]:
     """Папки workspaceStorage, чей проект (папка или .code-workspace) больше
-    не существует. Записи без workspace.json и удалённые проекты не трогаем."""
+    не существует. Записи без workspace.json и удалённые проекты не трогаем.
+    Проект на отключённом диске (флешка, сетевой диск, VeraCrypt) тоже не
+    трогаем: его папки нет сейчас, но она вернётся вместе с диском."""
     out: list[Path] = []
     try:
         entries = [d for d in storage.iterdir() if d.is_dir()]
@@ -86,7 +88,9 @@ def stale_workspaces(storage: Path) -> list[Path]:
         if not isinstance(uri, str):
             continue
         local = uri_to_local_path(uri)
-        if local is not None and not local.exists():
+        if local is None or not local.anchor or not Path(local.anchor).exists():
+            continue
+        if not local.exists():
             out.append(d)
     return out
 

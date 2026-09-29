@@ -2,6 +2,9 @@
 """v1.5: дерево процессов по стекам, уборка, раскладка стеков, eager-метка."""
 
 import json
+from pathlib import Path
+
+import pytest
 
 from launcher import categories, cleanup, proctree
 from launcher.detect import detect_stacks
@@ -190,3 +193,18 @@ def test_manifest_eager_flag(tmp_path):
     assert mk(["*"])["eager"] is True
     assert mk(["onLanguage:python"])["eager"] is False
     assert mk(["*"], main=False)["eager"] is False  # без кода — нечего активировать
+
+
+def test_stale_workspaces_skips_disconnected_drive(tmp_path):
+    """Проект на отключённом диске — не «удалённый»: диск вернётся."""
+    import string
+    free = next((c for c in reversed(string.ascii_uppercase)
+                 if not Path(f"{c}:\\").exists()), None)
+    if free is None:
+        pytest.skip("все буквы дисков заняты")
+    st = tmp_path / "ws"
+    d = st / "usb"
+    d.mkdir(parents=True)
+    uri = f"file:///{free.lower()}%3A/proj"
+    (d / "workspace.json").write_text(json.dumps({"folder": uri}), encoding="utf-8")
+    assert cleanup.stale_workspaces(st) == []

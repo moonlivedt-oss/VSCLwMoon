@@ -297,7 +297,9 @@ class CategoryCard(QFrame):
             self.setToolTip(_("Расширения этого стека не установлены — галочка "
                               "ни на что не влияет. Поставить их можно в "
                               "«Подробнее» → «Установить недостающие»."))
-        self.cnt.style().unpolish(self.cnt); self.cnt.style().polish(self.cnt)
+        style = self.cnt.style()
+        if style is not None:
+            style.unpolish(self.cnt); style.polish(self.cnt)
         self._refresh_accessible()
 
     def set_disk_mb(self, mb: int):

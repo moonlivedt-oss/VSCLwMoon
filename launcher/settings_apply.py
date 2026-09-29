@@ -137,7 +137,8 @@ def apply_settings(path: Path, to_add: dict) -> tuple[bool, str]:
         new_text = insert_keys_jsonc(raw, missing)
         check = _loads_jsonc(new_text) if new_text is not None else None
         if (
-            not isinstance(check, dict)
+            new_text is None
+            or not isinstance(check, dict)
             or any(k not in check for k in missing)
             or any(check.get(k) != v for k, v in existing.items())
         ):
