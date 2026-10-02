@@ -87,7 +87,37 @@ def load_categories() -> tuple[dict, str]:
         return empty, f"{CATEGORIES_FILE.name}: ожидается объект верхнего уровня."
     data.setdefault("always_on", {"extensions": []})
     data.setdefault("categories", {})
+    fixed = normalize_categories(data)
+    if fixed:
+        return data, f"{CATEGORIES_FILE.name}: исправлены записи — " + "; ".join(fixed[:4])
     return data, ""
+
+
+def normalize_categories(data: dict) -> list[str]:
+    """Привести карту к форме, на которую рассчитывает окно: у каждой категории —
+    словарь со списком строк `extensions`. Правит data на месте, возвращает, что
+    исправлено. Файл правят руками, и одна опечатка (строка вместо списка,
+    пропущенный ключ) раньше роняла окно при запуске."""
+    notes: list[str] = []
+    if not isinstance(data.get("always_on"), dict):
+        data["always_on"] = {"extensions": []}
+        notes.append("always_on — не объект")
+    if not isinstance(data.get("categories"), dict):
+        data["categories"] = {}
+        notes.append("categories — не объект")
+    for key, cat in [("always_on", data["always_on"]), *list(data["categories"].items())]:
+        if not isinstance(cat, dict):
+            del data["categories"][key]
+            notes.append(f"{key} — не объект, пропущен")
+            continue
+        exts = cat.get("extensions")
+        if not isinstance(exts, list):
+            cat["extensions"] = []
+            notes.append(f"{key}: extensions — не список")
+        elif not all(isinstance(e, str) for e in exts):
+            cat["extensions"] = [e for e in exts if isinstance(e, str)]
+            notes.append(f"{key}: в extensions не только строки")
+    return notes
 
 
 def cat_title(cat: dict, fallback: str = "") -> str:
@@ -229,6 +259,33 @@ def stack_conflicts(selected, cats: dict) -> list[tuple[str, str]]:
             if other in sel and other != key:
                 pairs.add(tuple(sorted((key, other))))
     return sorted(pairs)
+
+
+CPP_ENGINES: tuple[str, ...] = ("cpp_cpptools", "cpp_clangd")
+
+
+def cpp_engine_problem(selected, available, cpptools_off: bool = False) -> str:
+    """Останется ли C/C++ без подсказок кода при таком выборе стеков.
+
+    Стек C/C++ разбит на части, и «база» сама подсказок не даёт — их даёт один
+    из движков (cpptools или clangd). Легко включить только базу/CMake и
+    получить редактор без автодополнения и переходов по коду.
+
+    selected — выбранные стеки; available — движки, у которых расширение
+    установлено; cpptools_off — IntelliSense cpptools отключён настройкой
+    C_Cpp.intelliSenseEngine: disabled (так делает настройка под clangd).
+    Возвращает '' (всё в порядке), 'none' (ни одного движка) или 'cpptools_off'
+    (включён только cpptools, а его подсказки отключены настройкой)."""
+    sel = set(selected)
+    avail = set(available) & set(CPP_ENGINES)
+    if not avail or not any(k == "cpp" or k.startswith("cpp_") for k in sel):
+        return ""
+    engines = sel & avail
+    if not engines:
+        return "none"
+    if engines == {"cpp_cpptools"} and cpptools_off and "cpp_clangd" in avail:
+        return "cpptools_off"
+    return ""
 
 
 def categories_present(installed: list[str], ext_index: dict[str, str]) -> set[str]:

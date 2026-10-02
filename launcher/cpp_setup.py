@@ -32,6 +32,7 @@ EXT_CPPTOOLS = "ms-vscode.cpptools"
 EXT_CLANGD = "llvm-vs-code-extensions.vscode-clangd"
 EXT_CODELLDB = "vadimcn.vscode-lldb"
 EXT_CMAKE = "ms-vscode.cmake-tools"
+EXT_RUNNER = "franneck94.c-cpp-runner"
 
 
 @dataclass(frozen=True)
@@ -312,6 +313,13 @@ PRESETS: dict[str, dict] = {
         "title_en": "Learning and contests",
         "note": "MinGW, подсказки cpptools, отладка gdb. Минимум загрузки.",
         "note_en": "MinGW, cpptools hints, gdb debugging. Smallest download.",
+        "who": "Только начинаю: небольшие программы, задачи, лабораторные. "
+        "Один файл — написал, запустил.",
+        "who_en": "Just starting: small programs, exercises, homework. "
+        "One file — write it, run it.",
+        "gets": "компилятор GCC, отладчик, подсказки в редакторе",
+        "gets_en": "the GCC compiler, a debugger, code hints in the editor",
+        "recommended": True,
         "compiler": "mingw",
         "intellisense": "cpptools",
         "checked": {"configure", "path"},
@@ -321,6 +329,12 @@ PRESETS: dict[str, dict] = {
         "title_en": "CMake projects",
         "note": "MSYS2 с библиотеками, CMake, Ninja, cpptools.",
         "note_en": "MSYS2 with libraries, CMake, Ninja, cpptools.",
+        "who": "Проекты из многих файлов, игры и окна: нужны библиотеки вроде "
+        "SFML, SDL, Boost.",
+        "who_en": "Multi-file projects, games and windows: you need libraries "
+        "like SFML, SDL, Boost.",
+        "gets": "компилятор GCC с установщиком библиотек, сборка CMake, отладчик, подсказки",
+        "gets_en": "the GCC compiler with a library installer, CMake builds, a debugger, code hints",
         "compiler": "msys2",
         "intellisense": "cpptools",
         "checked": {"cmake", "ninja", "configure", "path"},
@@ -330,6 +344,12 @@ PRESETS: dict[str, dict] = {
         "title_en": "Light and modern",
         "note": "MSYS2, CMake, Ninja, clangd вместо cpptools, CodeLLDB, cppcheck, ccache.",
         "note_en": "MSYS2, CMake, Ninja, clangd instead of cpptools, CodeLLDB, cppcheck, ccache.",
+        "who": "Уже пишу на C++: хочу быстрые подсказки, поиск ошибок в коде и "
+        "редактор, который ест меньше памяти.",
+        "who_en": "Already writing C++: I want fast code hints, bug finding and "
+        "an editor that uses less memory.",
+        "gets": "всё из «Проектов на CMake», плюс лёгкие подсказки clangd и анализ кода",
+        "gets_en": "everything from \"CMake projects\", plus lightweight clangd hints and code analysis",
         "compiler": "msys2",
         "intellisense": "clangd",
         "checked": {"cmake", "ninja", "codelldb", "cppcheck", "ccache", "configure", "path"},
@@ -359,6 +379,18 @@ def scan_state(code_cli: str | None) -> dict:
             exts = {e.lower() for e in load_installed(code_cli)[0]}
         except Exception:
             exts = set()
+    intellisense_off = False
+    try:
+        from .detect import _loads_jsonc
+        from .vscode import vscode_user_settings_path
+
+        sp = vscode_user_settings_path(code_cli)
+        data = _loads_jsonc(sp.read_text(encoding="utf-8-sig")) if sp and sp.is_file() else {}
+        intellisense_off = (
+            isinstance(data, dict) and data.get("C_Cpp.intelliSenseEngine") == "disabled"
+        )
+    except Exception:
+        intellisense_off = False
     clangd = which("clangd")
     clangd_ver: tuple[int, ...] = ()
     if clangd:
@@ -379,7 +411,18 @@ def scan_state(code_cli: str | None) -> dict:
         "clangd_version": list(clangd_ver),
         "git": which("git") or "",
         "code_cli": code_cli or "",
+        "intellisense_off": intellisense_off,
     }
+
+
+def current_engine(state: dict) -> str:
+    """Каким движком подсказок VS Code пользуется сейчас: clangd, если он один
+    или если IntelliSense cpptools выключен в настройках пользователя."""
+    if _has_ext(state, EXT_CLANGD) and (
+        not _has_ext(state, EXT_CPPTOOLS) or state.get("intellisense_off")
+    ):
+        return "clangd"
+    return "cpptools"
 
 
 def primary_of(comps: list[dict]) -> dict | None:
@@ -468,11 +511,7 @@ def status(key: str, state: dict) -> tuple[bool, str]:
 def default_selection(state: dict) -> dict:
     """Разумный выбор по умолчанию: ничего лишнего поверх установленного."""
     comps = state.get("compilers", [])
-    installed_engine = (
-        "clangd"
-        if _has_ext(state, EXT_CLANGD) and not _has_ext(state, EXT_CPPTOOLS)
-        else "cpptools"
-    )
+    installed_engine = current_engine(state)
     checked = {
         k
         for k in ("cmake", "ninja", "codelldb", "cppcheck", "ccache", "doxygen", "vcpkg", "conan")
@@ -500,6 +539,9 @@ def apply_preset(sel: dict, preset_key: str, state: dict) -> dict:
     p = PRESETS[preset_key]
     out = dict(sel)
     comp = p["compiler"]  # уже установлен — план просто ничего не будет качать
+    if comp == "mingw" and not status("mingw", state)[0] and status("msys2", state)[0]:
+        # GCC из MSYS2 умеет всё то же: второй GCC в PATH только мешает.
+        comp = "msys2"
     out["compiler"] = comp
     out["intellisense"] = p["intellisense"]
     out["checked"] = set(p["checked"]) | {
@@ -695,6 +737,15 @@ def build_plan(sel: dict, state: dict) -> list[Step]:
                 extra={"compiler": comp, "keep_path": sel.get("keep_path", "")},
             )
         )
+    if steps and comp != "msvc":
+        steps.append(
+            Step(
+                "verify",
+                "Проверить, что компилятор работает из нового терминала",
+                "Check that the compiler works from a new terminal",
+                extra={"compiler": comp, "keep_path": sel.get("keep_path", "")},
+            )
+        )
     return steps
 
 
@@ -752,11 +803,108 @@ def _set_string_keys(path: Path, values: dict[str, str]) -> list[str]:
     return changed
 
 
+def _extend_list_keys(path: Path, values: dict[str, list[str]]) -> tuple[list[str], list[str]]:
+    """Привести уже существующие ключи-списки к нужным флагам: недостающий флаг
+    дописывается, флаг с тем же именем до «=», но другим значением заменяется
+    (--query-driver от прежнего компилятора не должен остаться). Остальные
+    элементы не трогаем. Правим только чистый JSON; в файле с комментариями
+    списки оставляем как есть. Возвращает (изменённые, пропущенные)."""
+    if not path.is_file():
+        return [], []
+    raw = path.read_text(encoding="utf-8-sig")
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        from .detect import _loads_jsonc
+
+        parsed = _loads_jsonc(raw)
+        data = parsed if isinstance(parsed, dict) else {}
+        return [], [
+            k
+            for k, items in values.items()
+            if isinstance(data.get(k), list) and _missing_flags(data[k], items)
+        ]
+    if not isinstance(data, dict):
+        return [], []
+    changed = []
+    for key, items in values.items():
+        cur = data.get(key)
+        if not isinstance(cur, list):
+            continue
+        add = _missing_flags(cur, items)
+        if add:
+            names = {a.split("=", 1)[0] for a in add}
+            data[key] = [x for x in cur if str(x).split("=", 1)[0] not in names] + add
+            changed.append(key)
+    if changed:
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return changed, []
+
+
+def _missing_flags(current: list, wanted: list[str]) -> list[str]:
+    have = {str(x) for x in current}
+    return [w for w in wanted if w not in have]
+
+
+def clangd_targets_msvc(clangd: str) -> bool:
+    """clangd из официального LLVM считает целью MSVC и без него не находит даже
+    <iostream>; clangd из MSYS2 нацелен на MinGW сам."""
+    out = cpp._out(cpp._run([clangd, "--version"], timeout=15)).lower()
+    if "platform:" in out:
+        return "msvc" in out.split("platform:", 1)[1].splitlines()[0]
+    return cpp.origin_of(clangd) == "LLVM"
+
+
+def clangd_settings(c: cpp.Compiler, clangd: str, msvc_target: bool) -> dict:
+    """Глобальные настройки, с которыми clangd понимает файл и без проекта:
+    системные заголовки он берёт у выбранного GCC."""
+    out: dict = {"clangd.path": clangd, "C_Cpp.intelliSenseEngine": "disabled"}
+    if c.kind == "msvc" or (c.kind == "clang" and "msvc" in c.target):
+        # Компилятор сам рассчитан на MSVC — цель MinGW только сломала бы подсказки.
+        return out
+    bin_dir = c.bin_dir.replace("\\", "/")
+    # compile_commands.json (CMake) называет компилятором g++ — разрешаем clangd
+    # спросить у него пути к заголовкам.
+    out["clangd.arguments"] = [f"--query-driver={bin_dir}/*"]
+    if msvc_target:
+        # Одиночный файл без проекта: у него нет команды сборки, поэтому цель
+        # задаём сами, иначе clangd ищет заголовки MSVC.
+        out["clangd.fallbackFlags"] = ["--target=x86_64-w64-mingw32"]
+    return out
+
+
+def runner_settings(c: cpp.Compiler) -> dict[str, str]:
+    """Пути для расширения C/C++ Runner: с ними сборка и отладка кнопками в
+    строке состояния работают в любой папке, без файлов проекта. Только для
+    GCC и Clang под MinGW — рядом с ними лежат парный C-компилятор и gdb."""
+    if c.kind == "msvc" or (c.kind == "clang" and "msvc" in c.target):
+        return {}
+    d = Path(c.bin_dir)
+    out = {"C_Cpp_Runner.cppCompilerPath": c.path.replace("\\", "/")}
+    for key, exe in (
+        ("C_Cpp_Runner.cCompilerPath", "gcc.exe" if c.kind == "gcc" else "clang.exe"),
+        ("C_Cpp_Runner.debuggerPath", "gdb.exe"),
+    ):
+        if (d / exe).is_file():
+            out[key] = str(d / exe).replace("\\", "/")
+    return out
+
+
+def _runner_installed(code_cli) -> bool:
+    try:
+        from .vscode import load_installed
+
+        return EXT_RUNNER in {e.lower() for e in load_installed(code_cli)[0]}
+    except Exception:
+        return False
+
+
 def configure_vscode(compiler: str, keep_path: str, engine: str, code_cli) -> tuple[bool, str]:
     """Прописать выбранный компилятор (и clangd) в пользовательский settings.json.
     Недостающие ключи добавляются, путь к компилятору обновляется, даже если был
-    задан: пользователь явно выбрал компилятор."""
-    from .settings_apply import apply_settings
+    задан: пользователь явно выбрал компилятор. Движок подсказок один: при clangd
+    IntelliSense cpptools выключается, при cpptools — включается обратно."""
+    from .settings_apply import apply_settings, backup_settings
     from .vscode import vscode_user_settings_path
 
     c = resolve_compiler(compiler, keep_path)
@@ -774,23 +922,49 @@ def configure_vscode(compiler: str, keep_path: str, engine: str, code_cli) -> tu
         "C_Cpp.default.cppStandard": "c++20",
         "C_Cpp.default.cStandard": "c17",
     }
+    lists: dict[str, list[str]] = {}
+    strings = {
+        k: values[k] for k in ("C_Cpp.default.compilerPath", "C_Cpp.default.intelliSenseMode")
+    }
+    if _runner_installed(code_cli):
+        runner = runner_settings(c)
+        values.update(runner)
+        strings.update(runner)
     if engine == "clangd":
         clangd = which("clangd")
         if clangd:
-            values["clangd.path"] = clangd
-    strings = {
-        k: v
-        for k, v in values.items()
-        if k in ("C_Cpp.default.compilerPath", "C_Cpp.default.intelliSenseMode", "clangd.path")
-    }
+            extra = clangd_settings(c, clangd, clangd_targets_msvc(clangd))
+            values.update(extra)
+            lists = {k: v for k, v in extra.items() if isinstance(v, list)}
+            strings.update({k: v for k, v in extra.items() if isinstance(v, str)})
+    else:
+        # Только замена: если ключа нет, cpptools и так работает по умолчанию.
+        strings["C_Cpp.intelliSenseEngine"] = "default"
     try:
+        before = path.read_text(encoding="utf-8-sig") if path.is_file() else None
+        saved = backup_settings(path)
         changed = _set_string_keys(path, strings)
+        extended, skipped = _extend_list_keys(path, lists)
     except OSError as e:
         return False, str(e)
-    ok, msg = apply_settings(path, values)
-    if changed:
-        msg = (msg + f"\nОбновлено: {', '.join(changed)}").strip()
+    ok, msg = apply_settings(path, values, backup=False)
+    if changed or extended:
+        msg = (msg + f"\nОбновлено: {', '.join(changed + extended)}").strip()
         ok = True
+    if saved is not None:
+        try:
+            if path.read_text(encoding="utf-8-sig") == before:
+                saved.unlink()  # ничего не поменялось — копия не нужна
+            else:
+                msg += f"\nБэкап: {saved.name}"
+        except OSError:
+            pass
+    if skipped:
+        msg += "\n" + cpp._t(
+            "В settings.json есть комментарии, поэтому списки не тронуты. Допишите "
+            "вручную: {what}",
+            "settings.json has comments, so lists were left alone. Add by hand: {what}",
+        ).format(what="; ".join(f"{k}: {', '.join(lists[k])}" for k in skipped))
     return ok, f"{c.kind} {c.version}: {c.path}\n{msg}"
 
 
@@ -802,6 +976,58 @@ def make_primary(compiler: str, keep_path: str) -> tuple[bool, str]:
     if not (plan["user_changed"] or plan["machine_changed"]):
         return True, "Уже первый в PATH."
     return cpp.apply_path_fix(plan)
+
+
+def verify_terminal(compiler: str, keep_path: str) -> tuple[bool, str]:
+    """Итог установки глазами нового терминала: выбранный компилятор виден в
+    постоянном PATH (если нет — прописываем), он там первый, и пробная программа
+    собирается и запускается с этим PATH."""
+    c = resolve_compiler(compiler, keep_path)
+    if c is None:
+        return False, cpp._t(
+            "Компилятор не найден после установки. Нажмите «К выбору» и повторите "
+            "установку; если не поможет — пришлите отчёт с вкладки «Проверка».",
+            "The compiler was not found after installing. Press 'Back to selection' "
+            "and install again; if that fails, send the report from the 'Check' tab.",
+        )
+    if c.kind == "msvc":  # cl.exe работает через vcvars, в PATH ему не место
+        return True, f"msvc {c.version}: {c.path}"
+    exe = Path(c.path).name
+    name = Path(c.path).stem
+    notes: list[str] = []
+    tp = cpp.terminal_path()
+    if not tp:  # реестра нет (не Windows) — проверяем как есть
+        ok, msg = cpp.terminal_smoke(c, "")
+        return ok, f"{c.kind} {c.version}: {c.path}\n{msg}"
+    seen = cpp.first_in_path(exe, tp)
+    if seen is None:
+        changed, msg = cpp.env_path.add_to_user_path(c.bin_dir)
+        tp = cpp.terminal_path()
+        seen = cpp.first_in_path(exe, tp)
+        if seen is None:
+            return False, cpp._t(
+                "Не удалось прописать {dir} в PATH ({why}). Добавьте этот каталог в "
+                "PATH вручную: Пуск → «Изменение переменных среды текущего пользователя».",
+                "Could not add {dir} to PATH ({why}). Add this folder to PATH by hand: "
+                "Start → 'Edit environment variables for your account'.",
+            ).format(dir=c.bin_dir, why=msg)
+        if changed:
+            notes.append(cpp._t("В PATH добавлен {dir}.", "Added {dir} to PATH.").format(dir=c.bin_dir))
+    if cpp._norm(seen) != cpp._norm(c.path):
+        return False, cpp._t(
+            "В новом терминале `{name}` запустится из {other}, а выбран {mine}. "
+            "Откройте вкладку «Проверка» и нажмите исправление у этой проблемы — "
+            "выбранный компилятор станет основным.",
+            "In a new terminal `{name}` will start from {other}, but {mine} was chosen. "
+            "Open the 'Check' tab and use the fix next to this problem to make the "
+            "chosen compiler the main one.",
+        ).format(name=name, other=str(Path(seen).parent), mine=c.bin_dir)
+    ok, msg = cpp.terminal_smoke(c, tp)
+    head = cpp._t(
+        "`{name}` {ver} виден из нового терминала: {path}",
+        "`{name}` {ver} is visible from a new terminal: {path}",
+    ).format(name=name, ver=c.version, path=c.path)
+    return ok, "\n".join([*notes, head, msg])
 
 
 def execute(step: Step, code_cli: str | None) -> tuple[bool, str]:
@@ -839,6 +1065,9 @@ def execute(step: Step, code_cli: str | None) -> tuple[bool, str]:
         if step.kind == "path":
             e = step.extra
             return make_primary(e["compiler"], e["keep_path"])
+        if step.kind == "verify":
+            e = step.extra
+            return verify_terminal(e["compiler"], e["keep_path"])
     except Exception as e:  # noqa: BLE001 — шаг не должен ронять весь план
         log.exception("Шаг C++ %s", step.title)
         return False, str(e)

@@ -4,6 +4,8 @@
 
 import sys
 
+from .paths import ASSETS_DIR
+
 # Catppuccin Mocha (тёмная) и Latte (светлая) — совпадают с семейством тем
 # Catppuccin в VS Code у пользователя.
 PALETTE_DARK = {
@@ -381,6 +383,12 @@ QPushButton#Accent:hover {{
         stop:0 {_mix(p["accent_hover"], "#ffffff", 0.18)}, stop:1 {p["accent_hover"]});
 }}
 QPushButton#Accent:pressed {{ background: {p["accent"]}; }}
+/* Без этого правила выключенная главная кнопка выглядела как рабочая: её
+   нажимали, и «ничего не происходило». */
+QPushButton#Accent:disabled {{
+    background: {p["surface"]}; color: {_rgba(p["subtext"], 0.55)};
+    border: 1px solid {p["border"]};
+}}
 QPushButton#Ghost {{ background: transparent; border: 1px solid {p["border"]}; color: {p["subtext"]}; }}
 QPushButton#Ghost:hover {{ color: {p["text"]}; border-color: {p["accent"]}; background: {_rgba(p["accent"], 0.10)}; }}
 QPushButton#Danger {{ background: transparent; border: 1px solid {_rgba(p["error"], 0.40)}; color: {p["error"]}; }}
@@ -393,6 +401,7 @@ QLineEdit, QPlainTextEdit {{
     selection-background-color: {p["accent"]}; selection-color: {p["accent_text"]};
 }}
 QLineEdit:focus, QPlainTextEdit:focus {{ border: 1px solid {p["accent"]}; }}
+QLineEdit[bad="true"] {{ border: 1px solid {p["error"]}; }}
 QPlainTextEdit#Log {{
     background: {p["surface2"]}; color: {p["subtext"]};
     font-family: "Consolas", monospace; font-size: 9pt; border-radius: 10px;
@@ -418,7 +427,12 @@ QCheckBox::indicator {{
     background: {p["input_bg"]}; border-radius: 6px;
 }}
 QCheckBox::indicator:hover {{ border-color: {p["accent"]}; }}
-QCheckBox::indicator:checked {{ background: {p["accent"]}; border-color: {p["accent"]}; }}
+QCheckBox::indicator:checked {{
+    background: {p["accent"]}; border-color: {p["accent"]}; image: url("{_check_icon(p)}");
+}}
+QCheckBox::indicator:checked:disabled {{
+    background: {_rgba(p["accent"], 0.45)}; border-color: transparent;
+}}
 
 QRadioButton {{ background: transparent; spacing: 9px; }}
 QRadioButton::indicator {{
@@ -471,6 +485,17 @@ QProgressBar#InstallBar::chunk {{
         stop:0 {p["accent"]}, stop:1 {p["accent_hover"]});
 }}
 """
+
+
+def _check_icon(p: dict) -> str:
+    """Картинка-галочка для отмеченного чекбокса: тёмная на светлом акценте и
+    наоборот. Раньше отмеченный чекбокс был просто залитым квадратом — «галочки»
+    в нём не было, и на части палитр он почти не отличался от пустого."""
+    c = p["accent_text"].lstrip("#")
+    r, g, b = (int(c[i : i + 2], 16) for i in (0, 2, 4))
+    dark_mark = (0.299 * r + 0.587 * g + 0.114 * b) < 140
+    name = "check-dark.png" if dark_mark else "check-light.png"
+    return str(ASSETS_DIR / "icons" / name).replace("\\", "/")
 
 
 def apply_titlebar(widget, dark: bool = True) -> None:

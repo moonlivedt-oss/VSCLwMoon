@@ -46,7 +46,7 @@ from .config import (
     set_folder_auto, is_folder_auto, folder_auto_stacks,
     quarantine_config, validate_config,
 )
-from .detect import detect_recommended_stacks, detect_stacks
+from .detect import detect_recommended_stacks, detect_stacks, project_required_extensions
 from .presets import (
     build_shortcut_cmd, normalize_preset, preset_has_options, preset_stacks,
 )

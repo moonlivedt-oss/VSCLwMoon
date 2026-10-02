@@ -15,6 +15,7 @@
 """
 import json
 import os
+import shutil
 import sys
 from logging import Logger
 from pathlib import Path
@@ -79,7 +80,17 @@ _SCHEMA: dict[str, tuple[type, object]] = {
     "ext_sizes": (dict, {}),
     "tray": (bool, True),
     "close_to_tray": (bool, False),
+    "hide_after_launch": (bool, False),
+    "auto_fix": (bool, True),
+    "last_page": (str, "launch"),
+    "compat_check": (str, "warn"),   # warn | auto | off — см. compat.py
+    "compat_ignored": (list, []),    # ключи предупреждений «больше не напоминать»
 }
+
+# Списки строк: один чужой тип внутри (число, null) ронял окно при запуске —
+# например, recent_folders[0] уходил в QLineEdit.setText.
+_STR_LISTS = ("recent_folders", "last_selected", "folder_auto", "compat_ignored")
+_CHOICES = {"compat_check": ("warn", "auto", "off"), "theme": ("dark", "light")}
 
 # Ключи, которые нужны всегда: их создаём, даже если в файле их не было.
 _REQUIRED = (
@@ -111,6 +122,15 @@ def validate_config(cfg: dict) -> list[str]:
             continue
         cfg[key] = type(default)(default) if isinstance(default, (dict, list)) else default
         fixed.append(key)
+    for key in _STR_LISTS:
+        value = cfg.get(key)
+        if isinstance(value, list) and not all(isinstance(x, str) for x in value):
+            cfg[key] = [x for x in value if isinstance(x, str)]
+            fixed.append(key)
+    for key, allowed in _CHOICES.items():
+        if key in cfg and cfg[key] not in allowed:
+            cfg[key] = _SCHEMA[key][1]
+            fixed.append(key)
     return fixed
 
 
@@ -224,6 +244,11 @@ def quarantine_config(path: "Path | None" = None) -> "Path | None":
         return None
 
 
+def backup_config_path() -> Path:
+    """Файл с предыдущей удачно записанной версией конфига."""
+    return CONFIG_FILE.with_name(CONFIG_FILE.name + ".bak")
+
+
 def load_config() -> dict:
     if CONFIG_FILE.exists():
         import logging
@@ -235,6 +260,13 @@ def load_config() -> dict:
             # и копию рядом: иначе «слетели настройки» не отличить от первого
             # запуска, а восстановить пресеты будет неоткуда.
             saved = quarantine_config()
+            try:  # прошлая удачная запись — лучше, чем настройки по умолчанию
+                raw = json.loads(backup_config_path().read_text(encoding="utf-8-sig"))
+                log.warning("Не прочитать %s (%s) — взята резервная копия .bak",
+                            CONFIG_FILE.name, e)
+                return migrate_config(raw)
+            except Exception:
+                pass
             log.warning("Не прочитать %s (%s) — дефолты%s", CONFIG_FILE.name, e,
                         f"; копия: {saved.name}" if saved else "")
             return migrate_config({})
@@ -397,6 +429,14 @@ def save_config(cfg: dict) -> None:
     try:
         CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(data, encoding="utf-8")
+        try:  # прошлая версия — в .bak: из неё load_config поднимется при порче файла
+            # Только читаемую: если сам конфиг испорчен (его и подняли из .bak),
+            # копия порченого затёрла бы единственную целую резервную.
+            if CONFIG_FILE.is_file():
+                json.loads(CONFIG_FILE.read_text(encoding="utf-8-sig"))
+                shutil.copyfile(CONFIG_FILE, backup_config_path())
+        except (OSError, ValueError):
+            pass
         os.replace(tmp, CONFIG_FILE)
     except Exception:
         try:

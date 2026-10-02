@@ -26,3 +26,5 @@ desktop.ini
 .DS_Store
 .idea/
 .vscode/
+
+scripts/vscl_diag_*.txt

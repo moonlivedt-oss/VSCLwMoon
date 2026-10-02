@@ -77,6 +77,7 @@ def _parse_manifest(pkg: Path) -> dict | None:
     acts = data.get("activationEvents")
     on_languages = []
     eager = False
+    star = False
     if isinstance(acts, list):
         for a in acts:
             if isinstance(a, str) and a.startswith("onLanguage:"):
@@ -85,9 +86,43 @@ def _parse_manifest(pkg: Path) -> dict | None:
             # в любом проекте, а не когда понадобится его язык или команда.
             elif a in ("*", "onStartupFinished"):
                 eager = True
+                star = star or a == "*"
+
+    # Для глубокой проверки совместимости (compat.py): что расширение
+    # регистрирует — команды, типы отладчиков, сочетания клавиш.
+    commands = [
+        c["command"] for c in contributes.get("commands") or []
+        if isinstance(c, dict) and isinstance(c.get("command"), str)
+    ] if isinstance(contributes.get("commands"), list) else []
+    debuggers = [
+        d["type"] for d in contributes.get("debuggers") or []
+        if isinstance(d, dict) and isinstance(d.get("type"), str)
+    ] if isinstance(contributes.get("debuggers"), list) else []
+    kb_raw = contributes.get("keybindings")
+    if isinstance(kb_raw, dict):
+        kb_raw = [kb_raw]
+    keybindings: list[list[str]] = []
+    for kb in kb_raw if isinstance(kb_raw, list) else []:
+        if not isinstance(kb, dict):
+            continue
+        key = kb.get("win") or kb.get("key")
+        cmd = kb.get("command")
+        if isinstance(key, str) and isinstance(cmd, str) and cmd and not cmd.startswith("-"):
+            raw_when = kb.get("when")
+            when = raw_when if isinstance(raw_when, str) else ""
+            keybindings.append([key, when, cmd])
+    props = data.get("enabledApiProposals")
+    proposals = [x for x in props if isinstance(x, str)] if isinstance(props, list) else []
 
     cats = data.get("categories")
     categories = [c for c in cats if isinstance(c, str)] if isinstance(cats, list) else []
+
+    # engines.vscode — с какой версии редактора расширение вообще запустится;
+    # __metadata.targetPlatform — под какую ОС скачана сборка (для compat.py).
+    engines = data.get("engines")
+    engine = engines.get("vscode") if isinstance(engines, dict) else ""
+    meta = data.get("__metadata")
+    target = meta.get("targetPlatform") if isinstance(meta, dict) else ""
 
     return {
         "id": ext_id,
@@ -97,6 +132,14 @@ def _parse_manifest(pkg: Path) -> dict | None:
         "languages": sorted(set(langs) | set(on_languages)),
         "display": str(data.get("displayName") or "").strip(),
         "eager": eager and bool(data.get("main") or data.get("browser")),
+        "engine": engine if isinstance(engine, str) else "",
+        "target_platform": target if isinstance(target, str) else "",
+        "version": str(data.get("version") or ""),
+        "star": star and bool(data.get("main") or data.get("browser")),
+        "commands": commands,
+        "debuggers": debuggers,
+        "keybindings": keybindings,
+        "proposals": proposals,
     }
 
 

@@ -76,6 +76,229 @@ def test_path_fix_moves_primary_to_machine_when_conflict_is_there(tmp_path, monk
     assert plan["moved_to_machine"] and plan["needs_elevation"]
 
 
+def test_path_fix_appends_primary_when_no_conflicts(tmp_path):
+    # Конкурентов нет — каталог тулчейна встаёт в конец и не перекрывает чужое.
+    a = _gcc_dir(tmp_path, "a")
+    other = str(tmp_path / "py")
+    plan = cpp.path_fix_plan(a, "demote", user_path=other, machine_path="")
+    assert plan["user_new"].split(os.pathsep) == [other, a]
+    assert not plan["was_on_path"]
+
+
+def _gcc(d, active=True):
+    return cpp.Compiler(
+        path=os.path.join(d, "g++.exe"), kind="gcc", version="15.2.0", active=active, on_path=True
+    )
+
+
+def test_terminal_issues_missing_and_differs(tmp_path):
+    a, b = _gcc_dir(tmp_path, "a"), _gcc_dir(tmp_path, "b")
+    empty = str(tmp_path / "empty")
+    os.makedirs(empty)
+    assert cpp.terminal_issues([_gcc(a)], a) == []
+    assert cpp.terminal_issues([_gcc(a)], "") == []  # реестра нет — проверки нет
+    missing = cpp.terminal_issues([_gcc(a)], empty)
+    assert len(missing) == 1 and missing[0]["fix"] == "path" and a in missing[0]["text"]
+    differs = cpp.terminal_issues([_gcc(a)], os.pathsep.join([b, a]))
+    assert len(differs) == 1 and b in differs[0]["text"]
+
+
+def test_verify_terminal_adds_missing_dir_and_reports_shadow(tmp_path, monkeypatch):
+    a, b = _gcc_dir(tmp_path, "a"), _gcc_dir(tmp_path, "b")
+    reg = {"path": ""}
+    monkeypatch.setattr(cs, "resolve_compiler", lambda comp, keep: _gcc(a))
+    monkeypatch.setattr(cpp, "terminal_path", lambda: reg["path"] or str(tmp_path))
+    monkeypatch.setattr(cpp, "terminal_smoke", lambda c, tp=None: (True, "built"))
+
+    def fake_add(d):
+        reg["path"] = d
+        return True, "added"
+
+    monkeypatch.setattr(cpp.env_path, "add_to_user_path", fake_add)
+    ok, msg = cs.verify_terminal("mingw", "")
+    assert ok and reg["path"] == a and "built" in msg
+
+    reg["path"] = os.pathsep.join([b, a])
+    ok, msg = cs.verify_terminal("mingw", "")
+    assert not ok and b in msg
+
+
+def test_winget_codes_are_matched_unsigned():
+    from launcher import toolchains as tc
+
+    # Windows отдаёт HRESULT беззнаковым: «обновлять нечего» — это успех.
+    assert tc.signed_code(2316632107) == -1978335189
+    assert tc.signed_code(2316632107) in tc._WINGET_OK_CODES
+    assert tc.signed_code(0) == 0 and tc.signed_code(1223) == 1223
+    assert "актуальная" in tc.explain_winget_code(2316632107)
+
+
+def test_llvm_clang_without_stdlib_is_not_an_error(monkeypatch, tmp_path):
+    a = _gcc_dir(tmp_path, "a")
+    clang = cpp.Compiler(
+        path=r"C:\Program Files\LLVM\bin\clang++.exe",
+        kind="clang",
+        version="23.1.2",
+        target="x86_64-pc-windows-msvc",
+        origin="LLVM",
+    )
+    fail = {
+        "compiler": clang.to_dict(),
+        "steps": [{"name": "compile", "ok": False, "detail": "'algorithm' file not found"}],
+        "ok": False,
+        "flags": [],
+    }
+    monkeypatch.setattr(cpp, "find_compilers", lambda scan_disk=True: [_gcc(a), clang])
+    monkeypatch.setattr(cpp, "smoke_all", lambda comps: [fail])
+    monkeypatch.setattr(cpp, "terminal_path", lambda: "")
+    monkeypatch.setenv("PATH", a)
+    rep = cpp.cpp_report()
+    assert not any(i["level"] == "error" for i in rep["issues"])
+    assert [i["level"] for i in rep["issues"] if i.get("key") == "clang_stdlib"] == ["info"]
+
+
+def _configure(tmp_path, monkeypatch, engine, initial):
+    import json
+
+    from launcher import vscode
+
+    a = _gcc_dir(tmp_path, "a")
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps(initial), encoding="utf-8")
+    monkeypatch.setattr(cs, "resolve_compiler", lambda comp, keep: _gcc(a))
+    monkeypatch.setattr(vscode, "vscode_user_settings_path", lambda cli: settings)
+    monkeypatch.setattr(cs, "which", lambda name: r"C:\LLVM\bin\clangd.exe")
+    monkeypatch.setattr(cs, "clangd_targets_msvc", lambda p: True)
+    monkeypatch.setattr(cs, "_runner_installed", lambda cli: True)
+    ok, _msg = cs.configure_vscode("msys2", "", engine, None)
+    assert ok
+    return a, json.loads(settings.read_text(encoding="utf-8"))
+
+
+def test_configure_clangd_finds_mingw_headers(tmp_path, monkeypatch):
+    a, data = _configure(
+        tmp_path,
+        monkeypatch,
+        "clangd",
+        {"C_Cpp.intelliSenseEngine": "default", "clangd.arguments": ["--clang-tidy"]},
+    )
+    assert data["C_Cpp.intelliSenseEngine"] == "disabled"
+    assert data["clangd.fallbackFlags"] == ["--target=x86_64-w64-mingw32"]
+    assert data["clangd.arguments"][0] == "--clang-tidy"
+    assert data["clangd.arguments"][1].startswith("--query-driver=")
+    assert data["clangd.arguments"][1].endswith("/a/*")
+
+
+def test_configure_cpptools_turns_intellisense_back_on(tmp_path, monkeypatch):
+    _a, data = _configure(
+        tmp_path, monkeypatch, "cpptools", {"C_Cpp.intelliSenseEngine": "disabled"}
+    )
+    assert data["C_Cpp.intelliSenseEngine"] == "default"
+    assert "clangd.fallbackFlags" not in data
+
+
+def test_engine_follows_disabled_intellisense():
+    both = [cs.EXT_CPPTOOLS, cs.EXT_CLANGD]
+    assert cs.current_engine(_state(exts=both)) == "cpptools"
+    st = _state(exts=both, intellisense_off=True)
+    assert cs.current_engine(st) == "clangd"
+    assert cs.default_selection(st)["intellisense"] == "clangd"
+
+
+def test_configure_replaces_stale_query_driver_and_keeps_backup(tmp_path, monkeypatch):
+    a, data = _configure(
+        tmp_path,
+        monkeypatch,
+        "clangd",
+        {"clangd.arguments": ["--query-driver=C:/old/bin/*", "--clang-tidy"]},
+    )
+    drivers = [x for x in data["clangd.arguments"] if x.startswith("--query-driver")]
+    assert len(drivers) == 1 and drivers[0].endswith("/a/*")
+    assert "--clang-tidy" in data["clangd.arguments"]
+    backups = list(tmp_path.glob("settings.backup-*.json"))
+    assert len(backups) == 1 and "C:/old/bin" in backups[0].read_text(encoding="utf-8")
+    # Повторный запуск ничего не меняет и лишних копий не плодит.
+    ok, _msg = cs.configure_vscode("msys2", "", "clangd", None)
+    assert ok and len(list(tmp_path.glob("settings.backup-*.json"))) == 1
+
+
+def test_clangd_settings_leave_msvc_clang_alone():
+    clang = cpp.Compiler(path=r"C:\LLVM\bin\clang++.exe", kind="clang", target="x86_64-pc-windows-msvc")
+    out = cs.clangd_settings(clang, r"C:\LLVM\bin\clangd.exe", True)
+    assert "clangd.fallbackFlags" not in out and "clangd.arguments" not in out
+
+
+def test_study_preset_reuses_msys2_gcc():
+    comp = {
+        "path": r"D:\msys64\ucrt64\bin\g++.exe",
+        "kind": "gcc",
+        "version": "15.2.0",
+        "origin": "MSYS2 UCRT64",
+        "active": True,
+        "on_path": True,
+    }
+    st = _state(
+        compilers=[comp],
+        msys2={"root": "D:/msys64", "bin": "D:/msys64/ucrt64/bin", "has_gcc": True, "on_path": True},
+    )
+    sel = cs.apply_preset(cs.default_selection(st), "study", st)
+    assert sel["compiler"] == "msys2"
+    assert not any(s.kind == "winget" for s in cs.build_plan(sel, st))
+
+
+def test_verify_terminal_skips_msvc(monkeypatch):
+    cl = cpp.Compiler(path=r"C:\VS\bin\cl.exe", kind="msvc", version="19.40")
+    monkeypatch.setattr(cs, "resolve_compiler", lambda comp, keep: cl)
+    monkeypatch.setattr(
+        cpp.env_path, "add_to_user_path", lambda d: (_ for _ in ()).throw(AssertionError(d))
+    )
+    assert cs.verify_terminal("keep", "")[0]
+
+
+def test_configure_points_runner_at_the_compiler(tmp_path, monkeypatch):
+    a, data = _configure(
+        tmp_path, monkeypatch, "cpptools", {"C_Cpp_Runner.cppCompilerPath": "C:/old/g++.exe"}
+    )
+    assert data["C_Cpp_Runner.cppCompilerPath"] == os.path.join(a, "g++.exe").replace("\\", "/")
+    # gdb.exe рядом нет — путь к отладчику не выдумываем.
+    assert "C_Cpp_Runner.debuggerPath" not in data
+
+
+def test_llvm_lldb_failure_does_not_claim_build_failed(monkeypatch, tmp_path):
+    a = _gcc_dir(tmp_path, "a")
+    clang = cpp.Compiler(
+        path=r"C:\LLVM\bin\clang++.exe", kind="clang", target="x86_64-pc-windows-msvc"
+    )
+    res = {
+        "compiler": clang.to_dict(),
+        "steps": [
+            {"name": "compile", "ok": True, "detail": ""},
+            {"name": "link", "ok": True, "detail": ""},
+            {"name": "run", "ok": True, "detail": ""},
+            {"name": "debug", "ok": False, "detail": "lldb: No module named 'encodings'"},
+        ],
+        "ok": False,
+        "flags": ["--target=x86_64-w64-mingw32"],
+    }
+    monkeypatch.setattr(cpp, "find_compilers", lambda scan_disk=True: [_gcc(a), clang])
+    monkeypatch.setattr(cpp, "smoke_all", lambda comps: [res])
+    monkeypatch.setattr(cpp, "terminal_path", lambda: "")
+    monkeypatch.setenv("PATH", a)
+    issues = [i for i in cpp.cpp_report()["issues"] if i.get("key") == "clang_stdlib"]
+    assert len(issues) == 1 and issues[0]["level"] == "info"
+    assert "encodings" in issues[0]["text"] and "CodeLLDB" in issues[0]["text"]
+    assert "тоже не прошла" not in issues[0]["text"]
+
+
+def test_plan_ends_with_verify_except_msvc():
+    st = _state()
+    steps = cs.build_plan(cs.default_selection(st), st)
+    assert steps[-1].kind == "verify"
+    sel = cs.default_selection(st)
+    sel["compiler"] = "msvc"
+    assert not any(s.kind == "verify" for s in cs.build_plan(sel, st))
+
+
 def test_analyze_flags_foreign_libstdcxx(tmp_path, monkeypatch):
     a, b = _gcc_dir(tmp_path, "a"), _gcc_dir(tmp_path, "b")
     monkeypatch.setenv("PATH", os.pathsep.join([b, a]))
@@ -131,6 +354,10 @@ def _opts(**kw):
 def test_debugger_auto_pairs():
     assert _opts().resolved_debugger() == "gdb"
     assert _opts(engine="clangd").resolved_debugger() == "lldb"
+    # cpptools установлен — GCC отлаживаем gdb, даже когда подсказки даёт clangd.
+    assert _opts(engine="clangd", has_cpptools=True).resolved_debugger() == "gdb"
+    single = cp.launch_json(_opts(engine="clangd", has_cpptools=True))["configurations"][0]
+    assert single["type"] == "cppdbg" and single["cwd"] == "${fileDirname}"
     assert _opts(compiler_kind="msvc").resolved_debugger() == "cppvsdbg"
 
 
@@ -328,7 +555,7 @@ def test_installed_things_are_not_planned():
     assert sel["compiler"] == "msys2"
     sel["checked"] |= {"cmake", "ninja"}
     steps = cs.build_plan(sel, st)
-    assert [s.kind for s in steps] == ["configure"]
+    assert [s.kind for s in steps] == ["configure", "verify"]
     assert cs.plan_summary(steps)["only_setup"]
 
 
@@ -386,9 +613,16 @@ def test_cpp_center_dialog_builds(monkeypatch):
     dlg = gui_cpp.CppCenter(None, None)
     dlg._on_state(st)  # без фонового потока
     try:
+        # Чистая машина: в простом режиме сразу выбран набор для новичков.
+        assert dlg._preset_key == "study"
         assert dlg.install_btn.isEnabled()
         dlg._use_preset("pro")
+        assert dlg.install_btn.isEnabled()
         assert dlg._sel["intellisense"] == "clangd"
+        assert dlg._preset_cards["pro"].property("on") == "true"
+        dlg._set_mode("detail")
+        dlg._toggle("doxygen", True)
+        assert dlg._preset_key == ""
         dlg.tabs.setCurrentIndex(2)
         dlg.tabs.setCurrentIndex(1)
     finally:

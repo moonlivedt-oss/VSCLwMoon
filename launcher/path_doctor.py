@@ -526,13 +526,39 @@ def analyze(
     if len(gxx) > 1:
         primary = by_norm.get(norm(gxx[0]))
         others = [o for o in (by_norm.get(norm(d)) for d in gxx[1:]) if o is not None]
-        ops = [Op("move_end", o.scope, o.index) for o in others]
+        other_keys = {(o.scope, o.index) for o in others}
+
+        def at_tail(o: Entry) -> bool:
+            """Уже в конце своей ветки: после него только другие «остальные»."""
+            return all(
+                (e.scope, e.index) in other_keys or (e.scope, e.index) in dead
+                for e in entries
+                if e.scope == o.scope and e.index > o.index
+            )
+
+        ops = [Op("move_end", o.scope, o.index) for o in others if not at_tail(o)]
         if (
             primary is not None
             and primary.scope == "user"
             and any(o.scope == "machine" for o in others)
         ):
             ops = [Op("to_machine_front", "user", primary.index)]
+        if not ops:
+            # Порядок уже правильный. Раньше здесь всё равно предлагалась «починка»,
+            # которая ничего не меняла: галочка стояла, кнопка была выключена.
+            add(
+                "gcc_mix",
+                "info",
+                _t("Несколько тулчейнов GCC — порядок правильный",
+                   "Several GCC toolchains — the order is fine"),
+                _t(
+                    "Основной — {p}, он стоит раньше остальных ({o}), поэтому программы "
+                    "берут его библиотеки. Делать ничего не нужно.",
+                    "Main one: {p}. It comes before the others ({o}), so programs load its "
+                    "libraries. Nothing to do.",
+                ).format(p=gxx[0], o="; ".join(gxx[1:])),
+                [],
+            )
         if ops:
             add(
                 "gcc_mix",

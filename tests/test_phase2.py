@@ -135,19 +135,47 @@ def test_parse_release_info_picks_exe_and_sha():
         "tag_name": "v2.0.0",
         "assets": [
             {"name": "VSCodeLauncher.exe",
-             "browser_download_url": "https://x/exe"},
+             "browser_download_url": "https://github.com/o/r/releases/download/v2/exe"},
             {"name": "VSCodeLauncher.exe.sha256",
-             "browser_download_url": "https://x/sha"},
-            {"name": "notes.txt", "browser_download_url": "https://x/txt"},
+             "browser_download_url": "https://github.com/o/r/releases/download/v2/sha"},
+            {"name": "notes.txt", "browser_download_url": "https://github.com/x/txt"},
+            # чужой хост и http — не берём, даже если это .exe
+            {"name": "evil.exe", "browser_download_url": "https://evil.example/exe"},
+            {"name": "plain.exe", "browser_download_url": "http://github.com/exe"},
         ],
     }
     info = updates.parse_release_info(data)
-    assert info == {"tag": "v2.0.0", "exe_url": "https://x/exe",
-                    "sha256_url": "https://x/sha"}
+    assert info == {"tag": "v2.0.0",
+                    "exe_url": "https://github.com/o/r/releases/download/v2/exe",
+                    "sha256_url": "https://github.com/o/r/releases/download/v2/sha"}
 
 
 def test_parse_release_info_none_without_exe():
     assert updates.parse_release_info({"tag_name": "v1", "assets": []}) is None
+
+
+def test_trusted_url_and_safe_tag():
+    assert updates.trusted_url("https://objects.githubusercontent.com/a")
+    assert not updates.trusted_url("https://github.com.evil.io/a")
+    assert not updates.trusted_url("http://github.com/a")
+    assert updates.safe_tag('v1.2"&..\\%x') == "v1.2..x"
+    assert updates.safe_tag("") == "update"
+
+
+def test_download_without_sha_is_refused(tmp_path, monkeypatch):
+    called = []
+    monkeypatch.setattr(updates, "download_file", lambda *a, **k: called.append(a))
+    ok, msg = updates.download_and_verify({"exe_url": "https://github.com/x"}, tmp_path / "n.exe")
+    assert ok is False and not called
+
+
+def test_swap_bat_escapes_percent_and_rejects_quotes():
+    bat = updates.build_update_swap_bat(r"C:\100%\VSCodeLauncher.exe", r"C:\100%\n.exe",
+                                        "VSCodeLauncher.exe")
+    assert r"C:\100%%\n.exe" in bat and "GEQ 120" in bat
+    import pytest
+    with pytest.raises(ValueError):
+        updates.build_update_swap_bat('C:\\a"b.exe', r"C:\n.exe", "a.exe")
 
 
 def test_parse_sha256_text_variants():

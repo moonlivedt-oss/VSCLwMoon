@@ -1,0 +1,139 @@
+{
+  "$comment": "Расширения, которые мешают друг другу или устарели. conflicts: группа, внутри которой одновременно должно работать одно; keep — кого оставить при автопочинке (нет keep — выбирает человек). deprecated: устаревшее расширение и чем его заменили; replaced_by — если замена установлена и включена, устаревшее можно выключать автоматически.",
+  "conflicts": [
+    {
+      "ids": [
+        "vscodevim.vim",
+        "asvetliakov.vscode-neovim"
+      ],
+      "reason": "Оба перехватывают клавиатуру под Vim — клавиши срабатывают дважды или не срабатывают вовсе.",
+      "reason_en": "Both take over the keyboard for Vim — keys fire twice or not at all."
+    },
+    {
+      "ids": [
+        "ms-python.vscode-pylance",
+        "ms-pyright.pyright",
+        "detachhead.basedpyright"
+      ],
+      "reason": "Несколько языковых серверов Python сразу: подсказки и ошибки дублируются, память — тоже.",
+      "reason_en": "Several Python language servers at once: completions and errors are duplicated, and so is memory."
+    },
+    {
+      "ids": [
+        "ms-vscode.powershell",
+        "ms-vscode.powershell-preview"
+      ],
+      "keep": "ms-vscode.powershell",
+      "reason": "Стабильная и preview-версия PowerShell не работают вместе — разработчик требует оставить одну.",
+      "reason_en": "The stable and preview PowerShell extensions do not work together — the vendor requires keeping one."
+    },
+    {
+      "ids": [
+        "golang.go",
+        "golang.go-nightly"
+      ],
+      "keep": "golang.go",
+      "reason": "Стабильная и nightly-версия Go не работают вместе — разработчик требует оставить одну.",
+      "reason_en": "The stable and nightly Go extensions do not work together — the vendor requires keeping one."
+    },
+    {
+      "ids": [
+        "ms-dotnettools.csharp",
+        "muhammad-sammy.csharp"
+      ],
+      "reason": "Два расширения C# с одним языковым сервером OmniSharp/Roslyn — запускаются оба и спорят.",
+      "reason_en": "Two C# extensions with the same OmniSharp/Roslyn server — both start and fight."
+    },
+    {
+      "ids": [
+        "redhat.java",
+        "georgewfraser.vscode-javac"
+      ],
+      "reason": "Два языковых сервера Java: два процесса JVM и двойные подсказки.",
+      "reason_en": "Two Java language servers: two JVM processes and duplicated completions."
+    },
+    {
+      "ids": [
+        "bmewburn.vscode-intelephense-client",
+        "felixfbecker.php-intellisense",
+        "devsense.phptools-vscode"
+      ],
+      "reason": "Несколько языковых серверов PHP сразу — подсказки и ошибки дублируются.",
+      "reason_en": "Several PHP language servers at once — completions and errors are duplicated."
+    },
+    {
+      "ids": [
+        "sumneko.lua",
+        "trixnz.vscode-lua",
+        "keyring.lua"
+      ],
+      "reason": "Несколько языковых серверов Lua сразу — подсказки и ошибки дублируются.",
+      "reason_en": "Several Lua language servers at once — completions and errors are duplicated."
+    },
+    {
+      "ids": [
+        "svelte.svelte-vscode",
+        "jamesbirtles.svelte-vscode"
+      ],
+      "keep": "svelte.svelte-vscode",
+      "reason": "Старое и новое расширение Svelte обслуживают одни файлы.",
+      "reason_en": "The old and new Svelte extensions serve the same files."
+    }
+  ],
+  "deprecated": [
+    {
+      "id": "coenraads.bracket-pair-colorizer",
+      "replaced_by": "",
+      "reason": "Раскраска скобок встроена в VS Code (editor.bracketPairColorization) — расширение только замедляет редактор.",
+      "reason_en": "Bracket colouring is built into VS Code (editor.bracketPairColorization) — the extension only slows the editor down."
+    },
+    {
+      "id": "coenraads.bracket-pair-colorizer-2",
+      "replaced_by": "",
+      "reason": "Раскраска скобок встроена в VS Code (editor.bracketPairColorization) — расширение только замедляет редактор.",
+      "reason_en": "Bracket colouring is built into VS Code (editor.bracketPairColorization) — the extension only slows the editor down."
+    },
+    {
+      "id": "msjsdiag.debugger-for-chrome",
+      "replaced_by": "",
+      "reason": "Устарело: отладка Chrome встроена в VS Code (JavaScript Debugger).",
+      "reason_en": "Deprecated: Chrome debugging is built into VS Code (JavaScript Debugger)."
+    },
+    {
+      "id": "msjsdiag.debugger-for-edge",
+      "replaced_by": "",
+      "reason": "Устарело: отладка Edge встроена в VS Code (JavaScript Debugger).",
+      "reason_en": "Deprecated: Edge debugging is built into VS Code (JavaScript Debugger)."
+    },
+    {
+      "id": "eg2.tslint",
+      "replaced_by": "dbaeumer.vscode-eslint",
+      "reason": "TSLint закрыт, его заменил ESLint.",
+      "reason_en": "TSLint is discontinued and replaced by ESLint."
+    },
+    {
+      "id": "ms-vscode.vscode-typescript-tslint-plugin",
+      "replaced_by": "dbaeumer.vscode-eslint",
+      "reason": "TSLint закрыт, его заменил ESLint.",
+      "reason_en": "TSLint is discontinued and replaced by ESLint."
+    },
+    {
+      "id": "rust-lang.rust",
+      "replaced_by": "rust-lang.rust-analyzer",
+      "reason": "Устарело: официальная поддержка Rust теперь в rust-analyzer.",
+      "reason_en": "Deprecated: official Rust support is now rust-analyzer."
+    },
+    {
+      "id": "octref.vetur",
+      "replaced_by": "vue.volar",
+      "reason": "Для Vue 3 официальное расширение — Vue (Official), Vetur больше не развивается.",
+      "reason_en": "For Vue 3 the official extension is Vue (Official); Vetur is no longer developed."
+    },
+    {
+      "id": "auchenberg.vscode-browser-preview",
+      "replaced_by": "",
+      "reason": "Устарело и больше не поддерживается автором.",
+      "reason_en": "Deprecated and no longer maintained by its author."
+    }
+  ]
+}

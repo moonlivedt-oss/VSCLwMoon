@@ -19,6 +19,23 @@ from pathlib import Path
 
 
 def add_arguments(p) -> None:
+    d = p.add_argument_group("Диагностика")
+    d.add_argument(
+        "--cpp-check", metavar="ПАПКА", default="",
+        help="проверить настройки C/C++-проекта (.vscode): что не заработает на этой машине",
+    )
+    d.add_argument(
+        "--cpp-fix", metavar="ПАПКА", default="",
+        help="то же и починить: пересоздать сборку и отладку (старые файлы — в .bak)",
+    )
+    d.add_argument(
+        "--support-report", action="store_true",
+        help="собрать отчёт для поддержки в текстовый файл",
+    )
+    d.add_argument(
+        "--purge-plan", action="store_true",
+        help="показать, что удалит «Удалить полностью» у установленных пакетов (ничего не удаляет)",
+    )
     g = p.add_argument_group("C++")
     g.add_argument(
         "--cpp-doctor",
@@ -99,8 +116,93 @@ def add_arguments(p) -> None:
     )
 
 
+def _installed_exts() -> list[str]:
+    from .config import load_config
+    from .vscode import load_installed, resolve_code_cli
+
+    try:
+        return load_installed(resolve_code_cli(load_config()))[0]
+    except Exception:
+        return []
+
+
+def _check(folder: str, fix: bool) -> int:
+    """Проверить (и по --cpp-fix починить) настройки проекта в папке."""
+    from . import cpp_project as cp
+
+    if not Path(folder).is_dir():
+        print(f"Папка не найдена: {folder}")
+        return 2
+    exts = _installed_exts()
+    problems = cp.project_problems(folder, exts or None)
+    if not problems:
+        print("Проблем в настройках проекта не найдено.")
+        return 0
+    for p in problems:
+        mark = "чинится" if p["key"] in cp.FIXABLE else "вручную"
+        print(f"[{mark}] {p['text']}")
+    if not fix:
+        print("Исправить автоматически: --cpp-fix ПАПКА")
+        return 1
+    o = cp.auto_options(folder, exts)
+    if o is None:
+        print("Ошибка: компилятор C++ не найден.")
+        return 2
+    for line in cp.fix_project(folder, o):
+        print(" ", line)
+    left = cp.project_problems(folder, exts or None)
+    print("Готово." if not left else f"Осталось проблем: {len(left)} (нужна установка расширений).")
+    return 0 if not left else 1
+
+
+def _support_report() -> int:
+    from . import support
+    from .config import load_config
+    from .vscode import resolve_code_cli
+
+    cfg = load_config()
+    path = support.save_report(
+        support.build_report(resolve_code_cli(cfg), cfg, cfg.get("last_selected", []))
+    )
+    print(f"Отчёт сохранён: {path}")
+    return 0
+
+
+def _purge_plan() -> int:
+    """Что удалит «Удалить полностью» у каждого установленного пакета. Только
+    показывает — ничего не удаляет."""
+    from . import toolchains as tc
+
+    shown = 0
+    for key in tc.toolchain_keys():
+        chain = tc.get_toolchain(key)
+        for pkg in chain.packages if chain else ():
+            if not tc.package_installed(pkg):
+                continue
+            plan = tc.purge_plan(pkg)
+            shown += 1
+            print(f"{key}: {pkg.title}")
+            print("  winget:", ", ".join(plan["ids"]) or "не числится")
+            for d in plan["dirs"]:
+                print("  папка:", d)
+            for e in plan["user_path"] + plan["machine_path"]:
+                print("  PATH:", e)
+            if not plan["ids"] and not plan["dirs"]:
+                print("  лаунчер ничего не тронет (ставили не через winget)")
+            elif plan["needs_admin"]:
+                print("  могут понадобиться права администратора")
+    print(f"Пакетов: {shown}. Ничего не удалено — это только план.")
+    return 0
+
+
 def dispatch(args) -> int | None:
     """Выполнить C++-команду, если она задана. None — это не C++-команда."""
+    if args.cpp_check or args.cpp_fix:
+        return _check(args.cpp_fix or args.cpp_check, fix=bool(args.cpp_fix))
+    if args.support_report:
+        return _support_report()
+    if args.purge_plan:
+        return _purge_plan()
     if args.cpp_doctor:
         return _doctor(args.json, smoke=not args.no_smoke)
     if args.cpp_fix_path:

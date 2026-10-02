@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from shutil import which
@@ -32,6 +32,7 @@ TEMPLATES = ("single", "olympiad", "cmake", "cmake_vcpkg")
 
 BUILD_TASK = "C++: собрать текущий файл"
 RUN_TASK = "C++: собрать -O2 и запустить на input.txt"
+RUN_PLAIN_TASK = "C++: собрать и запустить"
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
@@ -57,6 +58,7 @@ class ProjectOptions:
     compiler_kind: str = "gcc"  # gcc | clang | msvc
     vcvars: str = ""  # MSVC: vcvars64.bat
     engine: str = "cpptools"
+    has_cpptools: bool = False  # расширение стоит, даже если подсказки даёт clangd
     debugger: str = "auto"
     std: str = "c++20"
     build: str = "single"
@@ -65,16 +67,31 @@ class ProjectOptions:
     vcpkg: bool = False
     lint_files: bool = True  # .clang-format и .clang-tidy
     name: str = "app"
+    # В пути к проекту есть не-ASCII символы (C:\Users\Дмитрий\…). Выставляет
+    # plan_files по папке.
+    non_ascii_path: bool = False
+    # Отлаживать во внешнем окне консоли: под gdb ввод (cin) в панели VS Code не
+    # работает, программа «зависает» на чтении.
+    external_console: bool = False
 
     def resolved_debugger(self) -> str:
         if self.debugger != "auto":
             return self.debugger
         if self.compiler_kind == "msvc":
             return "cppvsdbg"
-        if self.compiler_kind == "clang" or self.engine == "clangd":
-            # cppdbg живёт в cpptools; в режиме clangd его может не быть —
-            # CodeLLDB самодостаточен и читает DWARF от GCC тоже.
+        if self.compiler_kind == "clang":
             return "lldb"
+        if self.non_ascii_path:
+            # gdb под cppdbg получает путь к программе в UTF-8, а читает его в
+            # кодировке Windows: на русских буквах в пути отвечает «No such file or
+            # directory», и F5 не работает вовсе. CodeLLDB пути в Юникоде открывает.
+            return "lldb"
+        if self.engine == "clangd" and not self.has_cpptools:
+            # cppdbg живёт в cpptools; если расширения нет, берём CodeLLDB — он
+            # самодостаточен и читает DWARF от GCC тоже.
+            return "lldb"
+        # GCC отлаживаем родным gdb: cpptools установлен, а выключенный
+        # IntelliSense отладчику не мешает.
         return "gdb"
 
 
@@ -108,6 +125,27 @@ def _flags(o: ProjectOptions, optimize: bool = False) -> list[str]:
     return f
 
 
+def tool_path_env(o: ProjectOptions) -> str:
+    """PATH для сборки и запуска: каталог выбранного компилятора впереди.
+
+    g++ из MSYS2, вызванный по полному пути, не находит DLL своего же cc1plus
+    (libgmp, libisl…), если каталог bin не в PATH, и молча завершается с кодом 1.
+    А собранная программа при запуске берёт первую libstdc++-6.dll из PATH —
+    чужую, если там раньше стоит другой GCC, — и падает с 0xC0000139. С этим
+    PATH проект работает одинаково при любом порядке каталогов в системе.
+    Для MSVC окружение поднимает vcvars, PATH не трогаем."""
+    if not o.compiler_path or o.compiler_kind == "msvc":
+        return ""
+    return str(Path(o.compiler_path).parent) + ";${env:PATH}"
+
+
+def _with_env(options: dict, o: ProjectOptions) -> dict:
+    path = tool_path_env(o)
+    if path:
+        options["env"] = {"PATH": path}
+    return options
+
+
 def _msvc_std(std: str) -> str:
     return "/std:c++latest" if std == "c++23" else f"/std:{std}"
 
@@ -115,8 +153,20 @@ def _msvc_std(std: str) -> str:
 # --- содержимое файлов -------------------------------------------------------
 
 
+def _matcher(base: str) -> dict:
+    """Разбор ошибок gcc с путями относительно `base`."""
+    m = json.loads(json.dumps(GCC_MATCHER))
+    m["fileLocation"] = ["autoDetect", base]
+    return m
+
+
 def tasks_json(o: ProjectOptions) -> dict:
     exe = "${fileDirname}\\${fileBasenameNoExtension}.exe"
+    # Компилятору и программе пути передаются ОТНОСИТЕЛЬНО папки файла (cwd).
+    # Новые сборки MSYS2 (ld) не принимают аргументы с русскими буквами: при
+    # проекте в C:\Users\Дмитрий\… сборка падала с «cannot open output file
+    # C:\Users\: Illegal byte sequence». Имя файла при этом должно быть латиницей.
+    rel_exe = "${fileBasenameNoExtension}.exe"
     tasks: list[dict] = []
     if o.build == "cmake":
         tasks += [
@@ -124,12 +174,14 @@ def tasks_json(o: ProjectOptions) -> dict:
                 "label": "CMake: configure (debug)",
                 "type": "shell",
                 "command": "cmake --preset debug",
+                "options": _with_env({}, o),
                 "problemMatcher": [],
             },
             {
                 "label": "CMake: build (debug)",
                 "type": "shell",
                 "command": "cmake --build --preset debug",
+                "options": _with_env({}, o),
                 "group": {"kind": "build", "isDefault": True},
                 "problemMatcher": "$msCompile" if o.compiler_kind == "msvc" else GCC_MATCHER,
             },
@@ -159,10 +211,10 @@ def tasks_json(o: ProjectOptions) -> dict:
             "label": BUILD_TASK,
             "type": "process",
             "command": o.compiler_path or ("clang++" if o.compiler_kind == "clang" else "g++"),
-            "args": [*_flags(o), "${file}", "-o", exe],
-            "options": {"cwd": "${fileDirname}"},
+            "args": [*_flags(o), "${fileBasename}", "-o", rel_exe],
+            "options": _with_env({"cwd": "${fileDirname}"}, o),
             "group": {"kind": "build", "isDefault": True},
-            "problemMatcher": GCC_MATCHER,
+            "problemMatcher": _matcher("${fileDirname}"),
         }
     )
     if o.olympiad:
@@ -173,17 +225,41 @@ def tasks_json(o: ProjectOptions) -> dict:
                 "label": RUN_TASK,
                 "type": "shell",
                 "command": (
-                    f'call "{comp}" {flags} "${{file}}" -o "{exe}" && '
-                    f'"{exe}" < "${{workspaceFolder}}\\input.txt"'
+                    f'call "{comp}" {flags} "${{fileBasename}}" -o "{rel_exe}" && '
+                    f'".\\{rel_exe}" < "${{workspaceFolder}}\\input.txt"'
                 ),
-                "options": {
+                "options": _with_env(
+                    {
+                        "cwd": "${fileDirname}",
+                        "shell": {"executable": "cmd.exe", "args": ["/d", "/c"]},
+                    },
+                    o,
+                ),
+                "group": "test",
+                "problemMatcher": _matcher("${fileDirname}"),
+            }
+        )
+    # Запуск без отладчика: собрать и выполнить в терминале. Работает, даже когда
+    # отладка не настроена или отладчик не справился с путём.
+    tasks.append(
+        {
+            "label": RUN_PLAIN_TASK,
+            "type": "shell",
+            "command": f'call ".\\{rel_exe}"',
+            "dependsOn": BUILD_TASK,
+            "options": _with_env(
+                {
                     "cwd": "${fileDirname}",
                     "shell": {"executable": "cmd.exe", "args": ["/d", "/c"]},
                 },
-                "group": "test",
-                "problemMatcher": GCC_MATCHER,
-            }
-        )
+                o,
+            ),
+            "group": "test",
+            # Терминал получает фокус: программа сразу готова читать ввод.
+            "presentation": {"reveal": "always", "focus": True, "clear": True, "panel": "shared"},
+            "problemMatcher": [],
+        }
+    )
     return {"version": "2.0.0", "tasks": tasks}
 
 
@@ -192,9 +268,12 @@ def launch_json(o: ProjectOptions) -> dict:
     if o.build == "cmake":
         program = "${command:cmake.launchTargetPath}"
         pre = None
+        cwd = "${workspaceFolder}"
     else:
         program = "${fileDirname}\\${fileBasenameNoExtension}.exe"
         pre = BUILD_TASK
+        # Одиночный файл запускается из своей папки: рядом лежат input.txt и т.п.
+        cwd = "${fileDirname}"
     cfg: dict
     if dbg == "gdb":
         cfg = {
@@ -203,8 +282,8 @@ def launch_json(o: ProjectOptions) -> dict:
             "request": "launch",
             "program": program,
             "args": [],
-            "cwd": "${workspaceFolder}",
-            "externalConsole": False,
+            "cwd": cwd,
+            "externalConsole": bool(o.external_console),
             "MIMode": "gdb",
             "miDebuggerPath": _fwd(sibling(o.compiler_path, "gdb")) or "gdb",
             "setupCommands": [
@@ -222,7 +301,7 @@ def launch_json(o: ProjectOptions) -> dict:
             "request": "launch",
             "program": program,
             "args": [],
-            "cwd": "${workspaceFolder}",
+            "cwd": cwd,
         }
     else:
         cfg = {
@@ -231,9 +310,14 @@ def launch_json(o: ProjectOptions) -> dict:
             "request": "launch",
             "program": program,
             "args": [],
-            "cwd": "${workspaceFolder}",
+            "cwd": cwd,
             "console": "integratedTerminal",
         }
+    path = tool_path_env(o)
+    if path and dbg == "gdb":
+        cfg["environment"] = [{"name": "PATH", "value": path}]
+    elif path and dbg == "lldb":
+        cfg["env"] = {"PATH": path}
     if pre:
         cfg["preLaunchTask"] = pre
     return {"version": "0.2.0", "configurations": [cfg]}
@@ -283,6 +367,10 @@ def clangd_config(o: ProjectOptions) -> str:
 def workspace_settings(o: ProjectOptions) -> dict:
     """Ключи .vscode/settings.json: выбор движка подсказок для этого проекта."""
     s: dict = {"files.associations": {"*.ipp": "cpp", "*.tpp": "cpp"}}
+    path_env = tool_path_env(o)
+    if path_env:
+        # Встроенный терминал проекта: `g++` — тот же компилятор, что в задачах.
+        s["terminal.integrated.env.windows"] = {"PATH": path_env}
     if o.engine == "clangd":
         clangd = which("clangd") or sibling(o.compiler_path, "clangd")
         args = [
@@ -315,6 +403,10 @@ def workspace_settings(o: ProjectOptions) -> dict:
                 "C_Cpp.intelliSense.maxMemory": 2048,
             }
         )
+    # Сборка не удалась — показать ошибки, а не запускать под отладчиком старый exe.
+    s["debug.onTaskErrors"] = "showErrors"
+    # Code Runner: запуск в терминале, иначе программа не может читать ввод.
+    s["code-runner.runInTerminal"] = True
     if o.build == "cmake":
         s["cmake.configureOnOpen"] = True
         s["cmake.useCMakePresets"] = "always"
@@ -447,6 +539,14 @@ CLANG_TIDY = """Checks: >
   modernize-*,
   readability-*,
   -modernize-use-trailing-return-type,
+  -performance-avoid-endl,
+  -modernize-use-nodiscard,
+  -modernize-use-std-print,
+  -bugprone-easily-swappable-parameters,
+  -readability-braces-around-statements,
+  -readability-isolate-declaration,
+  -readability-function-cognitive-complexity,
+  -readability-else-after-return,
   -readability-magic-numbers,
   -readability-identifier-length
 WarningsAsErrors: ''
@@ -509,16 +609,26 @@ int main() {
 # --- план и запись ------------------------------------------------------------
 
 
+def has_non_ascii(folder: str) -> bool:
+    """Есть ли в полном пути к папке символы вне ASCII (русские буквы и т.п.)."""
+    try:
+        return not str(Path(folder).resolve()).isascii()
+    except OSError:
+        return not str(folder).isascii()
+
+
 def _dump(obj) -> str:
     return json.dumps(obj, ensure_ascii=False, indent=4) + "\n"
 
 
-def plan_files(folder: str, o: ProjectOptions) -> list[dict]:
+def plan_files(folder: str, o: ProjectOptions, starter: bool = False) -> list[dict]:
     """Что будет записано: [{'path', 'content', 'exists', 'merge'}].
 
     merge=True — это .vscode/settings.json: в него дописываются только
     недостающие ключи (settings_apply), content здесь — словарь."""
     root = Path(folder)
+    if has_non_ascii(folder):
+        o = replace(o, non_ascii_path=True)
     files: list[tuple[str, object]] = [
         (".vscode/tasks.json", _dump(tasks_json(o))),
         (".vscode/launch.json", _dump(launch_json(o))),
@@ -535,6 +645,18 @@ def plan_files(folder: str, o: ProjectOptions) -> list[dict]:
     if o.lint_files:
         files.append((".clang-format", CLANG_FORMAT))
         files.append((".clang-tidy", CLANG_TIDY))
+    files.append((".gitignore", GITIGNORE))
+    if starter:
+        # В папке нет исходников: кладём пример, чтобы сборку и отладку было на чём
+        # проверить сразу. Существующие файлы не трогаются (exists).
+        if o.build == "cmake":
+            safe = re.sub(r"[^A-Za-z0-9_]+", "_", root.name).strip("_") or "app"
+            files.insert(0, ("CMakeLists.txt", cmakelists(replace(o, name=safe))))
+            files.insert(1, ("src/main.cpp", MAIN_FMT if o.vcpkg else MAIN_SIMPLE))
+        else:
+            files.insert(0, ("main.cpp", MAIN_OLYMPIAD if o.olympiad else MAIN_SIMPLE))
+            if o.olympiad:
+                files.insert(1, ("input.txt", "3\n1 2 3\n"))
     out = [
         {"path": rel, "content": content, "exists": (root / rel).exists(), "merge": False}
         for rel, content in files
@@ -600,6 +722,201 @@ def apply_plan(
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_text(item["content"], encoding="utf-8")
     return report
+
+
+# --- здоровье проекта: что в .vscode уже не соответствует машине -----------------
+# Настройки проекта ломаются не в момент создания, а позже: компилятор удалили
+# или переставили, проект скопировали с другого компьютера, папку перенесли в
+# «C:\Users\Дмитрий». Снаружи это выглядит как «F5 не работает». Здесь такие
+# случаи находятся по самим файлам, а fix_project пересоздаёт сборку и отладку
+# под текущий компилятор (старые файлы уходят в .bak).
+
+
+def _read_json(path: Path):
+    from .detect import _loads_jsonc
+
+    try:
+        return _loads_jsonc(path.read_text(encoding="utf-8-sig")) if path.is_file() else None
+    except OSError:
+        return None
+
+
+def _exe_missing(value) -> bool:
+    """Путь к программе задан явно (с каталогом), а файла нет. Имя без каталога
+    («gdb») ищется в PATH."""
+    if not isinstance(value, str) or not value.strip() or "${" in value:
+        return False
+    v = value.strip().strip('"')
+    if "\\" in v or "/" in v or ":" in v:
+        return not Path(v).is_file()
+    return which(v) is None
+
+
+# Проблемы, которые чинит fix_project (остальным нужна установка расширения).
+FIXABLE = frozenset(
+    {"gdb_unicode", "missing_debugger", "missing_task", "missing_compiler", "no_path_env", "abs_args"}
+)
+ABS_PATH_RUNNERS = {"danielpinto8zz6.c-cpp-compile-run": "C/C++ Compile Run"}
+_DEBUG_EXT = {
+    "cppdbg": ("ms-vscode.cpptools", "C/C++ (cpptools)"),
+    "cppvsdbg": ("ms-vscode.cpptools", "C/C++ (cpptools)"),
+    "lldb": ("vadimcn.vscode-lldb", "CodeLLDB"),
+}
+
+
+def project_problems(folder: str, exts=None) -> list[dict]:
+    """Что в настройках проекта не заработает на этой машине: [{'key', 'text'}].
+    Пустой список — всё в порядке или проект ещё не настроен. exts — установленные
+    расширения VS Code: с ними проверяется и наличие расширения отладчика."""
+    from .cpp import _t
+
+    root = Path(folder)
+    vs = root / ".vscode"
+    out: dict[str, str] = {}
+    try:
+        if not vs.is_dir():
+            return []
+    except OSError:
+        return []
+    launch = _read_json(vs / "launch.json")
+    tasks = _read_json(vs / "tasks.json")
+    props = _read_json(vs / "c_cpp_properties.json")
+    tlist = tasks.get("tasks") if isinstance(tasks, dict) else None
+    tlist = [t for t in tlist if isinstance(t, dict)] if isinstance(tlist, list) else []
+    labels = {t.get("label") for t in tlist}
+    confs = launch.get("configurations") if isinstance(launch, dict) else None
+    for c in confs if isinstance(confs, list) else ():
+        if not isinstance(c, dict):
+            continue
+        if c.get("type") == "cppdbg":
+            if has_non_ascii(folder) and str(c.get("MIMode", "gdb")).lower() == "gdb":
+                out["gdb_unicode"] = _t(
+                    "Отладка настроена через gdb, а в пути к папке есть русские буквы: "
+                    "gdb такой путь не открывает, F5 ответит «No such file or directory».",
+                    "Debugging uses gdb, but the folder path has non-English letters: gdb "
+                    "cannot open such a path, F5 answers 'No such file or directory'.",
+                )
+            if _exe_missing(c.get("miDebuggerPath")):
+                out["missing_debugger"] = _t(
+                    "Отладчик из launch.json не найден: {p}.",
+                    "The debugger from launch.json was not found: {p}.",
+                ).format(p=c.get("miDebuggerPath"))
+        need = _DEBUG_EXT.get(str(c.get("type") or "").lower())
+        if exts is not None and need and need[0] not in {str(e).lower() for e in exts}:
+            out["no_debug_ext"] = _t(
+                "Отладка настроена на расширение {n}, а оно не установлено — F5 не "
+                "сработает. Поставьте его на странице «C / C++» → «Установка».",
+                "Debugging is set up for the {n} extension, which is not installed — F5 "
+                "will not work. Install it on 'C / C++' → 'Install'.",
+            ).format(n=need[1])
+        pre = c.get("preLaunchTask")
+        if isinstance(pre, str) and pre and "${" not in pre and pre not in labels:
+            out["missing_task"] = _t(
+                "launch.json перед запуском зовёт задачу «{t}», а в tasks.json её нет.",
+                "launch.json runs the task '{t}' before launch, but tasks.json has no such task.",
+            ).format(t=pre)
+    # Расширения, которые сами собирают файл и передают g++ ПОЛНЫЙ путь: в папке
+    # с русскими буквами новые MSYS2 на нём падают, как бы ни были настроены задачи.
+    ext_set = {str(e).lower() for e in (exts or ())}
+    if has_non_ascii(folder):
+        for ext_id, title in ABS_PATH_RUNNERS.items():
+            if ext_id in ext_set:
+                out["abs_runner"] = _t(
+                    "Расширение «{n}» собирает файл само и передаёт g++ полный путь с "
+                    "русскими буквами — сборка падает («Illegal byte sequence»). При запуске "
+                    "VS Code из лаунчера оно выключается для этой папки автоматически. "
+                    "Собирайте Ctrl+Shift+B, отлаживайте F5.",
+                    "The '{n}' extension builds the file itself and passes g++ the full path "
+                    "with non-English letters — the build fails ('Illegal byte sequence'). "
+                    "When VS Code is started from the launcher it is turned off for this "
+                    "folder automatically. Build with Ctrl+Shift+B, debug with F5.",
+                ).format(n=title)
+    for t in tlist:
+        args = t.get("args")
+        if (
+            t.get("type") == "process"
+            and isinstance(args, list)
+            and "${file}" in args
+            and has_non_ascii(folder)
+        ):
+            out["abs_args"] = _t(
+                "Задача сборки передаёт компилятору полный путь к файлу, а в нём русские "
+                "буквы: новые сборки MSYS2 на нём падают («cannot open output file … "
+                "Illegal byte sequence»).",
+                "The build task passes the full file path to the compiler, and it has "
+                "non-English letters: recent MSYS2 builds fail on it ('cannot open output "
+                "file … Illegal byte sequence').",
+            )
+        cmd = t.get("command")
+        if t.get("type") == "process" and _exe_missing(cmd):
+            out["missing_compiler"] = _t(
+                "Компилятор из tasks.json не найден: {p}.",
+                "The compiler from tasks.json was not found: {p}.",
+            ).format(p=cmd)
+        elif (
+            t.get("label") == BUILD_TASK
+            and t.get("type") == "process"
+            and isinstance(cmd, str)
+            and ("\\" in cmd or "/" in cmd)
+            and not (t.get("options") or {}).get("env")
+        ):
+            out["no_path_env"] = _t(
+                "Задача сборки не добавляет каталог компилятора в PATH: g++ из MSYS2 "
+                "может молча завершиться с ошибкой, а программа — не найти свои DLL.",
+                "The build task does not add the compiler folder to PATH: g++ from MSYS2 "
+                "may fail silently and the program may not find its DLLs.",
+            )
+    pconfs = props.get("configurations") if isinstance(props, dict) else None
+    for c in pconfs if isinstance(pconfs, list) else ():
+        if isinstance(c, dict) and _exe_missing(c.get("compilerPath")):
+            out["missing_compiler"] = _t(
+                "Компилятор из c_cpp_properties.json не найден: {p}.",
+                "The compiler from c_cpp_properties.json was not found: {p}.",
+            ).format(p=c.get("compilerPath"))
+    return [{"key": k, "text": v} for k, v in out.items()]
+
+
+def auto_options(folder: str, exts=()) -> ProjectOptions | None:
+    """Настройки проекта без вопросов: активный компилятор, движок подсказок и
+    система сборки — по тому, что уже лежит в папке. None — компилятора нет."""
+    from . import cpp
+    from .detect import cpp_project_hints
+
+    comps = cpp.find_compilers()
+    comp = cpp.active_compiler(comps)
+    if comp is None:
+        return None
+    root = Path(folder)
+    settings = _read_json(root / ".vscode" / "settings.json")
+    clangd = (root / ".clangd").is_file() or (
+        isinstance(settings, dict) and settings.get("C_Cpp.intelliSenseEngine") == "disabled"
+    )
+    o = options_from_compiler(comp, engine="clangd" if clangd else "cpptools")
+    o.has_cpptools = "ms-vscode.cpptools" in {str(e).lower() for e in exts}
+    hints = cpp_project_hints(folder)
+    o.build = "cmake" if hints.get("build") == "cmake" else "single"
+    o.vcpkg = bool(hints.get("vcpkg"))
+    o.name = root.name or "app"
+    old = ""
+    try:
+        old = (root / ".vscode" / "tasks.json").read_text(encoding="utf-8-sig")
+    except OSError:
+        pass
+    m = re.search(r"-std=(c\+\+\d\d)", old)
+    if m and m.group(1) in STANDARDS:
+        o.std = m.group(1)  # стандарт, который человек уже выбрал
+    o.olympiad = RUN_TASK in old
+    return o
+
+
+FIX_FILES = (".vscode/tasks.json", ".vscode/launch.json", ".vscode/c_cpp_properties.json")
+
+
+def fix_project(folder: str, o: ProjectOptions) -> list[str]:
+    """Пересоздать сборку и отладку под текущий компилятор. Прежние файлы
+    сохраняются рядом как .bak-<время>. Возвращает отчёт."""
+    plan = [i for i in plan_files(folder, o) if i["path"] in FIX_FILES]
+    return apply_plan(folder, plan, overwrite={i["path"] for i in plan})
 
 
 def valid_project_name(name: str) -> bool:
@@ -680,6 +997,11 @@ FILE_WHAT = {
     ".clang-format": "стиль форматирования кода",
     ".clang-tidy": "набор проверок clang-tidy",
     ".vscode/settings.json": "движок подсказок и настройки проекта",
+    ".gitignore": "чтобы git не подхватывал exe и папку сборки",
+    "main.cpp": "пример программы: папка пустая, а запускать что-то надо",
+    "src/main.cpp": "пример программы для CMake-проекта",
+    "input.txt": "входные данные для олимпиадной задачи",
+    "CMakeLists.txt": "описание сборки CMake",
 }
 FILE_WHAT_EN = {
     ".vscode/tasks.json": "build the current file or CMake target (Ctrl+Shift+B)",
@@ -692,6 +1014,11 @@ FILE_WHAT_EN = {
     ".clang-format": "code formatting style",
     ".clang-tidy": "clang-tidy check set",
     ".vscode/settings.json": "code-intelligence engine and project settings",
+    ".gitignore": "keeps exe files and the build folder out of git",
+    "main.cpp": "a sample program: the folder is empty and you need something to run",
+    "src/main.cpp": "a sample program for the CMake project",
+    "input.txt": "input data for the contest task",
+    "CMakeLists.txt": "CMake build description",
 }
 
 TEMPLATE_INFO = (

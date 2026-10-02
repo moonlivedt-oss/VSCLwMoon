@@ -90,13 +90,14 @@ def test_filter_cards_runs(app):
         w.deleteLater()
 
 
-def test_folder_auto_applies_stacks_on_build(app):
+def test_folder_auto_applies_stacks_on_build(app, tmp_path):
     # #5-wiring: папка помечена авто + для неё запомнен набор → при сборке окна
     # стеки включаются сами, без строки-подсказки.
     cfg = migrate_config({})
-    cfg["recent_folders"] = [r"D:\Proj"]        # подставится в поле папки при _restore
-    remember_folder_stacks(cfg, r"D:\Proj", ["python", "web"])
-    set_folder_auto(cfg, r"D:\Proj", True)
+    proj = str(tmp_path)                         # удалённые папки из недавних убираются
+    cfg["recent_folders"] = [proj]               # подставится в поле папки при _restore
+    remember_folder_stacks(cfg, proj, ["python", "web"])
+    set_folder_auto(cfg, proj, True)
     w = make_window(app, cfg)
     try:
         assert not w.suggest_bar.isVisible()     # при старте — молча, без бара

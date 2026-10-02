@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import QMenu, QSystemTrayIcon
 from .i18n import _
 from .paths import ICON_FILE
 from .presets import normalize_preset
-from .quicklaunch import launch_preset
+from .quicklaunch import launch_last, launch_preset
 
 
 class LauncherTray(QSystemTrayIcon):
@@ -50,6 +50,9 @@ class LauncherTray(QSystemTrayIcon):
         show = menu.addAction(_("Показать окно"))
         show.triggered.connect(self.show_window)
         self._actions.append(show)
+        last = menu.addAction(_("Запустить как в прошлый раз"))
+        last.triggered.connect(lambda _checked=False: self.launch(None))
+        self._actions.append(last)
         menu.addSeparator()
 
         presets = self._cfg.get("presets", {})
@@ -97,8 +100,17 @@ class LauncherTray(QSystemTrayIcon):
         w.raise_()
         w.activateWindow()
 
-    def launch(self, name: str):
-        ok, msg = launch_preset(self._get_code_cli(), self._cfg, self._ext_index, name)
+    def launch(self, name: str | None):
+        # Путь к CLI и карту расширений спрашиваем у окна: их меняют на лету
+        # («Установка VS Code», мастер раскладки), а значок создан один раз —
+        # иначе трей запускал бы прежний VS Code с прежней картой.
+        win = self._window
+        cli = win.current_code_cli() if hasattr(win, "current_code_cli") else self._get_code_cli()
+        idx = win.current_ext_index() if hasattr(win, "current_ext_index") else self._ext_index
+        if name is None:
+            ok, msg = launch_last(cli, self._cfg, idx)
+        else:
+            ok, msg = launch_preset(cli, self._cfg, idx, name)
         self.showMessage(
             "VS Code Launcher", msg,
             QSystemTrayIcon.MessageIcon.Information if ok

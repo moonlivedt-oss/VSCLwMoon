@@ -26,6 +26,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -77,6 +78,21 @@ TOOLS = (
 
 def _run(args: list[str], timeout: float = 30, cwd: str | None = None, env=None):
     """subprocess.run с нашими умолчаниями. None, если процесс не запустился."""
+    frozen_dir = getattr(sys, "_MEIPASS", None) if getattr(sys, "frozen", False) else None
+    if frozen_dir:
+        # Собранный exe держит свою папку (с python3.dll внутри) в поиске DLL, и
+        # дочерние процессы это наследуют: lldb подхватывал наш python3.dll и падал
+        # с «No module named 'encodings'», хотя в терминале ошибка другая. На время
+        # запуска возвращаем обычный поиск, чтобы проверка видела то же, что человек.
+        try:
+            import ctypes
+
+            ctypes.windll.kernel32.SetDllDirectoryW(None)
+        except Exception:
+            frozen_dir = None
+        # И из PATH убираем папку распаковки exe: в ней лежит python3.dll без
+        # стандартной библиотеки, и lldb по PATH находил именно её.
+        env = _without_dir(dict(os.environ if env is None else env), getattr(sys, "_MEIPASS", ""))
     try:
         return subprocess.run(
             args,
@@ -93,6 +109,24 @@ def _run(args: list[str], timeout: float = 30, cwd: str | None = None, env=None)
         return None
     except Exception:
         return None
+    finally:
+        if frozen_dir:
+            try:
+                ctypes.windll.kernel32.SetDllDirectoryW(frozen_dir)
+            except Exception:
+                pass
+
+
+def _without_dir(env: dict, folder: str) -> dict:
+    """Копия окружения, где из PATH убраны записи внутри `folder`."""
+    if not folder:
+        return env
+    base = _norm(folder)
+    for key in [k for k in env if k.upper() == "PATH"]:
+        env[key] = os.pathsep.join(
+            e for e in str(env[key]).split(os.pathsep) if e and not _norm(e).startswith(base)
+        )
+    return env
 
 
 def _out(proc) -> str:
@@ -366,6 +400,141 @@ def gcc_dirs(path_str: str | None = None) -> list[str]:
     return out
 
 
+def terminal_path() -> str:
+    """PATH, который получит новый терминал: системный + пользовательский из
+    реестра, %VAR% раскрыты. PATH самого лаунчера от него отличается: в процесс
+    каталоги только дописываются в конец, а порядок остаётся от родителя — поэтому
+    «у лаунчера работает» ещё не значит «заработает в терминале»."""
+    parts: list[str] = []
+    for raw in (env_path.read_machine_path(), env_path.read_user_path()):
+        for e in env_path.path_entries(raw):
+            parts.append(os.path.expandvars(e.strip().strip('"')))
+    return os.pathsep.join(p for p in parts if p)
+
+
+def first_in_path(exe: str, path_str: str) -> str | None:
+    """Полный путь к `exe` (имя с расширением) из первого каталога `path_str`,
+    где он лежит."""
+    for d in env_path.path_entries(path_str):
+        p = Path(os.path.expandvars(d)) / exe
+        try:
+            if p.is_file():
+                return str(p)
+        except OSError:
+            continue
+    return None
+
+
+_KIND_EXE = {"gcc": "g++.exe", "clang": "clang++.exe"}
+
+
+def terminal_view(path_str: str | None = None) -> dict[str, str]:
+    """{'gcc': путь, 'clang': путь} — что вызовется в новом терминале."""
+    tp = terminal_path() if path_str is None else path_str
+    return {k: first_in_path(exe, tp) or "" for k, exe in _KIND_EXE.items()}
+
+
+def terminal_issues(compilers: list[Compiler], path_str: str | None = None) -> list[dict]:
+    """Расхождение между PATH лаунчера и PATH нового терминала.
+
+    Лаунчер может видеть компилятор, которого в постоянном PATH нет (каталог
+    дописан только в процесс) или который там перекрыт другим. Пустой
+    `path_str` (не Windows, нет доступа к реестру) — проверка пропускается."""
+    tp = terminal_path() if path_str is None else path_str
+    if not tp:
+        return []
+    view = terminal_view(tp)
+    out: list[dict] = []
+    for kind, exe in _KIND_EXE.items():
+        cur = next((c for c in compilers if c.kind == kind and c.active), None)
+        if cur is None:
+            continue
+        name = exe[:-4]
+        seen = view[kind]
+        if not seen:
+            out.append(
+                {
+                    "level": "warn",
+                    "text": _t(
+                        "Лаунчер видит `{name}` в {dir}, но в постоянном PATH этого "
+                        "каталога нет: в новом терминале и в VS Code, открытом не из "
+                        "лаунчера, `{name}` не найдётся. Пропишите каталог в PATH.",
+                        "The launcher sees `{name}` in {dir}, but that folder is not on "
+                        "the permanent PATH: in a new terminal and in VS Code started "
+                        "outside the launcher `{name}` will not be found. Add the folder "
+                        "to PATH.",
+                    ).format(name=name, dir=cur.bin_dir),
+                    "fix": "path" if kind == "gcc" else "",
+                }
+            )
+        elif _norm(seen) != _norm(cur.path):
+            out.append(
+                {
+                    "level": "warn" if kind == "gcc" else "info",
+                    "text": _t(
+                        "В новом терминале `{name}` запустится из {other}, а лаунчер "
+                        "сейчас использует {dir}. Проверка ниже относится ко второму; "
+                        "чтобы везде был один и тот же, выберите основной.",
+                        "In a new terminal `{name}` will start from {other}, while the "
+                        "launcher currently uses {dir}. The checks below are about the "
+                        "latter; pick the main one so both match.",
+                    ).format(name=name, other=str(Path(seen).parent), dir=cur.bin_dir),
+                    "fix": "path" if kind == "gcc" else "",
+                }
+            )
+    return out
+
+
+def terminal_smoke(c: Compiler, path_str: str | None = None) -> tuple[bool, str]:
+    """Собрать и запустить пробную программу так, как это будет в новом
+    терминале: с PATH из реестра, а не с PATH лаунчера. (успех, пояснение)."""
+    tp = terminal_path() if path_str is None else path_str
+    env = {**os.environ, "PATH": tp} if tp else None
+    tmp = tempfile.mkdtemp(prefix="vscl_cpp_")
+    try:
+        src = Path(tmp) / "hello.cpp"
+        src.write_text(SMOKE_SRC, encoding="utf-8")
+        exe = Path(tmp) / "hello.exe"
+        variants: list[tuple[str, ...]] = [()]
+        if c.kind == "clang" and "msvc" in c.target:
+            variants.append(("--target=x86_64-w64-mingw32",))
+        built = None
+        for extra in variants:
+            built = _run(
+                [c.path, "-std=c++20", *extra, str(src), "-o", str(exe)],
+                timeout=180,
+                cwd=tmp,
+                env=env,
+            )
+            if built is not None and built.returncode == 0 and exe.is_file():
+                break
+        else:
+            return False, _t("Пробная программа не собралась: {d}", "Test build failed: {d}").format(
+                d=_tail(_out(built)) or _t("компилятор не запустился", "the compiler did not start")
+            )
+        run = _run([str(exe)], timeout=20, cwd=tmp, env=env)
+        if run is None:
+            return False, _t(
+                "Пробная программа собралась, но не запустилась или зависла.",
+                "The test program built but did not start or hung.",
+            )
+        if run.returncode != 0:
+            return False, _t(
+                "Пробная программа собралась, но не запустилась: {d}",
+                "The test program built but did not start: {d}",
+            ).format(d=explain_exit(run.returncode))
+        if "ok 1" not in (run.stdout or ""):
+            return False, _t("Неожиданный вывод: {o}", "Unexpected output: {o}").format(
+                o=(run.stdout or "").strip()[:80]
+            )
+        return True, _t(
+            "Пробная программа на C++20 собралась и запустилась.",
+            "A C++20 test program built and ran.",
+        )
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def first_dll(name: str, path_str: str | None = None) -> str | None:
     """Какую копию DLL загрузчик найдёт первой по PATH (без учёта каталога exe)."""
     for e in env_path.path_entries(os.environ.get("PATH", "") if path_str is None else path_str):
@@ -390,6 +559,61 @@ def _t(ru: str, en: str) -> str:
     from .i18n import get_language
 
     return en if get_language() == "en" else ru
+
+
+def clang_stdlib_issue(path: str, has_gcc: bool, target_fail: str = "") -> dict:
+    """Clang из LLVM рассчитан на MSVC и своей стандартной библиотеки не несёт:
+    без MSVC Build Tools он не находит даже <algorithm>. Если рядом есть GCC, это
+    не проблема (LLVM обычно ставят ради clangd) — только пояснение.
+    `target_fail` — на чём споткнулась сборка с --target=x86_64-w64-mingw32, если
+    её пробовали: тогда этот флаг не советуем."""
+    if has_gcc:
+        if target_fail:
+            tail = _t(
+                "С флагом --target=x86_64-w64-mingw32 пробная сборка тоже не прошла "
+                "({why}); чтобы собирать именно Clang, поставьте MSVC Build Tools.",
+                "With --target=x86_64-w64-mingw32 the test build failed too ({why}); "
+                "to build with Clang itself, install MSVC Build Tools.",
+            ).format(why=target_fail)
+        else:
+            tail = _t(
+                "Собирать именно Clang можно с флагом --target=x86_64-w64-mingw32 "
+                "или поставив MSVC Build Tools.",
+                "To build with Clang itself, use --target=x86_64-w64-mingw32 or "
+                "install MSVC Build Tools.",
+            )
+        return {
+            "key": "clang_stdlib",
+            "level": "info",
+            "text": _t(
+                "Clang из LLVM ({p}) сам программу не соберёт: он рассчитан на MSVC "
+                "Build Tools, а их нет, поэтому не находит стандартные заголовки "
+                "(<algorithm> и т.п.). Если LLVM стоит ради подсказок clangd — всё в "
+                "порядке, собирайте через g++.",
+                "Clang from LLVM ({p}) cannot build a program on its own: it expects "
+                "MSVC Build Tools, which are missing, so it cannot find the standard "
+                "headers (<algorithm> etc.). If LLVM is there for clangd code hints, "
+                "all is fine — build with g++.",
+            ).format(p=path)
+            + " "
+            + tail,
+            "fix": "",
+        }
+    return {
+        "key": "clang_stdlib",
+        "level": "warn",
+        "text": _t(
+            "Clang из LLVM ({p}) сам программу не соберёт: он рассчитан на MSVC Build "
+            "Tools, а их нет, поэтому не находит стандартные заголовки (<algorithm> и "
+            "т.п.). Другого компилятора тоже нет. Проще всего поставить MinGW на "
+            "вкладке «Установка»; либо MSVC Build Tools.",
+            "Clang from LLVM ({p}) cannot build a program on its own: it expects MSVC "
+            "Build Tools, which are missing, so it cannot find the standard headers "
+            "(<algorithm> etc.). There is no other compiler either. The simplest fix "
+            "is MinGW from the 'Install' tab; or MSVC Build Tools.",
+        ).format(p=path),
+        "fix": "install:cpp_msvc",
+    }
 
 
 def analyze(compilers: list[Compiler], tools: dict[str, str]) -> list[dict]:
@@ -434,16 +658,37 @@ def analyze(compilers: list[Compiler], tools: dict[str, str]) -> list[dict]:
     # 1. Смесь GCC-рантаймов в PATH.
     dirs = gcc_dirs()
     if len(dirs) > 1:
-        add(
-            "warn",
-            _t(
-                "В PATH несколько тулчейнов GCC: {dirs}. Программа может подхватить "
-                "чужую libstdc++-6.dll и не запуститься. Оставьте один основной.",
-                "Several GCC toolchains on PATH: {dirs}. A program may load another "
-                "build's libstdc++-6.dll and fail to start. Keep one main toolchain.",
-            ).format(dirs="; ".join(dirs)),
-            "path",
-        )
+        try:
+            plan = path_fix_plan(dirs[0])
+            ordered = not (plan["user_changed"] or plan["machine_changed"])
+        except Exception:
+            ordered = False
+        if ordered:
+            # Основной уже раньше остальных и в постоянном PATH — чинить нечего.
+            # Раньше здесь было предупреждение с кнопкой, которая ничего не меняла.
+            add(
+                "info",
+                _t(
+                    "В PATH несколько тулчейнов GCC: {dirs}. Основной стоит первым, "
+                    "поэтому программы берут его библиотеки — всё в порядке. Лишние при "
+                    "желании можно убрать из PATH.",
+                    "Several GCC toolchains on PATH: {dirs}. The main one comes first, so "
+                    "programs load its libraries — all is fine. You may remove the extra "
+                    "ones from PATH if you wish.",
+                ).format(dirs="; ".join(dirs)),
+                "path",
+            )
+        else:
+            add(
+                "warn",
+                _t(
+                    "В PATH несколько тулчейнов GCC: {dirs}. Программа может подхватить "
+                    "чужую libstdc++-6.dll и не запуститься. Оставьте один основной.",
+                    "Several GCC toolchains on PATH: {dirs}. A program may load another "
+                    "build's libstdc++-6.dll and fail to start. Keep one main toolchain.",
+                ).format(dirs="; ".join(dirs)),
+                "path",
+            )
     if gcc_active:
         dll = first_dll("libstdc++-6.dll")
         if dll and not _same_dir(dll, gcc_active.path):
@@ -515,6 +760,22 @@ def analyze(compilers: list[Compiler], tools: dict[str, str]) -> list[dict]:
             ),
         )
 
+    profile = os.environ.get("USERPROFILE") or ""
+    if gcc_active and profile and not profile.isascii():
+        add(
+            "info",
+            _t(
+                "В пути к профилю есть русские буквы ({p}). Отладчик gdb в VS Code не "
+                "открывает программы из таких папок. Лаунчер учитывает это сам: для "
+                "проектов в таких папках настраивает отладку через CodeLLDB (страница "
+                "«C / C++» → «Проект»). Либо держите проекты в папке вроде C:\\dev.",
+                "The profile path has non-English letters ({p}). The gdb debugger in VS "
+                "Code cannot open programs from such folders. The launcher handles it: "
+                "for projects there it sets up debugging through CodeLLDB ('C / C++' → "
+                "'Project'). Or keep projects in a folder like C:\\dev.",
+            ).format(p=profile),
+        )
+
     # 3. Clang.
     if clang_active:
         if clang_active.major and clang_active.major < MIN_CLANG:
@@ -529,17 +790,8 @@ def analyze(compilers: list[Compiler], tools: dict[str, str]) -> list[dict]:
                 "install:cpp_llvm",
             )
         if "msvc" in clang_active.target and not msvc:
-            add(
-                "warn",
-                _t(
-                    "Clang нацелен на MSVC (Target: {t}), а MSVC Build Tools не "
-                    "установлены — стандартная библиотека не найдётся. Либо поставьте "
-                    "MSVC, либо собирайте с --target=x86_64-w64-mingw32 (нужен MinGW).",
-                    "Clang targets MSVC (Target: {t}) but MSVC Build Tools are not "
-                    "installed, so the standard library will not be found. Install MSVC "
-                    "or build with --target=x86_64-w64-mingw32 (needs MinGW).",
-                ).format(t=clang_active.target),
-                "install:cpp_msvc",
+            issues.append(
+                clang_stdlib_issue(clang_active.path, any(c.kind == "gcc" for c in compilers))
             )
     clangd = tools.get("clangd")
     if clangd:
@@ -718,6 +970,175 @@ def _debug_step(c: Compiler, exe: Path, cwd: str) -> dict:
     return _step("debug", ok, f"{kind}: {path}" if ok else f"{kind}: {_tail(text, 3)}")
 
 
+# --- lldb из LLVM и его Python -------------------------------------------------
+# lldb.exe из установщика LLVM собран со встроенным Python конкретной версии
+# (python311.dll лежит рядом), но стандартной библиотеки Python в LLVM нет. Без
+# установленного Python ТОЙ ЖЕ версии lldb падает на старте: «No module named
+# 'encodings'». Встроенный Python ищет свою библиотеку через реестр
+# (PythonCore\<версия>), поэтому достаточно обычной установки этой версии —
+# PATH менять не нужно, и `python` пользователя остаётся прежним.
+
+_PYDLL_ANY_RE = re.compile(rb"python3\d{0,2}\.dll", re.I)
+_PYVER_RE = re.compile(r"3\.\d{1,2}")
+
+
+def python_registered(ver: str) -> str:
+    """Каталог установленного Python этой версии по реестру (так его находит
+    встроенный в lldb интерпретатор) или ''."""
+    if not _PYVER_RE.fullmatch(ver or ""):
+        return ""
+    try:
+        import winreg
+    except ImportError:
+        return ""
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(hive, rf"Software\Python\PythonCore\{ver}\InstallPath") as k:
+                path = str(winreg.QueryValueEx(k, "")[0] or "")
+        except OSError:
+            continue
+        if path and (Path(path) / "Lib" / "encodings").is_dir():
+            return path
+    return ""
+
+
+def lldb_python_dll(lldb_path: str) -> str:
+    """Какую DLL Python загружает lldb: «python311.dll» (конкретная версия) или
+    «python3.dll» (новые LLVM собраны со стабильным ABI и годится любой Python 3).
+    '' — lldb собран без Python или файл не прочитать."""
+    import mmap
+
+    d = Path(lldb_path).parent
+    names: set[str] = set()
+    for name in ("liblldb.dll", Path(lldb_path).name):
+        try:
+            with open(d / name, "rb") as fh, mmap.mmap(
+                fh.fileno(), 0, access=mmap.ACCESS_READ
+            ) as mm:
+                names |= {m.group(0).decode().lower() for m in _PYDLL_ANY_RE.finditer(mm)}
+        except (OSError, ValueError):
+            continue
+    versioned = sorted(n for n in names if n != "python3.dll")
+    return versioned[0] if versioned else ("python3.dll" if names else "")
+
+
+def python_homes() -> list[tuple[str, str]]:
+    """Установленные Python по реестру: [(версия, каталог)], новые первыми."""
+    try:
+        import winreg
+    except ImportError:
+        return []
+    vers: set[str] = set()
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(hive, r"Software\Python\PythonCore") as k:
+                i = 0
+                while True:
+                    try:
+                        vers.add(winreg.EnumKey(k, i))
+                    except OSError:
+                        break
+                    i += 1
+        except OSError:
+            continue
+    out = [(v, python_registered(v)) for v in vers if _PYVER_RE.fullmatch(v)]
+    out = [(v, p) for v, p in out if p]
+    return sorted(out, key=lambda vp: parse_version(vp[0]), reverse=True)
+
+
+# Версия, которую ставим, когда lldb годится любой Python 3 (python3.dll).
+LLDB_DEFAULT_PYTHON = "3.13"
+
+
+def lldb_python_issue(bin_dir: str) -> dict | None:
+    """Почему не стартует lldb из LLVM и что с этим сделать — замечание с кнопкой.
+
+    lldb загружает DLL Python (lldb_python_dll). Если её нет ни рядом, ни в PATH,
+    он падает: «could not load 'python3.dll'». Лечится без смены команды `python`:
+    каталог установленного Python дописывается В КОНЕЦ PATH — DLL оттуда
+    находится, а `python` по-прежнему берётся из более ранних записей.
+    fix: 'lldbpath:<версия>' — подключить уже установленный Python;
+    'python:<версия>' — сначала поставить его."""
+    local = Path(bin_dir) / "lldb.exe"
+    lldb = str(local) if local.is_file() else (which("lldb") or "")
+    dll = lldb_python_dll(lldb) if lldb else ""
+    if not dll:
+        return None
+    m = re.fullmatch(r"python3(\d{1,2})\.dll", dll)
+    want = f"3.{m.group(1)}" if m else ""
+    if (Path(lldb).parent / dll).is_file():
+        # DLL лежит рядом с lldb, не хватает только стандартной библиотеки.
+        if not want or python_registered(want):
+            return None
+        return _lldb_issue(lldb, want, install=True)
+    if first_dll(dll, terminal_path() or None):
+        return None  # DLL найдётся — причина в другом
+    homes = [(v, p) for v, p in python_homes() if (Path(p) / dll).is_file()]
+    if homes:
+        return _lldb_issue(lldb, homes[0][0], install=False, home=homes[0][1], dll=dll)
+    return _lldb_issue(lldb, want or LLDB_DEFAULT_PYTHON, install=True, dll=dll)
+
+
+def _lldb_issue(lldb: str, ver: str, install: bool, home: str = "", dll: str = "") -> dict:
+    tail = _t(
+        " Если отлаживаете через gdb или расширение CodeLLDB, это не нужно.",
+        " Not needed if you debug with gdb or the CodeLLDB extension.",
+    )
+    if install:
+        text = _t(
+            "Отладчик lldb из LLVM ({p}) не запускается: ему нужен Python {v}, а он не "
+            "установлен. Можно поставить Python {v}: его папка допишется в конец PATH, "
+            "поэтому команда `python` останется прежней.",
+            "The lldb debugger from LLVM ({p}) does not start: it needs Python {v}, which "
+            "is not installed. You can install Python {v}: its folder is appended to the "
+            "end of PATH, so the `python` command stays the same.",
+        ).format(p=lldb, v=ver)
+        return {"key": "lldb_python", "level": "info", "text": text + tail, "fix": f"python:{ver}"}
+    text = _t(
+        "Отладчик lldb из LLVM ({p}) не запускается: не находит {dll}. Python {v} "
+        "установлен ({home}), но его папки нет в PATH. Можно дописать её в конец PATH: "
+        "lldb найдёт DLL, а команда `python` останется прежней.",
+        "The lldb debugger from LLVM ({p}) does not start: it cannot find {dll}. Python "
+        "{v} is installed ({home}) but its folder is not on PATH. It can be appended to "
+        "the end of PATH: lldb finds the DLL and the `python` command stays the same.",
+    ).format(p=lldb, dll=dll, v=ver, home=home)
+    return {"key": "lldb_python", "level": "info", "text": text + tail, "fix": f"lldbpath:{ver}"}
+
+
+def connect_python_to_lldb(ver: str) -> tuple[bool, str]:
+    """Дописать каталог установленного Python в конец пользовательского PATH,
+    чтобы lldb нашёл его DLL."""
+    home = python_registered(ver)
+    if not home:
+        return False, _t("Python {v} не найден.", "Python {v} not found.").format(v=ver)
+    ok, msg = env_path.add_to_user_path(home.rstrip("\\/"))
+    if not ok and not env_path.is_on_path(home):
+        return False, msg
+    return True, _t(
+        "Папка Python {v} дописана в конец PATH: {p}. Откройте новый терминал.",
+        "The Python {v} folder was appended to PATH: {p}. Open a new terminal.",
+    ).format(v=ver, p=home)
+
+
+def install_python_for_lldb(ver: str) -> tuple[bool, str]:
+    """Поставить Python для lldb через winget и дописать его папку в конец PATH."""
+    if not _PYVER_RE.fullmatch(ver or ""):
+        return False, f"Недопустимая версия Python: {ver!r}"
+    from . import toolchains as tc
+
+    pkg = tc.Package(winget_id=f"Python.Python.{ver}", title=f"Python {ver}", probe=("python",))
+    # repair=False: PATH правим сами и только в конец, чтобы не подменить `python`.
+    ok, msg = tc._run_winget("install", pkg, scope=None, repair=False)
+    if python_registered(ver):
+        return connect_python_to_lldb(ver)
+    if ok:
+        return False, _t(
+            "winget сообщил об успехе, но Python {v} в реестре не найден.",
+            "winget reported success, but Python {v} is not in the registry.",
+        ).format(v=ver)
+    return False, msg
+
+
 def smoke_test(c: Compiler, std: str = "c++20", extra: tuple[str, ...] = ()) -> dict:
     """Собрать, слинковать, запустить и прогнать под отладчиком пробную программу.
 
@@ -795,6 +1216,43 @@ def _smoke_msvc(c: Compiler, tmp: str, std: str) -> list[dict]:
     return [_step("compile", True, msvc_std), _step("link", True)]
 
 
+def unicode_path_issue(c: Compiler) -> dict | None:
+    """Собирает ли g++ файл, если в пути есть русские буквы (как в
+    C:\\Users\\Дмитрий\\…). Обычная пробная сборка этого не видит: временная
+    папка Windows записана коротким 8.3-именем латиницей."""
+    if c.kind != "gcc":
+        return None
+    tmp = tempfile.mkdtemp(prefix="vscl_cpp_")
+    try:
+        d = Path(tmp) / "проверка путей"
+        d.mkdir()
+        (d / "main.cpp").write_text(SMOKE_SRC, encoding="utf-8")
+        r = _run(
+            [c.path, "-std=c++20", str(d / "main.cpp"), "-o", str(d / "main.exe")],
+            timeout=120,
+            cwd=str(d),
+        )
+        if r is not None and r.returncode == 0 and (d / "main.exe").is_file():
+            return None
+        return {
+            "key": "unicode_args",
+            "level": "warn",
+            "text": _t(
+                "{k} {v} не собирает файл, если в пути есть русские буквы ({d}). Проекты "
+                "лаунчер настраивает с относительными путями, и Ctrl+Shift+B работает; "
+                "проект, настроенный раньше, исправит «C / C++» → «Проект» → «Исправить "
+                "проект». Сами файлы называйте латиницей.",
+                "{k} {v} cannot build a file whose path has non-English letters ({d}). The "
+                "launcher sets projects up with relative paths, so Ctrl+Shift+B works; a "
+                "project set up earlier is fixed by 'C / C++' → 'Project' → 'Fix project'. "
+                "Name the files themselves in Latin letters.",
+            ).format(k=c.kind, v=c.version, d=_first_line(_tail(_out(r), 1)) or "?"),
+            "fix": "",
+        }
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def smoke_all(compilers: list[Compiler]) -> list[dict]:
     """Пробная сборка активным GCC, активным Clang и свежим MSVC.
 
@@ -816,10 +1274,75 @@ def smoke_all(compilers: list[Compiler]) -> list[dict]:
         r = smoke_test(c)
         if not r["ok"] and c.kind == "clang" and "msvc" in c.target and has_gcc:
             alt = smoke_test(c, extra=("--target=x86_64-w64-mingw32",))
-            if alt["ok"]:
+            if alt["ok"] or sum(s["ok"] for s in alt["steps"]) > sum(
+                s["ok"] for s in r["steps"]
+            ):
                 r = alt
         results.append(r)
     return results
+
+
+_SETTING_PATH_KEYS = (
+    "C_Cpp.default.compilerPath",
+    "clangd.path",
+    "C_Cpp_Runner.cppCompilerPath",
+    "C_Cpp_Runner.cCompilerPath",
+    "C_Cpp_Runner.debuggerPath",
+)
+LOW_DISK_MB = 1024
+
+
+def environment_issues(settings_path: Path | None = None, temp_dir: str | None = None) -> list[dict]:
+    """Проблемы вокруг компилятора, которых не видно по PATH: настройки VS Code
+    указывают на удалённый файл; на диске с временной папкой кончается место."""
+    out: list[dict] = []
+    try:
+        if settings_path is None:
+            appdata = os.environ.get("APPDATA")
+            settings_path = Path(appdata) / "Code" / "User" / "settings.json" if appdata else None
+        data = None
+        if settings_path is not None and settings_path.is_file():
+            from .detect import _loads_jsonc
+
+            data = _loads_jsonc(settings_path.read_text(encoding="utf-8-sig"))
+        for key in _SETTING_PATH_KEYS:
+            val = data.get(key) if isinstance(data, dict) else None
+            if isinstance(val, str) and ("\\" in val or "/" in val) and not Path(val).is_file():
+                out.append(
+                    {
+                        "level": "warn",
+                        "text": _t(
+                            "В настройках VS Code {k} указывает на файл, которого нет: {p}. "
+                            "Подсказки или сборка будут искать компилятор не там. Вкладка "
+                            "«Установка» → «Прописать компилятор в VS Code» перезапишет путь.",
+                            "VS Code setting {k} points to a missing file: {p}. Code hints or "
+                            "builds will look for the compiler in the wrong place. 'Install' → "
+                            "'Point VS Code at the compiler' rewrites the path.",
+                        ).format(k=key, p=val),
+                        "fix": "",
+                    }
+                )
+    except Exception:
+        log.exception("Проверка настроек VS Code")
+    try:
+        tmp = temp_dir or tempfile.gettempdir()
+        free_mb = shutil.disk_usage(tmp).free // (1024 * 1024)
+        if free_mb < LOW_DISK_MB:
+            out.append(
+                {
+                    "level": "warn",
+                    "text": _t(
+                        "На диске с временной папкой ({d}) свободно всего {n} МБ: сборка и "
+                        "установка пакетов могут обрываться без понятной ошибки.",
+                        "Only {n} MB free on the drive with the temp folder ({d}): builds and "
+                        "package installs may fail without a clear error.",
+                    ).format(d=tmp, n=free_mb),
+                    "fix": "",
+                }
+            )
+    except OSError:
+        pass
+    return out
 
 
 def _first_line(text: str) -> str:
@@ -834,15 +1357,63 @@ def cpp_report(smoke: bool = True, scan_disk: bool = True) -> dict:
         "compilers": [c.to_dict() for c in compilers],
         "tools": tools,
         "gcc_dirs": gcc_dirs(),
-        "issues": analyze(compilers, tools),
+        "issues": analyze(compilers, tools) + terminal_issues(compilers) + environment_issues(),
+        "terminal": terminal_view(),
         "smoke": smoke_all(compilers) if smoke else [],
         "msys2": [str(r) for r in msys2_roots()],
         "vcpkg": vcpkg_root() or "",
     }
+    if smoke:
+        active_gcc = next((c for c in compilers if c.kind == "gcc" and c.active), None)
+        issue = unicode_path_issue(active_gcc) if active_gcc else None
+        if issue:
+            rep["issues"].append(issue)
+    has_msvc = any(c.kind == "msvc" for c in compilers)
+    has_gcc = any(c.kind == "gcc" for c in compilers)
     for s in rep["smoke"]:
         if not s["ok"]:
             c = s["compiler"]
             failed = next((st for st in s["steps"] if not st["ok"]), None)
+            if (
+                c["kind"] == "clang"
+                and "msvc" in (c.get("target") or "")
+                and not has_msvc
+                and failed
+                and (failed["name"] == "compile" or s.get("flags"))
+            ):
+                # Ожидаемый провал: у LLVM Clang нет стандартной библиотеки. Это
+                # пояснение, а не ошибка окружения.
+                why = ""
+                lldb_note = ""
+                py_issue = lldb_python_issue(c["bin_dir"]) if failed["name"] == "debug" else None
+                if py_issue is not None:
+                    rep["issues"].append(py_issue)  # отдельной строкой, с кнопкой
+                elif s.get("flags") and failed["name"] == "debug":
+                    # С --target программа собралась и запустилась; не стартовал
+                    # только lldb.exe из LLVM (ему нужен Python той же версии).
+                    lldb_note = " " + _t(
+                        "Отладчик lldb из LLVM при этом не запустился ({d}) — обычно "
+                        "ему не хватает Python нужной версии. Отлаживайте через gdb "
+                        "или расширение CodeLLDB: у него свой lldb.",
+                        "The lldb debugger from LLVM did not start though ({d}) — it "
+                        "usually lacks the matching Python. Debug with gdb or the "
+                        "CodeLLDB extension, which ships its own lldb.",
+                    ).format(d=_first_line(failed.get("detail", "")))
+                elif s.get("flags"):
+                    why = "{}: {}".format(
+                        step_title(failed["name"]), _first_line(failed.get("detail", ""))
+                    )
+                issue = clang_stdlib_issue(c["path"], has_gcc, why)
+                issue["text"] += lldb_note
+                old = next(
+                    (n for n, i in enumerate(rep["issues"]) if i.get("key") == "clang_stdlib"),
+                    None,
+                )
+                if old is None:
+                    rep["issues"].append(issue)
+                elif why or lldb_note:
+                    rep["issues"][old] = issue
+                continue
             rep["issues"].append(
                 {
                     "level": "error",
@@ -891,6 +1462,12 @@ def format_report(rep: dict) -> list[str]:
         if t in tools:
             lines.append(f"  {t:<13} {tools[t]}")
     lines.append("")
+    term = rep.get("terminal") or {}
+    if any(term.values()):
+        lines.append(_t("В новом терминале (PATH из реестра):", "In a new terminal (registry PATH):"))
+        for kind, exe in _KIND_EXE.items():
+            lines.append(f"  {exe[:-4]:<13} {term.get(kind) or _t('не найдётся', 'not found')}")
+        lines.append("")
     if rep.get("msys2"):
         lines.append("MSYS2: " + "; ".join(rep["msys2"]))
     if rep.get("vcpkg"):
@@ -981,8 +1558,9 @@ def path_fix_plan(
             # Уже раньше всех конкурентов — место не меняем.
             before = [e for e in entries[:pos] if _norm(e) not in conf_n]
             return before + [entries[pos]] + [e for e in rest if e not in before] + tail
-        # Встать туда, где стоял первый конкурент (или в начало, если основного не было).
-        anchor = first_conf if first_conf is not None else 0
+        # Встать туда, где стоял первый конкурент. Конкурентов нет — в конец:
+        # порядок не важен, а в начале каталог перекрыл бы чужие инструменты.
+        anchor = first_conf if first_conf is not None else len(entries)
         before = [e for e in entries[:anchor] if _norm(e) not in conf_n and _norm(e) != prim]
         return before + [primary_dir] + [e for e in rest if e not in before] + tail
 
@@ -1023,6 +1601,16 @@ def path_fix_plan(
 def describe_plan(plan: dict) -> str:
     """Текст предпросмотра плана для диалога подтверждения."""
     lines = [f"Основной тулчейн: {plan['primary']}"]
+    if not (plan["user_changed"] or plan["machine_changed"]):
+        lines.append("Порядок уже правильный: основной стоит раньше остальных.")
+        if plan["demoted"]:
+            lines.append("Остальные остаются после него и не мешают:")
+            lines += [f"  {d}" for d in plan["demoted"]]
+            lines.append(
+                "Менять нечего. Чтобы убрать остальные из PATH совсем, выберите второй "
+                "вариант («Остальные убрать из PATH совсем») и нажмите «Применить»."
+            )
+        return "\n".join(lines)
     if not plan["was_on_path"]:
         lines.append("  будет добавлен в PATH")
     if plan["moved_to_machine"]:
@@ -1071,12 +1659,24 @@ def apply_path_fix(plan: dict) -> tuple[bool, str]:
             return False, f"Не удалось записать пользовательский PATH: {e}"
         msgs.append(f"Пользовательский PATH обновлён (бэкап: {backup or '—'}).")
     env_path._broadcast_env_change()
-    # PATH процесса: основной — вперёд, убранные — прочь, понижённые — в конец.
+    # PATH процесса: основной — перед конкурентами, убранные — прочь, понижённые —
+    # в конец. Если конкурентов в процессе нет, основной остаётся на своём месте
+    # (или дописывается): так же, как в реестре, он не перекрывает чужое.
     proc = os.environ.get("PATH", "")
-    for d in [plan["primary"], *plan["removed"], *plan["demoted"]]:
-        proc = env_path.compute_removed(proc, d)
-    tail = os.pathsep.join(plan["demoted"])
-    os.environ["PATH"] = os.pathsep.join(x for x in (plan["primary"], proc, tail) if x)
+    rivals = {env_path._norm(d) for d in [*plan["removed"], *plan["demoted"]]}
+    entries = env_path.path_entries(proc)
+    prim_n = env_path._norm(plan["primary"])
+    first_rival = next((i for i, e in enumerate(entries) if env_path._norm(e) in rivals), None)
+    prim_pos = next((i for i, e in enumerate(entries) if env_path._norm(e) == prim_n), None)
+    if first_rival is not None and (prim_pos is None or prim_pos > first_rival):
+        kept = [e for e in entries if env_path._norm(e) not in rivals | {prim_n}]
+        before = [e for e in entries[:first_rival] if env_path._norm(e) not in rivals | {prim_n}]
+        entries = before + [plan["primary"]] + kept[len(before) :]
+    else:
+        entries = [e for e in entries if env_path._norm(e) not in rivals]
+        if prim_pos is None:
+            entries.append(plan["primary"])
+    os.environ["PATH"] = os.pathsep.join(entries + list(plan["demoted"]))
     msgs.append("Откройте новый терминал и перезапустите VS Code, чтобы PATH подхватился.")
     log.info("PATH C++: основной %s, режим %s", plan["primary"], plan["mode"])
     return True, "\n".join(msgs)
@@ -1412,6 +2012,10 @@ __all__ = [
     "any_compiler",
     "apply_path_fix",
     "cpp_report",
+    "terminal_path",
+    "terminal_view",
+    "terminal_issues",
+    "terminal_smoke",
     "describe_plan",
     "detect",
     "find_compilers",
@@ -1419,6 +2023,9 @@ __all__ = [
     "format_report",
     "gcc_dirs",
     "install_vcpkg",
+    "install_python_for_lldb",
+    "connect_python_to_lldb",
+    "lldb_python_issue",
     "msys2_install_toolchain",
     "msys2_roots",
     "msys2_status",

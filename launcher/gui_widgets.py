@@ -10,6 +10,7 @@ from PyQt6.QtCore import QRect, QSize, Qt
 from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
@@ -72,6 +73,47 @@ class ToggleSwitch(QCheckBox):
         p.drawEllipse(x, r.top() + 3, d, d)
 
 
+class Clickable:
+    """Клик по целой карточке: нажали и отпустили левую кнопку внутри неё.
+
+    Раньше карточки срабатывали уже на нажатие. Отсюда «галочки сами
+    прожимаются»: любое касание карточки (клик, чтобы вернуть окну фокус,
+    начало перетаскивания, промах мимо кнопки) тут же переключало стек, и
+    передумать было нельзя. Теперь, как у обычной кнопки, можно увести курсор
+    и отпустить — ничего не произойдёт. Миксин ставится ПЕРЕД QFrame."""
+
+    _armed = False
+
+    def _on_click(self) -> None:  # переопределяется в карточке
+        pass
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._armed = True
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        armed, self._armed = self._armed, False
+        inside = self.rect().contains(e.position().toPoint())
+        left = e.button() == Qt.MouseButton.LeftButton
+        super().mouseReleaseEvent(e)
+        if armed and inside and left:
+            self._on_click()
+
+
+class ComboBox(QComboBox):
+    """Выпадающий список, который не меняет значение колесом мыши.
+
+    Обычный QComboBox листает варианты колесом, стоит курсору оказаться над
+    ним. В прокручиваемых списках это ломало настройки незаметно: человек
+    крутил список расширений стека, курсор проезжал по «по стеку / всегда вкл /
+    всегда выкл» — и расширению молча ставилось личное исключение, после чего
+    галочка стека «переставала работать». Колесо отдаём прокрутке страницы."""
+
+    def wheelEvent(self, e):
+        e.ignore()
+
+
 # --- микро-фабрики виджетов ------------------------------------------------
 
 
@@ -129,7 +171,7 @@ class FlowLayout(QLayout):
         size = QSize()
         for item in self._items:
             w = item.widget()
-            if w is not None and not w.isVisible():
+            if w is not None and w.isHidden():
                 continue
             size = size.expandedTo(item.minimumSize())
         m = self.contentsMargins()
@@ -160,7 +202,10 @@ class FlowLayout(QLayout):
 
         for item in self._items:
             w = item.widget()
-            if w is not None and not w.isVisible():
+            # isHidden, а не isVisible: пока страница «Запуск» не на экране (открыта
+            # другая вкладка, окно в трее), isVisible ложно у ВСЕХ карточек, и
+            # раскладка схлопывалась в ноль.
+            if w is not None and w.isHidden():
                 continue  # скрытые фильтром — не занимают место
             hint = item.sizeHint()
             iw = hint.width()
@@ -195,7 +240,7 @@ def _wrap(lbl: QLabel) -> QLabel:
 # --- CategoryCard ----------------------------------------------------------
 
 
-class CategoryCard(QFrame):
+class CategoryCard(Clickable, QFrame):
     """Кликабельная карточка стека: галочка + название + бейджи."""
 
     def __init__(self, key: str, cat: dict, inst: int, total: int, on_toggle, on_details):
@@ -395,12 +440,13 @@ class CategoryCard(QFrame):
         self._on_toggle()
 
     def mousePressEvent(self, e):
-        # Переключаем только левой кнопкой: правый клик по карточке раньше
-        # молча менял выбор, хотя пользователь целился в контекстное меню.
         if e.button() == Qt.MouseButton.LeftButton:
             self.setFocus(Qt.FocusReason.MouseFocusReason)
-            self.cb.toggle()
         super().mousePressEvent(e)
+
+    def _on_click(self):
+        # Только левая кнопка и только «нажал и отпустил на карточке» (Clickable).
+        self.cb.toggle()
 
     def keyPressEvent(self, e):
         # Пробел/Enter — переключить стек (как у любого чекбокса в Qt).

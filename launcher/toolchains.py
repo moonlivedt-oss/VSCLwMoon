@@ -25,7 +25,10 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import subprocess
+import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from shutil import which
@@ -99,6 +102,9 @@ class Package:
     # префикса окружения: toolchain, cmake…). Нужен detector="msys2".
     pacman: tuple[str, ...] = ()
     msys_env: str = "ucrt64"
+    # Каталоги, которые пакет оставляет вне своей папки установки (у rustup это
+    # %USERPROFILE%\.cargo и .rustup): их убирает «Удалить полностью».
+    purge_dirs: tuple[str, ...] = ()
 
     def tools(self) -> tuple[str, ...]:
         """Все инструменты пакета: provides, если задан, иначе probe."""
@@ -201,6 +207,7 @@ def _package_from_dict(d: dict) -> Package | None:
         override=override,
         pacman=_strs("pacman"),
         msys_env=str(d.get("msys_env") or "ucrt64"),
+        purge_dirs=_strs("purge_dirs"),
     )
 
 
@@ -492,11 +499,20 @@ _WINGET_CODE_HINTS: dict[int, str] = {
 }
 
 
+def signed_code(code: int) -> int:
+    """Код возврата процесса как знаковое 32-битное число. Windows отдаёт
+    HRESULT беззнаковым (0x8A15002B -> 2316632107), а таблицы ниже записаны
+    знаковыми, как в документации winget: без приведения «уже установлено»
+    превращалось в ошибку."""
+    code &= 0xFFFFFFFF
+    return code - 0x100000000 if code >= 0x80000000 else code
+
+
 def explain_winget_code(code: int, output: str = "") -> str:
     """Короткое человекочитаемое объяснение кода возврата winget. Если кода нет
     в таблице — вернуть последнюю осмысленную строку вывода (winget обычно сам
     пишет причину), иначе — сам код."""
-    hint = _WINGET_CODE_HINTS.get(code)
+    hint = _WINGET_CODE_HINTS.get(signed_code(code))
     if hint:
         return hint
     for line in reversed((output or "").splitlines()):
@@ -603,7 +619,7 @@ def install_package_elevated(pkg: Package, scope: str = "machine") -> tuple[bool
         return False, "Операция не уложилась в 30 минут и была прервана."
     except Exception as e:
         return False, str(e)
-    code = out.returncode
+    code = signed_code(out.returncode)
     if code in _WINGET_OK_CODES:
         env_path.refresh_process_path_from_registry()
         note = repair_path_for(pkg)
@@ -631,6 +647,408 @@ def uninstall_package(pkg: Package) -> tuple[bool, str]:
             if removed:
                 text = (text + f"\nPATH очищен: {hint}").strip()
     return ok, text
+
+
+# --- полное удаление: пакет, его папка и записи PATH --------------------------
+# winget uninstall запускает «родной» деинсталлятор, и тот часто оставляет папку
+# (site-packages у Python, кэши, архивные сборки вроде WinLibs), а записи в PATH
+# продолжают указывать в пустоту. «Удалить полностью» убирает и это. Удаление
+# папки необратимо, поэтому кандидаты проходят строгий отбор (safe_to_delete):
+# лучше оставить лишнюю папку, чем стереть чужую.
+
+_STRIP_DIRS = frozenset({"bin", "scripts", "cmd", "sbin"})
+PURGE_ENV_VARS = ("JAVA_HOME", "GOROOT", "CARGO_HOME", "RUSTUP_HOME", "VCPKG_ROOT", "PYTHONHOME")
+
+
+def _normdir(p: str) -> str:
+    return os.path.normcase(os.path.normpath(p or "")).rstrip("\\/")
+
+
+def _protected_dirs() -> set[str]:
+    """Каталоги, которые нельзя удалять ни при каком раскладе (и их предков)."""
+    env = os.environ
+    out: set[str] = set()
+    for var in (
+        "SystemDrive", "SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432",
+        "CommonProgramFiles", "ProgramData", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PUBLIC",
+    ):
+        if env.get(var):
+            out.add(_normdir(env[var]))
+    out.add(_normdir(str(Path.home())))
+    local = env.get("LOCALAPPDATA")
+    if local:
+        for sub_dir in ("Programs", "Microsoft", r"Microsoft\WinGet", r"Microsoft\WinGet\Packages"):
+            out.add(_normdir(str(Path(local) / sub_dir)))
+    for var in ("ProgramFiles", "ProgramFiles(x86)"):
+        if env.get(var):
+            out.add(_normdir(str(Path(env[var]) / "WinGet")))
+            out.add(_normdir(str(Path(env[var]) / "WinGet" / "Packages")))
+    # Сам лаунчер и его рабочая папка.
+    from .paths import CONFIG_DIR, ROOT
+
+    for own in (ROOT, CONFIG_DIR, Path(sys.executable).parent, Path.cwd()):
+        out.add(_normdir(str(own)))
+    return out
+
+
+def safe_to_delete(path: str) -> bool:
+    """Можно ли удалять этот каталог целиком. Нет — для корня диска, Windows,
+    Program Files, профиля пользователя, WindowsApps, папки самого лаунчера и
+    для любого каталога, ВНУТРИ которого лежит что-то из перечисленного."""
+    try:
+        p = Path(path).resolve()
+        if not p.is_dir() or len(p.parts) < 2:
+            return False
+    except OSError:
+        return False
+    n = _normdir(str(p))
+    sysroot = _normdir(os.environ.get("SystemRoot") or r"C:\Windows")
+    if n == sysroot or n.startswith(sysroot + "\\") or "\\windowsapps" in n:
+        return False
+    return not any(keep == n or keep.startswith(n + "\\") for keep in _protected_dirs())
+
+
+# Слова из id, которые описывают сборку, а не продукт: по ним папку не узнаём
+# (иначе WinLibs «...POSIX.UCRT» совпал бы с каталогом ucrt64 из MSYS2).
+_GENERIC_TOKENS = frozenset({"ucrt", "posix", "msvc", "lts", "win", "windows", "sdk", "cli"})
+
+
+def _id_tokens(winget_id: str) -> set[str]:
+    """Слова из id пакета («Python.Python.3.13» -> python): по ним папка рядом с
+    exe признаётся папкой ЭТОГО пакета."""
+    return {
+        t.lower()
+        for t in re.split(r"[^A-Za-z]+", winget_id)
+        if len(t) >= 2 and t.lower() not in _GENERIC_TOKENS
+    }
+
+
+def _folder_matches_id(name: str, winget_id: str) -> bool:
+    """Имя папки похоже на этот пакет: есть слово из id и та же версия.
+    «Python310» не подходит пакету Python.Python.3.13 — это другая версия."""
+    low = name.lower()
+    if not any(t in low for t in _id_tokens(winget_id)):
+        return False
+    want = "".join(re.findall(r"\d+", winget_id))
+    return not want or "".join(re.findall(r"\d+", name)).startswith(want)
+
+
+def winget_has(winget_id: str, timeout: float = 60) -> bool:
+    """Числится ли пакет установленным у winget (`winget list --id … --exact`).
+
+    Наличие exe в PATH этого не доказывает: `python` может быть из другой версии
+    или из MSYS2. Полное удаление опирается на ответ winget, а не на PATH."""
+    wg = winget_path()
+    if wg is None or not valid_winget_id(winget_id):
+        return False
+    args = [wg, "list", "--id", winget_id, "--exact", "--accept-source-agreements"]
+    if winget_supports_disable_interactivity():
+        args.append("--disable-interactivity")
+    try:
+        out = subprocess.run(
+            args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout, creationflags=_NO_WINDOW,
+        )
+    except Exception:
+        return False
+    return out.returncode == 0 and winget_id.lower() in (out.stdout or "").lower()
+
+
+def installed_variants(pkg: Package) -> list[str]:
+    """Какие из id пакета (основной и варианты версий) реально стоят через winget."""
+    ids = list(dict.fromkeys([pkg.winget_id, *(v for v, _t in pkg.versions)]))
+    return [i for i in ids if winget_has(i)]
+
+
+def purge_locations(pkg: Package, ids: list[str] | None = None) -> list[str]:
+    """Папки, которые «Удалить полностью» сотрёт вместе с пакетом.
+
+    ids — id пакета, которые числятся установленными у winget (installed_variants).
+    Источники: каталог распакованного winget-пакета (имя начинается с id);
+    каталог установки, найденный по exe из PATH, — только если winget подтвердил
+    пакет, а имя папки содержит слово из его id и ту же версию (python.exe из
+    MSYS2 или из Python 3.10 не даст стереть чужую папку); MSYS2 и vcpkg — по
+    своим детекторам; purge_dirs из каталога. Всё проходит safe_to_delete.
+    Звать ДО удаления: потом exe уже не найти."""
+    ids = installed_variants(pkg) if ids is None else ids
+    found: dict[str, str] = {}
+
+    def add(p) -> None:
+        if p and safe_to_delete(str(p)):
+            full = str(Path(p).resolve())
+            found.setdefault(_normdir(full), full)
+
+    if pkg.detector == "msys2":
+        from . import cpp
+
+        for r in cpp.msys2_roots():
+            add(r)
+    elif pkg.detector == "vcpkg":
+        from . import cpp
+
+        add(cpp.vcpkg_root())
+    wids = {i.lower() for i in ids} | {pkg.winget_id.lower()}
+    for root in _winget_package_roots():
+        try:
+            subs = [s for s in root.iterdir() if s.is_dir()]
+        except OSError:
+            continue
+        for s in subs:
+            name = s.name.lower()
+            if any(name == w or name.startswith(w + "_") for w in wids):
+                add(s)
+    if not pkg.detector and ids:
+        from . import cpp
+
+        msys = [_normdir(str(r)) for r in cpp.msys2_roots()]
+        for exe in pkg.probe:
+            full = which(exe)
+            if not full:
+                continue
+            try:
+                d = Path(full).resolve().parent
+            except OSError:
+                continue
+            while d.name.lower() in _STRIP_DIRS:
+                d = d.parent
+            inside_msys = any(_normdir(str(d)).startswith(m) for m in msys)
+            if not inside_msys and any(_folder_matches_id(d.name, i) for i in ids):
+                add(d)
+    for raw in pkg.purge_dirs:
+        add(os.path.expandvars(raw))
+    out: list[str] = []
+    for cand in sorted(found.values(), key=len):  # вложенные в уже выбранные не дублируем
+        if not any(_normdir(cand).startswith(_normdir(o) + "\\") for o in out):
+            out.append(cand)
+    return out
+
+
+def purge_plan(pkg: Package) -> dict:
+    """Что именно будет удалено — для показа в подтверждении и для выполнения:
+    {'ids', 'dirs', 'user_path', 'machine_path', 'needs_admin'}. ids — под какими
+    id пакет числится у winget (пусто — ставили не через winget)."""
+    ids = installed_variants(pkg)
+    dirs = purge_locations(pkg, ids)
+    norm = [_normdir(d) for d in dirs]
+
+    def under(entry: str) -> bool:
+        n = _normdir(os.path.expandvars(entry))
+        return any(n == d or n.startswith(d + "\\") for d in norm)
+
+    user = [e for e in env_path.path_entries(env_path.read_user_path()) if under(e)]
+    machine = [e for e in env_path.path_entries(env_path.read_machine_path()) if under(e)]
+    home = _normdir(str(Path.home()))
+    outside = any(not d.startswith(home + "\\") for d in norm)
+    return {
+        "ids": ids,
+        "dirs": dirs,
+        "user_path": user,
+        "machine_path": machine,
+        "needs_admin": (bool(machine) or outside) and not env_path.is_admin(),
+    }
+
+
+def _rmtree(path: str) -> bool:
+    """Удалить каталог целиком; True, если его больше нет."""
+
+    def _retry(func, p, _exc):
+        try:  # «только чтение» (объекты git, кэши) — снять и повторить
+            os.chmod(p, 0o700)
+            func(p)
+        except OSError:
+            pass
+
+    try:
+        shutil.rmtree(path, onexc=_retry)
+    except OSError:
+        pass
+    return not os.path.exists(path)
+
+
+def _ps_quote(s: str) -> str:
+    return "'" + s.replace("'", "''") + "'"
+
+
+def _run_elevated_script(script: str, files: dict[str, str], timeout: int = 1800) -> int | None:
+    """Выполнить PowerShell-скрипт с правами администратора (запрос UAC).
+    files — вспомогательные файлы {имя: содержимое}; в скрипте на них ссылаются
+    как {имя}. Код возврата; 1223 — UAC отклонён; None — не запустилось."""
+    tmpdir = tempfile.mkdtemp(prefix="vscl_adm_")
+    try:
+        for name, content in files.items():
+            fp = Path(tmpdir) / name
+            fp.write_text(content, encoding="utf-8")
+            script = script.replace("{" + name + "}", _ps_quote(str(fp)))
+        ps_file = Path(tmpdir) / "run.ps1"
+        ps_file.write_text(script, encoding="utf-8-sig")  # BOM: пути с кириллицей
+        launcher = (
+            "try { $p = Start-Process -FilePath 'powershell' -ArgumentList "
+            "'-NoProfile','-ExecutionPolicy','Bypass','-File',"
+            f"{_ps_quote(str(ps_file))} -Verb RunAs -Wait -PassThru -WindowStyle Hidden; "
+            "exit $p.ExitCode } catch { exit 1223 }"
+        )
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", launcher],
+            capture_output=True,
+            timeout=timeout,
+            creationflags=_NO_WINDOW,
+        )
+        return out.returncode
+    except Exception as e:
+        log.warning("elevated-скрипт: %s", e)
+        return None
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+_UAC_DENIED = "Запрос прав администратора (UAC) отклонён — ничего не изменено."
+
+
+def uninstall_package_elevated(pkg: Package) -> tuple[bool, str]:
+    """winget uninstall с правами администратора — для пакетов, поставленных на
+    всю машину (их деинсталлятор без повышения прав не работает)."""
+    wg = winget_path()
+    if wg is None or not valid_winget_id(pkg.winget_id):
+        return False, "winget не найден."
+    args = ", ".join(
+        _ps_quote(a)
+        for a in ("uninstall", "--id", pkg.winget_id, "--exact",
+                  "--accept-source-agreements", "--source", "winget")
+    )
+    script = (
+        f"$p = Start-Process -FilePath {_ps_quote(wg)} -ArgumentList {args} "
+        "-Wait -PassThru -WindowStyle Hidden\nexit $p.ExitCode\n"
+    )
+    log.info("winget uninstall %s (elevated)", pkg.winget_id)
+    code = _run_elevated_script(script, {})
+    if code is None:
+        return False, "Не удалось запустить процесс с правами администратора."
+    if code == 1223:
+        return False, _UAC_DENIED
+    if signed_code(code) in _WINGET_OK_CODES:
+        return True, "Пакет удалён (с правами администратора)."
+    return False, explain_winget_code(code, "")
+
+
+def _purge_elevated(dirs: list[str], machine_path: str | None) -> tuple[bool, str]:
+    """Один запрос UAC на всё, что не удалось без прав: папки и системный PATH."""
+    # Не Remove-Item -Recurse: в Windows PowerShell 5.1 он заходит внутрь
+    # junction-ссылок и стирает то, на что они указывают (чужие папки).
+    # Directory.Delete и rmdir /s удаляют саму ссылку, не трогая цель.
+    script = (
+        "foreach ($d in [IO.File]::ReadAllLines({dirs.txt})) {\n"
+        "  if ($d -and (Test-Path -LiteralPath $d)) {\n"
+        "    try { [IO.Directory]::Delete($d, $true) } catch {\n"
+        "      Start-Process -FilePath cmd.exe -ArgumentList "
+        "'/d','/c','rmdir','/s','/q',('\"' + $d + '\"') -Wait -WindowStyle Hidden\n"
+        "    }\n"
+        "  }\n}\n"
+    )
+    files = {"dirs.txt": "\n".join(dirs)}
+    if machine_path is not None:
+        files["path.txt"] = machine_path
+        script += (
+            "$v=[IO.File]::ReadAllText({path.txt})\n"
+            "Set-ItemProperty -Path "
+            "'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment' "
+            "-Name Path -Value $v -Type ExpandString\n"
+        )
+    script += "exit 0\n"
+    code = _run_elevated_script(script, files)
+    if code == 1223:
+        return False, _UAC_DENIED
+    if code != 0:
+        return False, f"Процесс с правами администратора вернул код {code}."
+    return True, ""
+
+
+def purge_package(pkg: Package, plan: dict | None = None) -> tuple[bool, str]:
+    """Удалить пакет полностью: winget uninstall, затем папки из плана и записи
+    PATH, которые на них указывали. (успех, отчёт по шагам).
+
+    Права администратора запрашиваются, только когда без них не вышло: сначала
+    всё пробуется от имени пользователя. Отклонённый UAC останавливает удаление
+    на том, что уже сделано, — и отчёт это говорит."""
+    plan = plan or purge_plan(pkg)
+    notes: list[str] = []
+    log.info("Полное удаление %s: %s", pkg.winget_id, "; ".join(plan["dirs"]) or "без папок")
+    for wid in plan.get("ids", []):
+        target = pkg.with_version(wid)
+        ok, msg = _run_winget("uninstall", target, scope=None, repair=False)
+        if not ok and "администратор" in msg.lower():
+            ok, msg = uninstall_package_elevated(target)
+            if not ok and msg == _UAC_DENIED:
+                return False, msg
+        first = (msg or "").strip().splitlines()[0] if (msg or "").strip() else ""
+        notes.append(
+            f"winget: {wid} удалён." if ok else f"winget: {wid}: {first or 'не удалён'}"
+        )
+    if not plan.get("ids"):
+        notes.append("У winget пакет не числится — удаляю только найденные папки.")
+    for hint in pkg.path_hints:
+        env_path.remove_from_user_path(hint)
+
+    left: list[str] = []
+    for d in plan["dirs"]:
+        if not os.path.isdir(d):
+            notes.append(f"Папка уже удалена деинсталлятором: {d}")
+        elif not safe_to_delete(d):
+            notes.append(f"Папка пропущена (защищённое место): {d}")
+        elif _rmtree(d):
+            notes.append(f"Папка удалена: {d}")
+        else:
+            left.append(d)
+
+    for e in plan["user_path"]:
+        env_path.remove_from_user_path(e)
+    machine_new: str | None = None
+    if plan["machine_path"]:
+        cur = env_path.read_machine_path()
+        new = cur
+        for e in plan["machine_path"]:
+            new = env_path.compute_removed(new, e)
+        if env_path.path_entries(new) != env_path.path_entries(cur):
+            machine_new = new
+    if left or machine_new is not None:
+        ok, msg = _purge_elevated(left, machine_new)
+        if not ok:
+            notes.append(msg)
+        for d in left:
+            notes.append(
+                f"Папка удалена (с правами администратора): {d}"
+                if not os.path.exists(d)
+                else f"НЕ удалена (занята программой или нет прав): {d}"
+            )
+    proc = os.environ.get("PATH", "")
+    for e in plan["user_path"] + plan["machine_path"]:
+        proc = env_path.compute_removed(proc, e)
+    os.environ["PATH"] = proc
+    n_path = len(plan["user_path"]) + len(plan["machine_path"])
+    if n_path:
+        notes.append(f"Записей убрано из PATH: {n_path}.")
+        env_path._broadcast_env_change()
+
+    # Переменные окружения, которые указывали внутрь удалённых папок (JAVA_HOME,
+    # GOROOT…): оставшись, они ломают следующую установку того же инструмента.
+    gone = [_normdir(d) for d in plan["dirs"] if not os.path.exists(d)]
+    for var in PURGE_ENV_VARS:
+        val = _normdir(os.path.expandvars(env_path.read_user_env_var(var) or ""))
+        if val and any(val == g or val.startswith(g + "\\") for g in gone):
+            ok_var, _m = env_path.delete_user_env_var(var)
+            if ok_var:
+                notes.append(f"Переменная {var} удалена: указывала на удалённую папку.")
+
+    remains = [d for d in plan["dirs"] if os.path.exists(d) and safe_to_delete(d)]
+    still = package_installed(pkg)
+    if still:
+        notes.append("Инструмент всё ещё находится в системе — возможно, стоит ещё одна его копия.")
+    done = not remains and not still
+    notes.append(
+        "Готово: ничего не осталось. Откройте новый терминал."
+        if done
+        else "Удалено не всё — закройте программы, которые используют эти файлы, и повторите."
+    )
+    return done, "\n".join(notes)
 
 
 def _run_winget(action: str, pkg: Package, scope: str | None, repair: bool) -> tuple[bool, str]:
@@ -685,7 +1103,7 @@ def _run_winget(action: str, pkg: Package, scope: str | None, repair: bool) -> t
         return False, str(e)
 
     text = ((out.stdout or "") + "\n" + (out.stderr or "")).strip()
-    ok = out.returncode in _WINGET_OK_CODES
+    ok = signed_code(out.returncode) in _WINGET_OK_CODES
     if ok:
         log.info("winget %s %s: успех (код %s)", action, pkg.winget_id, out.returncode)
         # #1: пакет мог прописать PATH сам (Python/Node/Go/JDK…) — подтянем его

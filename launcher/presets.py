@@ -41,10 +41,18 @@ def normalize_preset(value) -> dict:
         out["stacks"] = [str(x) for x in raw] if isinstance(raw, list) else []
         for k, default in _OPTION_DEFAULTS.items():
             if k in value:
-                out[k] = type(default)(value[k]) if isinstance(default, bool) else value[k]
+                out[k] = _as_bool(value[k]) if isinstance(default, bool) else value[k]
         out["folder"] = str(out["folder"] or "")
         out["profile"] = str(out["profile"] or "")
     return out
+
+
+def _as_bool(v) -> bool:
+    """Булево из пресета: импортированный файл мог принести "false" строкой, а
+    bool("false") — это True (пресет закрывал бы VS Code без спроса)."""
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on", "да")
+    return bool(v)
 
 
 def preset_stacks(value) -> list[str]:
@@ -71,8 +79,10 @@ def build_shortcut_cmd(invocation: list[str], preset: str) -> str:
     фиксированы (--run --preset ИМЯ), пользовательский ввод — только имя
     пресета, которое подставляется в кавычках; кавычки из имени убираются,
     чтобы не разорвать строку."""
-    safe_name = str(preset).replace('"', "")
-    parts = " ".join(f'"{tok}"' for tok in invocation)
+    # Перевод строки в имени начал бы в .cmd новую команду, а % — подстановку
+    # переменной: имя пресета приходит и из импортированных файлов.
+    safe_name = "".join(ch for ch in str(preset) if ch not in '"\r\n').replace("%", "%%")
+    parts = " ".join('"' + str(tok).replace("%", "%%") + '"' for tok in invocation)
     return (
         "@echo off\r\n"
         "chcp 65001>nul\r\n"   # UTF-8: корректный путь с кириллицей внутри .cmd

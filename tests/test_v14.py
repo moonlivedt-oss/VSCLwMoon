@@ -384,17 +384,21 @@ def test_launch_preset_without_cli():
     assert ok is False
 
 
-def test_launch_preset_runs_and_kills(monkeypatch):
+def test_launch_preset_runs_and_kills(monkeypatch, tmp_path):
     calls = {"kill": 0, "args": None}
     monkeypatch.setattr(quicklaunch, "load_installed", lambda cli: (["a.one"], "тест"))
     monkeypatch.setattr(quicklaunch, "read_extension_manifests", lambda cli: {})
     monkeypatch.setattr(quicklaunch, "kill_vscode", lambda cli: calls.__setitem__("kill", 1))
+    monkeypatch.setattr(quicklaunch, "wait_vscode_closed", lambda cli: True)
+    # Закрывать есть что: VS Code запущен (незапущенный не закрываем).
+    monkeypatch.setattr(quicklaunch, "vscode_process_count", lambda cli: 1)
     monkeypatch.setattr(
         quicklaunch, "launch_detached", lambda cli, args: calls.__setitem__("args", args)
     )
-    cfg = {"presets": {"web": {"stacks": ["web"], "kill": True, "folder": r"D:\p"}}}
+    proj = str(tmp_path)  # папка должна существовать: удалённую пресет пропускает
+    cfg = {"presets": {"web": {"stacks": ["web"], "kill": True, "folder": proj}}}
     ok, msg = quicklaunch.launch_preset("code", cfg, {"a.one": "python"}, "web")
     assert ok is True
     assert calls["kill"] == 1
-    assert calls["args"][-1] == r"D:\p"
+    assert calls["args"][-1] == proj
     assert "a.one" in calls["args"]  # стек python не выбран -> выключен

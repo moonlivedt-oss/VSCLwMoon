@@ -114,14 +114,73 @@ def read_machine_path() -> str:
         return ""
 
 
+def check_path_overwrite(old: str, new: str) -> str:
+    """Почему новый PATH похож на ошибку, а не на правку ('' — всё в порядке).
+
+    read_user_path при сбое чтения реестра отдаёт '' — и «дописать каталог»
+    превратилось бы в PATH из одного этого каталога: все программы пропали бы
+    из PATH. Настоящая правка всегда сохраняет хоть одну прежнюю запись (или
+    убирает только мёртвые)."""
+    old_e = path_entries(old)
+    if not old_e:
+        return ""
+    new_norm = {_norm(e) for e in path_entries(new)}
+    if new_norm & {_norm(e) for e in old_e}:
+        return ""
+    live = []
+    for e in old_e:
+        try:
+            if Path(os.path.expandvars(e)).is_dir():
+                live.append(e)
+        except Exception:
+            pass
+    if not live:
+        return ""
+    return (
+        "новый PATH не содержит ни одной прежней рабочей записи — похоже на сбой "
+        "чтения реестра, запись отменена"
+    )
+
+
+def _remember_old_path(old: str) -> None:
+    """Журнал прежних значений PATH (path_history.txt рядом с конфигом): любой
+    писатель PATH оставляет след, из которого можно вернуть всё руками."""
+    try:
+        from datetime import datetime
+
+        from .paths import CONFIG_DIR
+
+        f = CONFIG_DIR / "path_history.txt"
+        if f.is_file() and f.stat().st_size > 256_000:
+            f.replace(f.with_name("path_history.old.txt"))
+        with open(f, "a", encoding="utf-8") as fh:
+            fh.write(f"{datetime.now():%Y-%m-%d %H:%M:%S}\t{old}\n")
+    except Exception:
+        pass
+
+
 def _write_user_path(value: str) -> None:
     """Записать пользовательский PATH типом REG_EXPAND_SZ (чтобы %VAR% внутри
-    продолжали раскрываться). Создаёт значение, если его не было."""
+    продолжали раскрываться). Создаёт значение, если его не было.
+
+    Текущее значение перечитывается в той же открытой ветке: если новое теряет
+    все рабочие записи (см. check_path_overwrite) — ValueError, ничего не
+    пишем. Прежнее значение уходит в path_history.txt."""
     import winreg
 
     with winreg.OpenKey(
         winreg.HKEY_CURRENT_USER, _USER_ENV_SUBKEY, 0, winreg.KEY_READ | winreg.KEY_WRITE
     ) as key:
+        try:
+            old, _typ = winreg.QueryValueEx(key, "Path")
+        except FileNotFoundError:
+            old = ""
+        old = old if isinstance(old, str) else ""
+        why = check_path_overwrite(old, value)
+        if why:
+            raise ValueError(why)
+        if old != value:
+            _remember_old_path(old)
         winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, value)
 
 
@@ -190,6 +249,18 @@ def path_health(path_str: str | None = None) -> dict:
         except Exception:
             missing.append(e)
     return {"count": len(entries), "duplicates": duplicates, "missing": missing, "length": len(raw)}
+
+
+def registry_path() -> str:
+    """PATH, который получит новый терминал: системный + пользовательский из
+    реестра, %VAR% раскрыты. '' — реестр недоступен (не Windows)."""
+    parts: list[str] = []
+    for raw in (read_machine_path(), read_user_path()):
+        for e in path_entries(raw):
+            e = os.path.expandvars(e.strip().strip('"'))
+            if e:
+                parts.append(e)
+    return os.pathsep.join(parts)
 
 
 def refresh_process_path_from_registry() -> bool:
@@ -297,6 +368,27 @@ def set_user_env_var(name: str, value: str) -> tuple[bool, str]:
         return False, f"Не удалось записать {name} в реестр: {e}"
     os.environ[name] = value
     return True, f"{name} = {value}"
+
+
+def delete_user_env_var(name: str) -> tuple[bool, str]:
+    """Удалить пользовательскую переменную окружения (HKCU\\Environment) и убрать
+    её из текущего процесса. (удалили_ли, сообщение)."""
+    if not name:
+        return False, "Пустое имя переменной."
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, _USER_ENV_SUBKEY, 0, winreg.KEY_READ | winreg.KEY_WRITE
+        ) as key:
+            winreg.DeleteValue(key, name)
+        _broadcast_env_change()
+    except FileNotFoundError:
+        return False, f"{name} не задана."
+    except Exception as e:
+        return False, f"Не удалось удалить {name}: {e}"
+    os.environ.pop(name, None)
+    return True, f"Переменная {name} удалена."
 
 
 # --- чистка PATH: дубликаты и мёртвые записи (#8 → действие) ----------------

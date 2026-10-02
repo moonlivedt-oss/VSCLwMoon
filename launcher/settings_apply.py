@@ -90,11 +90,30 @@ def insert_keys_jsonc(raw: str, missing: dict) -> str | None:
     return raw[:at] + lead + raw[at:close].rstrip() + "\n" + body + "\n" + raw[close:]
 
 
-def apply_settings(path: Path, to_add: dict) -> tuple[bool, str]:
+def backup_settings(path: Path) -> Path | None:
+    """Копия settings.json рядом с ним (settings.backup-<время>.json) с ротацией.
+    None — файла ещё нет."""
+    if not path.exists():
+        return None
+    from datetime import datetime
+
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup = path.with_name(f"settings.backup-{ts}.json")
+    n = 1
+    while backup.exists():  # та же секунда: прежнюю копию не затираем
+        n += 1
+        backup = path.with_name(f"settings.backup-{ts}-{n}.json")
+    backup.write_text(path.read_text(encoding="utf-8-sig"), encoding="utf-8")
+    _rotate_settings_backups(path.parent)
+    return backup
+
+
+def apply_settings(path: Path, to_add: dict, backup: bool = True) -> tuple[bool, str]:
     """Безопасно дописать НЕДОСТАЮЩИЕ ключи в settings.json:
     сначала бэкап (с ротацией), существующие ключи не трогаем, при JSONC
     (комментарии/хвостовые запятые) отказываемся — чтобы не сломать файл.
-    Возвращает (успех, сообщение)."""
+    backup=False — бэкап уже сделал вызывающий (он правит файл в несколько
+    приёмов, и копия нужна от исходного состояния). Возвращает (успех, сообщение)."""
     if not to_add:
         return False, "Нет рекомендованных настроек для установленных стеков."
     from .detect import _loads_jsonc
@@ -124,14 +143,15 @@ def apply_settings(path: Path, to_add: dict) -> tuple[bool, str]:
     from datetime import datetime
 
     rotated = 0
+    saved: Path | None = None
     if path.exists():
-        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup = path.with_name(f"settings.backup-{ts}.json")
-        backup.write_text(path.read_text(encoding="utf-8-sig"), encoding="utf-8")
-        # Ротация после записи нового бэкапа: старьё чистится, свежий сохранён.
-        rotated = _rotate_settings_backups(path.parent)
+        if backup:
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            saved = path.with_name(f"settings.backup-{ts}.json")
+            saved.write_text(path.read_text(encoding="utf-8-sig"), encoding="utf-8")
+            # Ротация после записи нового бэкапа: старьё чистится, свежий сохранён.
+            rotated = _rotate_settings_backups(path.parent)
     else:
-        backup = None
         path.parent.mkdir(parents=True, exist_ok=True)
     if jsonc:
         new_text = insert_keys_jsonc(raw, missing)
@@ -153,8 +173,8 @@ def apply_settings(path: Path, to_add: dict) -> tuple[bool, str]:
         existing.update(missing)
         path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
     msg = f"Добавлено настроек: {len(missing)}."
-    if backup:
-        msg += f"\nБэкап: {backup.name}"
+    if saved:
+        msg += f"\nБэкап: {saved.name}"
         if rotated:
             msg += f" (удалено старых бэкапов: {rotated})"
     return True, msg
@@ -166,6 +186,7 @@ def missing_settings(path: Path | None, to_add: dict) -> dict:
     if not path or not path.exists():
         return dict(to_add)
     from .detect import _loads_jsonc
+
     try:
         existing = _loads_jsonc(path.read_text(encoding="utf-8-sig"))
     except OSError:

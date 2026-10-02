@@ -24,13 +24,27 @@ from . import cleanup
 from .gui_widgets import _hline, _wrap
 from .gui_workers import FnWorker
 from .i18n import _
-from .vscode import code_gui_exe, extensions_dir, vscode_process_count, vscode_user_settings_path
+from .vscode import vscode_process_count
 
 MB = 1024 * 1024
 
 
 def _mb(b: int) -> str:
+    if b >= 1024 * MB:
+        return _("{gb} ГБ").format(gb=f"{b / (1024 * MB):.1f}")
     return _("{mb} МБ").format(mb=max(1, round(b / MB)) if b else 0)
+
+
+def _age(mtime: float) -> str:
+    """«сегодня», «12 дн. назад» — по дате изменения."""
+    import time
+
+    if not mtime:
+        return ""
+    days = int((time.time() - mtime) // 86400)
+    if days <= 0:
+        return _("сегодня")
+    return _("{n} дн. назад").format(n=days)
 
 
 class CleanupDialog(QDialog):
@@ -40,7 +54,7 @@ class CleanupDialog(QDialog):
         self._items: list[dict] = []
         self._worker = None
         self.setWindowTitle(_("Уборка VS Code"))
-        self.resize(720, 560)
+        self.resize(800, 600)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 18, 18, 16)
         lay.setSpacing(12)
@@ -50,10 +64,11 @@ class CleanupDialog(QDialog):
         note = _wrap(
             QLabel(
                 _(
-                    "Что VS Code накопил и сам не чистит: копии установщиков, данные "
-                    "удалённых проектов, кэши движка, старые логи и версии расширений. "
-                    "Всё это пересоздаётся при необходимости. Удаление — в Корзину, "
-                    "только при закрытом VS Code."
+                    "Что VS Code накопил и сам не чистит: кэш подсказок C/C++, копии "
+                    "установщиков, кэши движка, отчёты о падениях, старые логи и версии. "
+                    "Отмеченное пересоздаётся само. Неотмеченные группы (данные удалённых "
+                    "расширений, давно не открытые проекты, история удалённых файлов) — "
+                    "отметьте сами, если не нужны. Удаление — в Корзину, при закрытом VS Code."
                 )
             )
         )
@@ -62,8 +77,9 @@ class CleanupDialog(QDialog):
         lay.addWidget(_hline())
 
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels([_("Что"), _("Размер")])
-        self.tree.setColumnWidth(0, 520)
+        self.tree.setHeaderLabels([_("Что"), _("Размер"), _("Изменено")])
+        self.tree.setColumnWidth(0, 560)
+        self.tree.setColumnWidth(1, 80)
         self.tree.itemChanged.connect(self._on_changed)
         lay.addWidget(self.tree, 1)
 
@@ -72,6 +88,15 @@ class CleanupDialog(QDialog):
         lay.addWidget(self.status)
 
         bar = QHBoxLayout()
+        self.safe_btn = QPushButton(_("Только безопасное"))
+        self.safe_btn.setObjectName("Ghost")
+        self.safe_btn.setToolTip(_("Отметить то, что VS Code и расширения создадут заново сами."))
+        self.safe_btn.clicked.connect(lambda: self._check(safe_only=True))
+        self.all_btn = QPushButton(_("Отметить всё"))
+        self.all_btn.setObjectName("Ghost")
+        self.all_btn.clicked.connect(lambda: self._check(safe_only=False))
+        bar.addWidget(self.safe_btn)
+        bar.addWidget(self.all_btn)
         self.rescan_btn = QPushButton(_("Пересканировать"))
         self.rescan_btn.setObjectName("Ghost")
         self.rescan_btn.clicked.connect(self._scan)
@@ -93,17 +118,11 @@ class CleanupDialog(QDialog):
     def _scan(self):
         if self._worker is not None and self._worker.isRunning():
             return
-        settings = vscode_user_settings_path(self._cli)
-        if settings is None:
-            self.status.setText(_("Не найдена папка данных VS Code (%APPDATA%)."))
-            return
-        user_data = settings.parent.parent
-        ext_dir = extensions_dir(self._cli)
-        exe = code_gui_exe(self._cli)
+        cli = self._cli
         self.go_btn.setEnabled(False)
         self.rescan_btn.setEnabled(False)
         self.status.setText(_("Ищу…"))
-        self._worker = FnWorker(lambda: cleanup.scan(user_data, ext_dir, exe))
+        self._worker = FnWorker(lambda: cleanup.scan_vscode(cli))
         self._worker.done.connect(self._on_scanned)
         self._worker.start()
 
@@ -117,19 +136,45 @@ class CleanupDialog(QDialog):
         self.tree.clear()
         groups: dict[str, QTreeWidgetItem] = {}
         for kind, size, n in cleanup.summarize(res):
-            g = QTreeWidgetItem([f"{_(cleanup.KIND_TITLES.get(kind, kind))}  ({n})", _mb(size)])
+            safe = kind in cleanup.SAFE_KINDS
+            title = _(cleanup.KIND_TITLES.get(kind, kind))
+            if not safe:
+                title += "  · " + _("проверьте перед удалением")
+            g = QTreeWidgetItem([f"{title}  ({n})", _mb(size), ""])
             g.setFlags(g.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsAutoTristate)
-            g.setCheckState(0, Qt.CheckState.Checked)
+            g.setCheckState(0, Qt.CheckState.Checked if safe else Qt.CheckState.Unchecked)
+            g.setToolTip(0, _(cleanup.KIND_HELP.get(kind, "")))
+            g.setData(0, Qt.ItemDataRole.UserRole + 1, kind)
             self.tree.addTopLevelItem(g)
             groups[kind] = g
-        for idx, it in enumerate(res):
+        order = sorted(range(len(res)), key=lambda i: -res[i]["bytes"])
+        for idx in order:
+            it = res[idx]
             label = it["note"] or it["path"]
-            child = QTreeWidgetItem([label, _mb(it["bytes"])])
+            child = QTreeWidgetItem([label, _mb(it["bytes"]), _age(it.get("mtime", 0))])
             child.setToolTip(0, it["path"])
             child.setData(0, Qt.ItemDataRole.UserRole, idx)
             child.setFlags(child.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            child.setCheckState(0, Qt.CheckState.Checked)
+            child.setCheckState(
+                0,
+                Qt.CheckState.Checked
+                if it["kind"] in cleanup.SAFE_KINDS
+                else Qt.CheckState.Unchecked,
+            )
             groups[it["kind"]].addChild(child)
+        self.tree.blockSignals(False)
+        self._on_changed()
+
+    def _check(self, safe_only: bool):
+        """Отметить всё или только безопасные группы."""
+        self.tree.blockSignals(True)
+        for gi in range(self.tree.topLevelItemCount()):
+            g = self.tree.topLevelItem(gi)
+            on = (not safe_only) or g.data(0, Qt.ItemDataRole.UserRole + 1) in cleanup.SAFE_KINDS
+            state = Qt.CheckState.Checked if on else Qt.CheckState.Unchecked
+            for ci in range(g.childCount()):
+                g.child(ci).setCheckState(0, state)
+            g.setCheckState(0, state)
         self.tree.blockSignals(False)
         self._on_changed()
 
@@ -149,8 +194,12 @@ class CleanupDialog(QDialog):
         if not self._items:
             self.status.setText(_("Убирать нечего — всё чисто."))
         else:
+            found = sum(i["bytes"] for i in self._items)
+            safe = sum(i["bytes"] for i in self._items if i["kind"] in cleanup.SAFE_KINDS)
             self.status.setText(
-                _("Выбрано: {n} · освободится {size}").format(n=len(sel), size=_mb(total))
+                _(
+                    "Найдено {all} (безопасно убрать — {safe}). Выбрано: {n} · освободится {size}"
+                ).format(all=_mb(found), safe=_mb(safe), n=len(sel), size=_mb(total))
             )
         self.go_btn.setEnabled(bool(sel))
 
@@ -170,11 +219,18 @@ class CleanupDialog(QDialog):
             )
             return
         total = _mb(sum(i["bytes"] for i in sel))
-        ok = QMessageBox.question(
-            self,
-            _("Уборка VS Code"),
-            _("Переместить в Корзину {n} элементов ({size})?").format(n=len(sel), size=total),
-        )
+        text = _("Переместить в Корзину {n} элементов ({size})?").format(n=len(sel), size=total)
+        risky = sorted({i["kind"] for i in sel} - cleanup.SAFE_KINDS)
+        if risky:
+            text += "\n\n" + _("Среди них то, что само не вернётся: {kinds}.").format(
+                kinds=", ".join(_(cleanup.KIND_TITLES.get(k, k)) for k in risky)
+            )
+        if sum(i["bytes"] for i in sel) > 2 * 1024 * MB:
+            text += "\n\n" + _(
+                "Объём большой: если он не помещается в Корзину, Windows удалит файлы сразу, "
+                "без возможности вернуть."
+            )
+        ok = QMessageBox.question(self, _("Уборка VS Code"), text)
         if ok != QMessageBox.StandardButton.Yes:
             return
         paths = [i["path"] for i in sel]

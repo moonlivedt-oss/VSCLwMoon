@@ -137,7 +137,10 @@ def build_launch_command(code_cli: str, disabled: list[str], folder: str,
     if disable_gpu:
         cmd.append("--disable-gpu")
     if folder:
-        cmd.append(f'"{folder}"')
+        # "D:\" — для Code.exe это экранированная кавычка, и путь съедал бы всё
+        # до конца строки. Удвоенный хвостовой слэш читается как один.
+        tail = len(folder) - len(folder.rstrip("\\"))
+        cmd.append(f'"{folder}' + "\\" * tail + '"')
     parts.append(" ".join(cmd))
     return " & ".join(parts)
 

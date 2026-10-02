@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from .gui_widgets import Clickable
 from .paths import ASSETS_DIR
 
 ICON_DIR = ASSETS_DIR / "icons"
@@ -118,7 +119,7 @@ class NavRail(QWidget):
 
     page_changed = pyqtSignal(str)
 
-    def __init__(self, width: int = 190):
+    def __init__(self, width: int = 208):
         super().__init__()
         self.setObjectName("Nav")
         self.setFixedWidth(width)
@@ -186,7 +187,7 @@ class Section(QFrame):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         head = QHBoxLayout()
-        head.setContentsMargins(0, 0, 10, 0)
+        head.setContentsMargins(0, 6, 12, 0)
         self._title = title
         self._collapsible = collapsible
         if collapsible:
@@ -227,7 +228,7 @@ class Section(QFrame):
         self._apply()
 
 
-class Pill(QFrame):
+class Pill(Clickable, QFrame):
     """Переключатель-пилюля: тумблер + подпись («Фон и эффекты включены»)."""
 
     def __init__(self, switch, text: str, tip: str = ""):
@@ -252,13 +253,12 @@ class Pill(QFrame):
         self.setProperty("on", "true" if on else "false")
         _repolish(self)
 
-    def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
+    def _on_click(self):
+        if self.switch.isEnabled():
             self.switch.toggle()
-        super().mousePressEvent(e)
 
 
-class Tile(QFrame):
+class Tile(Clickable, QFrame):
     """Плитка-действие: иконка, заголовок, пояснение, крупное число справа.
     Вся плитка кликабельна — отдельная кнопка не нужна."""
 
@@ -301,10 +301,8 @@ class Tile(QFrame):
         self.num_lbl.setText(text)
         self.num_lbl.setVisible(bool(text))
 
-    def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit()
-        super().mousePressEvent(e)
+    def _on_click(self):
+        self.clicked.emit()
 
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
@@ -393,7 +391,7 @@ class Banner(QFrame):
         p.end()
 
 
-class PaletteCard(QFrame):
+class PaletteCard(Clickable, QFrame):
     """Превью палитры: пейзаж, точки цветов, название. Клик — выбрать."""
 
     picked = pyqtSignal(str)
@@ -447,10 +445,8 @@ class PaletteCard(QFrame):
         self.setProperty("on", "true" if on else "false")
         _repolish(self)
 
-    def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            self.picked.emit(self.key)
-        super().mousePressEvent(e)
+    def _on_click(self):
+        self.picked.emit(self.key)
 
 
 def segmented(options, current, on_pick) -> QFrame:

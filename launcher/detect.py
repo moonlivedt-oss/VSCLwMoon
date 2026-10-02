@@ -387,6 +387,71 @@ def _loads_jsonc(text: str):
         return None
 
 
+# Тип отладчика в .vscode/launch.json -> расширение, которое его даёт.
+DEBUG_TYPE_EXT: dict[str, str] = {
+    "cppdbg": "ms-vscode.cpptools",
+    "cppvsdbg": "ms-vscode.cpptools",
+    "lldb": "vadimcn.vscode-lldb",
+    "debugpy": "ms-python.debugpy",
+    "python": "ms-python.debugpy",
+    "java": "vscjava.vscode-java-debug",
+    "coreclr": "ms-dotnettools.csharp",
+    "go": "golang.go",
+    "php": "xdebug.php-debug",
+    "powershell": "ms-vscode.powershell",
+}
+
+
+def _read_jsonc(path: Path):
+    try:
+        return _loads_jsonc(path.read_text(encoding="utf-8-sig")) if path.is_file() else None
+    except Exception:
+        return None
+
+
+def project_required_extensions(folder) -> dict[str, str]:
+    """Расширения, без которых настройки проекта не заработают: {id: причина}.
+
+    Смотрим только то, что проект назвал сам, в `<folder>/.vscode`:
+    - launch.json: тип отладчика (cppdbg живёт в cpptools, lldb — в CodeLLDB…).
+      Если такое расширение выключить стеком, F5 ответит «Configured debug type
+      is not supported»;
+    - launch.json/tasks.json с CMake Tools (${command:cmake.…}, задачи cmake);
+    - settings.json с отключённым IntelliSense cpptools — подсказки там даёт
+      clangd.
+    Причина — короткая метка для сообщения («отладчик cppdbg»). Файлов нет или
+    они не читаются — пустой словарь."""
+    out: dict[str, str] = {}
+    if not folder:
+        return out
+    try:
+        vs = Path(folder) / ".vscode"
+        if not vs.is_dir():
+            return out
+    except Exception:
+        return out
+    launch = _read_jsonc(vs / "launch.json")
+    confs = launch.get("configurations") if isinstance(launch, dict) else None
+    for c in confs if isinstance(confs, list) else ():
+        if not isinstance(c, dict):
+            continue
+        typ = str(c.get("type") or "")
+        ext = DEBUG_TYPE_EXT.get(typ.lower())
+        if ext:
+            out.setdefault(ext, f"launch.json: {typ}")
+        if any(isinstance(v, str) and "${command:cmake." in v for v in c.values()):
+            out.setdefault("ms-vscode.cmake-tools", "launch.json: CMake Tools")
+    tasks = _read_jsonc(vs / "tasks.json")
+    tlist = tasks.get("tasks") if isinstance(tasks, dict) else None
+    for t in tlist if isinstance(tlist, list) else ():
+        if isinstance(t, dict) and str(t.get("type") or "").lower() == "cmake":
+            out.setdefault("ms-vscode.cmake-tools", "tasks.json: cmake")
+    settings = _read_jsonc(vs / "settings.json")
+    if isinstance(settings, dict) and settings.get("C_Cpp.intelliSenseEngine") == "disabled":
+        out.setdefault("llvm-vs-code-extensions.vscode-clangd", "settings.json: clangd")
+    return out
+
+
 def detect_recommended_stacks(folder, ext_index: dict[str, str]) -> set[str]:
     """Стеки, на которые указывают РЕКОМЕНДАЦИИ воркспейса из
     `<folder>/.vscode/extensions.json` (#3).

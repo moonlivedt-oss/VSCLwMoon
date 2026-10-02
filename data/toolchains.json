@@ -175,6 +175,7 @@
           "winget_id": "Rustlang.Rustup",
           "title": "Rustup (rustc + cargo)",
           "probe": ["cargo", "rustc"],
+          "purge_dirs": ["%USERPROFILE%\\.cargo", "%USERPROFILE%\\.rustup"],
           "note": "Через rustup обновляется и переключается вся цепочка Rust."
         }
       ]

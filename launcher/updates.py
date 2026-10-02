@@ -21,6 +21,33 @@ _API = f"https://api.github.com/repos/{REPO}/releases/latest"
 _NUM_RE = re.compile(r"\d+")
 _HEX64_RE = re.compile(r"\b[0-9a-fA-F]{64}\b")
 
+# Больше этого обновление не весит (exe ~40 МБ): сервер, отдающий бесконечный
+# поток, не должен забить диск.
+MAX_DOWNLOAD_BYTES = 300 * 1024 * 1024
+_TRUSTED_HOSTS = ("github.com", "githubusercontent.com")
+
+
+def trusted_url(url: str) -> bool:
+    """Скачиваем только по https с GitHub (сам релиз и его CDN). Ответ API
+    мог бы указать куда угодно — исполняемый файл берём лишь оттуда."""
+    from urllib.parse import urlparse
+
+    try:
+        u = urlparse(url)
+    except ValueError:
+        return False
+    host = (u.hostname or "").lower()
+    return u.scheme == "https" and any(
+        host == h or host.endswith("." + h) for h in _TRUSTED_HOSTS
+    )
+
+
+def safe_tag(tag: str) -> str:
+    """Тег релиза для имени файла: только буквы, цифры, точка, дефис, '_'.
+    Тег приходит из сети и попадает в путь и в .bat — '..', кавычки и % там
+    недопустимы."""
+    return re.sub(r"[^0-9A-Za-z._-]", "", str(tag or "")).strip(".")[:40] or "update"
+
 
 def parse_version(s: str) -> tuple[int, ...]:
     """'v1.2.0' / '1.2' / 'release-1.2.0-beta' -> кортеж чисел (1,2,0).
@@ -89,21 +116,25 @@ def parse_release_info(data: dict) -> dict | None:
     tag = data.get("tag_name") or data.get("name")
     if not isinstance(tag, str) or not tag.strip():
         return None
-    exe_url = sha_url = None
+    exes: dict[str, str] = {}
+    shas: dict[str, str] = {}
     for asset in data.get("assets") or ():
         if not isinstance(asset, dict):
             continue
-        name = (asset.get("name") or "").lower()
+        name = str(asset.get("name") or "").lower()
         url = asset.get("browser_download_url")
-        if not isinstance(url, str):
+        if not isinstance(url, str) or not trusted_url(url):
             continue
         if name.endswith(".sha256"):
-            sha_url = url
+            shas[name] = url
         elif name.endswith(".exe"):
-            exe_url = url
-    if not exe_url:
+            exes[name] = url
+    if not exes:
         return None
-    return {"tag": tag.strip(), "exe_url": exe_url, "sha256_url": sha_url}
+    # Своё имя важнее любого другого .exe в релизе; сумма — парная к нему.
+    exe_name = "vscodelauncher.exe" if "vscodelauncher.exe" in exes else sorted(exes)[0]
+    sha_url = shas.get(exe_name + ".sha256") or (next(iter(shas.values())) if len(shas) == 1 else None)
+    return {"tag": tag.strip(), "exe_url": exes[exe_name], "sha256_url": sha_url}
 
 
 def parse_sha256_text(text: str) -> str | None:
@@ -139,6 +170,8 @@ def download_file(url: str, dest, timeout: float = 60.0,
                     break
                 f.write(chunk)
                 got += len(chunk)
+                if got > MAX_DOWNLOAD_BYTES:
+                    raise OSError("файл обновления слишком большой — загрузка прервана")
                 if progress:
                     progress(got, total)
 
@@ -149,11 +182,20 @@ def download_and_verify(info: dict, dest, timeout: float = 60.0,
     Возвращает (успех, сообщение). Несовпадение суммы -> файл удаляется и
     успех=False: не подсовываем пользователю неполную/битую сборку."""
     dest = Path(dest)
+    sha_url = info.get("sha256_url")
+    if not sha_url:
+        # Без контрольной суммы не ставим: подменённый или битый exe запустился
+        # бы с правами пользователя. CI кладёт .sha256 в каждый релиз.
+        return False, ("В релизе нет файла контрольной суммы (.sha256) — обновление "
+                       "не установлено. Скачайте его вручную со страницы релизов.")
     try:
         download_file(info["exe_url"], dest, timeout=timeout, progress=progress)
     except Exception as e:
+        try:
+            dest.unlink()
+        except OSError:
+            pass
         return False, f"Не удалось скачать: {e}"
-    sha_url = info.get("sha256_url")
     if sha_url:
         try:
             req = urllib.request.Request(
@@ -172,22 +214,38 @@ def download_and_verify(info: dict, dest, timeout: float = 60.0,
                 return False, ("Контрольная сумма не совпала — файл повреждён "
                                "или подменён. Обновление отменено.")
             return True, "Скачано и проверено по SHA256."
-        return True, "Скачано (файл .sha256 недоступен — без проверки суммы)."
-    return True, "Скачано (в релизе нет .sha256 — без проверки суммы)."
+    try:
+        dest.unlink()
+    except OSError:
+        pass
+    return False, ("Не удалось получить контрольную сумму (.sha256) — обновление "
+                   "не установлено. Повторите позже или скачайте вручную.")
 
 
 def build_update_swap_bat(old_exe: str, new_exe: str, image_name: str) -> str:
     """Содержимое .bat, который заменяет запущенный exe (#10). Запущенный файл
     перезаписать нельзя, поэтому: ждём, пока процесс лаунчера закроется, меняем
     старый файл новым и снова запускаем — затем bat самоудаляется. Пути в
-    кавычках; image_name — имя процесса для tasklist (VSCodeLauncher.exe)."""
+    кавычках; image_name — имя процесса для tasklist (VSCodeLauncher.exe).
+
+    В .bat '%' раскрывается даже в кавычках, а кавычка рвёт аргумент — пути с
+    ними экранируем/отвергаем. Ожидание ограничено ~2 минутами, чтобы зависший
+    процесс не оставил вечный cmd в фоне."""
+    for p in (old_exe, new_exe, image_name):
+        if any(ch in str(p) for ch in '"\r\n'):
+            raise ValueError(f"недопустимый путь для обновления: {p!r}")
+    old_exe, new_exe, image_name = (str(p).replace("%", "%%") for p in (old_exe, new_exe, image_name))
     return (
         "@echo off\r\n"
         "chcp 65001 >nul\r\n"
+        "set /a tries=0\r\n"
         ":wait\r\n"
         "timeout /t 1 /nobreak >nul\r\n"
+        "set /a tries+=1\r\n"
+        "if %tries% GEQ 120 goto swap\r\n"
         f'tasklist /FI "IMAGENAME eq {image_name}" | find /I "{image_name}" >nul '
         "&& goto wait\r\n"
+        ":swap\r\n"
         f'move /Y "{new_exe}" "{old_exe}" >nul\r\n'
         f'start "" "{old_exe}"\r\n'
         'del "%~f0"\r\n'

@@ -13,7 +13,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from . import winmem
+from . import env_path, winmem
 from .safety import valid_ext_id
 
 # GUI запускается через pythonw/exe без консоли, поэтому любой консольный
@@ -26,13 +26,19 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # --- обнаружение CLI и папки расширений -----------------------------------
 
 def find_code_cli() -> str | None:
-    local = Path(os.environ.get("LOCALAPPDATA", ""))
+    # Без LOCALAPPDATA Path("") / ... стал бы путём от текущей папки — и чужой
+    # code.cmd в ней принимался бы за VS Code.
+    local_env = os.environ.get("LOCALAPPDATA", "")
+    local = Path(local_env) if local_env else None
     candidates = [
-        local / "Programs" / "Microsoft VS Code" / "bin" / "code.cmd",
         Path("C:/Program Files/Microsoft VS Code/bin/code.cmd"),
-        local / "Programs" / "Microsoft VS Code Insiders" / "bin" / "code-insiders.cmd",
         Path("C:/Program Files/Microsoft VS Code Insiders/bin/code-insiders.cmd"),
     ]
+    if local is not None:
+        candidates[0:0] = [local / "Programs" / "Microsoft VS Code" / "bin" / "code.cmd"]
+        candidates[2:2] = [
+            local / "Programs" / "Microsoft VS Code Insiders" / "bin" / "code-insiders.cmd"
+        ]
     for c in candidates:
         if c.exists():
             return str(c)
@@ -107,16 +113,43 @@ def vscode_user_settings_path(code_cli: str | None) -> Path | None:
 
 # --- чтение списка расширений ---------------------------------------------
 
+def _obsolete_folders(ext_dir: Path) -> set[str]:
+    """Папки расширений, которые VS Code пометил на удаление (.obsolete).
+
+    Удалённое в редакторе расширение ещё какое-то время числится в
+    extensions.json — до следующего запуска VS Code. Без этого фильтра лаунчер
+    показывал его установленным и считал в стеке."""
+    try:
+        data = json.loads((ext_dir / ".obsolete").read_text(encoding="utf-8-sig"))
+    except Exception:
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    return {str(k).lower() for k, v in data.items() if v}
+
+
 def read_installed_from_disk(code_cli: str | None) -> list[str]:
     """Быстрое чтение id из extensions.json (~3 мс). Пусто — файла нет/битый."""
-    f = extensions_dir(code_cli) / "extensions.json"
+    ext_dir = extensions_dir(code_cli)
+    f = ext_dir / "extensions.json"
     if not f.exists():
         return []
     try:
-        data = json.loads(f.read_text(encoding="utf-8"))
-        ids = {(e.get("identifier") or {}).get("id", "").lower()
-               for e in data if isinstance(e, dict)}
-        ids.discard("")
+        data = json.loads(f.read_text(encoding="utf-8-sig"))
+        if not isinstance(data, list):
+            return []
+        gone = _obsolete_folders(ext_dir)
+        ids = set()
+        for e in data:
+            if not isinstance(e, dict):
+                continue
+            ident = e.get("identifier")
+            ext_id = ident.get("id", "") if isinstance(ident, dict) else ""
+            if not isinstance(ext_id, str) or not ext_id:
+                continue
+            if str(e.get("relativeLocation") or "").lower() in gone:
+                continue
+            ids.add(ext_id.lower())
         return sorted(ids)
     except Exception:
         return []
@@ -159,10 +192,41 @@ def install_extension(code_cli: str, ext_id: str) -> tuple[bool, str]:
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
             creationflags=_NO_WINDOW,
         )
-        text = ((out.stdout or "") + "\n" + (out.stderr or "")).strip()
-        return out.returncode == 0, text
+        return _cli_result(out)
     except Exception as e:
         return False, str(e)
+
+
+_CLI_HINTS: tuple[tuple[str, str], ...] = (
+    (r"ENOTFOUND|EAI_AGAIN|getaddrinfo",
+     "Нет связи с маркетплейсом VS Code: не находится его адрес. Проверьте интернет, VPN и прокси."),
+    (r"ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|network",
+     "Соединение с маркетплейсом оборвалось. Проверьте интернет, VPN и прокси и повторите."),
+    (r"self.signed certificate|unable to verify|CERT_",
+     "Сертификат маркетплейса не проверяется — обычно его подменяет прокси или антивирус."),
+    (r"EPERM|EBUSY|operation not permitted|being used by another process",
+     "Файлы расширения заняты. Закройте все окна VS Code и повторите."),
+    (r"not found|Failed Installing Extensions",
+     "Маркетплейс не нашёл такое расширение: возможно, его переименовали или удалили."),
+)
+
+
+def explain_cli_error(text: str) -> str:
+    """Человеческое объяснение частой ошибки `code --install-extension`, или ''."""
+    for pattern, hint in _CLI_HINTS:
+        if re.search(pattern, text or "", re.I):
+            return hint
+    return ""
+
+
+def _cli_result(out) -> tuple[bool, str]:
+    text = ((out.stdout or "") + "\n" + (out.stderr or "")).strip()
+    ok = out.returncode == 0
+    if not ok:
+        hint = explain_cli_error(text)
+        if hint:
+            text = f"{hint}\n\n{text}"
+    return ok, text
 
 
 def uninstall_extension(code_cli: str, ext_id: str) -> tuple[bool, str]:
@@ -176,8 +240,7 @@ def uninstall_extension(code_cli: str, ext_id: str) -> tuple[bool, str]:
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
             creationflags=_NO_WINDOW,
         )
-        text = ((out.stdout or "") + "\n" + (out.stderr or "")).strip()
-        return out.returncode == 0, text
+        return _cli_result(out)
     except Exception as e:
         return False, str(e)
 
@@ -204,7 +267,11 @@ def code_gui_exe(code_cli: str | None) -> Path | None:
     напрямую через CreateProcess, минуя cmd.exe. None, если не удалось найти."""
     if not code_cli:
         return None
-    exe = Path(code_cli).resolve().parent.parent / code_image_name(code_cli)
+    p = Path(code_cli)
+    if p.suffix.lower() == ".exe":
+        # В настройках указали сам Code.exe (портативная сборка) — он и есть GUI.
+        return p if p.exists() else None
+    exe = p.resolve().parent.parent / code_image_name(code_cli)
     return exe if exe.exists() else None
 
 
@@ -427,10 +494,81 @@ def launch_detached(code_cli: str, args: list[str]) -> bool:
     CREATE_NEW_PROCESS_GROUP = 0x00000200
     flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     exe = code_gui_exe(code_cli)
+    env = clean_launch_env()
+    # Windows не запустит процесс с командной строкой длиннее 32 767 символов: при
+    # сотнях расширений список --disable-extension может в неё не поместиться.
+    if sum(len(a) + 3 for a in args) > 30000:
+        raise OSError(
+            "Слишком много выключаемых расширений: команда запуска длиннее предела "
+            "Windows. Включите часть стеков или используйте «Голый режим»."
+        )
     if exe is not None:
-        subprocess.Popen([str(exe), *args], creationflags=flags, close_fds=True)
+        subprocess.Popen([str(exe), *args], creationflags=flags, close_fds=True, env=env)
     else:
+        # Запасной путь через cmd: здесь аргументы снова разбирает оболочка, и
+        # путь вида D:\a&calc без пробелов ушёл бы в cmd без кавычек — '&'
+        # запустил бы вторую команду. Поэтому каждый аргумент в кавычках, а то,
+        # что в кавычках cmd всё равно раскрывает или рвёт, не пускаем вовсе.
+        bad = [a for a in [code_cli, *args] if any(ch in a for ch in '"%!\r\n')]
+        if bad:
+            raise OSError(
+                "Недопустимые символы в аргументах запуска (\", %, !): " + ", ".join(bad[:3])
+            )
         comspec = os.environ.get("COMSPEC", "cmd.exe")
-        subprocess.Popen([comspec, "/c", code_cli, *args],
-                         creationflags=flags, close_fds=True)
+        line = " ".join(_cmd_quote(a) for a in [code_cli, *args])
+        subprocess.Popen(f'"{comspec}" /d /s /c "{line}"',
+                         creationflags=flags, close_fds=True, env=env)
+    return True
+
+
+def _cmd_quote(arg: str) -> str:
+    """Аргумент в кавычках для cmd /s /c. Хвостовые обратные слэши удваиваем,
+    иначе 'D:\\' + '"' превратится в экранированную кавычку для программы."""
+    tail = len(arg) - len(arg.rstrip("\\"))
+    return '"' + arg + "\\" * tail + '"'
+
+
+def clean_launch_env(environ: dict | None = None) -> dict:
+    """Окружение для нового VS Code без следов другого экземпляра.
+
+    Лаунчер, запущенный из терминала VS Code, из задачи или из расширения,
+    наследует служебные переменные редактора. С ELECTRON_RUN_AS_NODE Code.exe
+    стартует как голый Node и окна не открывает вовсе; VSCODE_IPC_HOOK_CLI и
+    соседи заставляют новый процесс говорить со старым окном. code.cmd чистит
+    их сам, а мы запускаем Code.exe напрямую — поэтому чистим здесь.
+    VSCODE_EXTENSIONS оставляем: это выбор папки расширений, а не след."""
+    env = dict(os.environ if environ is None else environ)
+    if environ is None:
+        # PATH — как у нового терминала (из реестра), а не тот, с которым когда-то
+        # стартовал лаунчер: иначе только что установленный компилятор VS Code не
+        # видит до перезагрузки, хотя в PATH он уже прописан.
+        fresh = env_path.registry_path()
+        if fresh:
+            for key in [k for k in env if k.upper() == "PATH"]:
+                del env[key]
+            env["PATH"] = fresh
+    for key in list(env):
+        up = key.upper()
+        if up == "VSCODE_EXTENSIONS":
+            continue
+        if up in ("ELECTRON_RUN_AS_NODE", "ELECTRON_NO_ATTACH_CONSOLE") or up.startswith("VSCODE_"):
+            del env[key]
+    return env
+
+
+def wait_vscode_closed(code_cli: str | None, timeout: float = 8.0,
+                       poll: float = 0.25) -> bool:
+    """Дождаться, пока процессы VS Code исчезнут после kill_vscode. True — закрыт.
+
+    taskkill возвращается раньше, чем процессы реально завершатся. Новый
+    Code.exe, стартовавший в этот момент, находит ещё живой главный процесс,
+    передаёт ему аргументы и выходит: окно не открывается, а флаги
+    --disable-extension пропадают. Поэтому между закрытием и запуском ждём
+    настоящего выхода."""
+    import time
+    deadline = time.monotonic() + timeout
+    while vscode_process_count(code_cli) > 0:
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(poll)
     return True

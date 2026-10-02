@@ -245,7 +245,7 @@ class PathDoctorDialog(QDialog):
             lines.insert(0, _("Внимание: после починки пропадут команды — снимите лишние галочки."))
         self.preview_lbl.setText("\n".join(lines))
         n = len(ids)
-        self.fix_btn.setEnabled(bool(n) and (pv["machine_changed"] or pv["user_changed"]))
+        self.fix_btn.setEnabled(True)  # всегда отвечает; «нечего чинить» скажет сама
         self.fix_btn.setText(_("Починить ({n})").format(n=n) if n else _("Починить"))
 
     def _rebuild_menu(self):
@@ -290,6 +290,16 @@ class PathDoctorDialog(QDialog):
             return
         ids = self._selected()
         pv = pd.preview(self._report, ids)
+        if not ids or not (pv["machine_changed"] or pv["user_changed"]):
+            QMessageBox.information(
+                self,
+                _("Починка PATH"),
+                _(
+                    "Исправлять нечего: PATH не изменится. Пункты без галочки — это "
+                    "замечания к сведению, действий они не требуют."
+                ),
+            )
+            return
         msg = "\n".join(pd.describe_preview(pv))
         if pv["lost"]:
             msg = _("Пропадут команды: {t}.").format(t=", ".join(pv["lost"])) + "\n\n" + msg

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json as _json
+import os
 import sys
 
 from .categories import WEIGHT, WEIGHT_LABEL, build_ext_index, cat_title, load_categories
@@ -34,6 +35,7 @@ from .vscode import (
     launch_detached,
     load_installed,
     resolve_code_cli,
+    wait_vscode_closed,
 )
 from . import toolchains as _tc
 
@@ -97,6 +99,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="жёстко закрыть VS Code перед стартом (память освободится)",
     )
     p.add_argument("--no-new-window", action="store_true", help="не форсировать новое окно")
+    p.add_argument(
+        "--compat",
+        choices=("warn", "auto", "off"),
+        default=None,
+        help="проверка совместимости расширений: warn — только сообщить, auto — выключить "
+        "несовместимые на этот запуск, off — не проверять (по умолчанию — из настроек)",
+    )
+    p.add_argument(
+        "--compat-report",
+        action="store_true",
+        help="отчёт о совместимости всех установленных расширений и выход",
+    )
     p.add_argument(
         "--code-cli",
         metavar="ПУТЬ",
@@ -438,43 +452,26 @@ def _path_undo(which: str, apply: bool) -> int:
 
 
 def _doctor(as_json: bool) -> int:
-    """#8: отчёт об окружении — тулчейны с версиями, здоровье PATH, JAVA_HOME."""
-    rep = _tc.environment_report()
+    """Глубокая проверка окружения (envcheck): VS Code, команды, переменные,
+    PATH, диски, совместимость расширений. Код 1 — есть ошибки."""
+    from . import envcheck
+
+    cfg = load_config()
+    rep = envcheck.deep_report(resolve_code_cli(cfg))
     if as_json:
-        print(_json.dumps(rep, ensure_ascii=False, indent=2))
-        return 0
-    print("winget:", rep.get("winget") or "не найден")
-    tools = rep.get("tools", [])
-    print(f"Установленные тулчейны ({len(tools)}):")
-    for t in tools:
-        print(f"  ✓ {t['title']} — {t.get('version') or ''}")
-    jh = rep.get("java_home", {})
-    if jh.get("set"):
-        print("JAVA_HOME:", jh.get("path"), "" if jh.get("ok") else f"({jh.get('reason')})")
-        java_broken = not jh.get("ok")
+        print(_json.dumps(rep, ensure_ascii=False, indent=2, default=list))
     else:
-        print("JAVA_HOME: не задан")
-        java_broken = True
-    ph = rep.get("path", {})
-    pu = rep.get("path_user", {})
-    pm = rep.get("path_machine", {})
-    print(f"PATH: {ph.get('count', 0)} записей, длина {ph.get('length', 0)}")
-    # Раздельно (#3): чистка user не требует прав, machine — требует.
-    print(
-        f"  пользовательский: дублей {len(pu.get('duplicates', []))}, "
-        f"мёртвых {len(pu.get('missing', []))}"
-    )
-    print(
-        f"  системный: дублей {len(pm.get('duplicates', []))}, "
-        f"мёртвых {len(pm.get('missing', []))} (правится только с правами админа)"
-    )
-    if pu.get("duplicates") or pu.get("missing"):
-        print("  → почистить свой PATH: --clean-path (предпросмотр) / --clean-path --yes")
-    if pm.get("duplicates") or pm.get("missing"):
-        print("  → почистить системный PATH: --clean-path --machine --yes (UAC)")
-    if java_broken and _tc.find_jdk_home():
-        print("  → прописать JAVA_HOME: --fix-java-home")
-    return 0
+        print("\n".join(envcheck.format_lines(rep)))
+        acts = {i.get("action") for i in rep.get("issues") or []}
+        if "path" in acts:
+            print("  → починить PATH: --path-doctor (предпросмотр) / --path-doctor --yes")
+        if "java" in acts and _tc.find_jdk_home():
+            print("  → прописать JAVA_HOME: --fix-java-home")
+        if "compat" in acts:
+            print("  → совместимость расширений: --compat-report")
+        if "cleanup" in acts:
+            print("  → уборка VS Code: --cleanup")
+    return 1 if any(i["severity"] == "error" for i in rep.get("issues") or []) else 0
 
 
 def _clean_path(apply: bool, keep_dead: bool, machine: bool, as_json: bool) -> int:
@@ -778,18 +775,19 @@ def _measure_extensions(cfg: dict, as_json: bool) -> int:
     return 0
 
 
-def _cleanup(cfg: dict, apply: bool, as_json: bool) -> int:
-    """Предпросмотр уборки; с --yes — перемещение найденного в Корзину."""
+def _cleanup(cfg: dict, apply: bool, as_json: bool, include_all: bool = False) -> int:
+    """Предпросмотр уборки; с --yes — перемещение найденного в Корзину.
+    Без --all убирается только безопасное (то, что пересоздаётся само)."""
     from . import cleanup
-    from .vscode import code_gui_exe, extensions_dir, vscode_process_count, vscode_user_settings_path
+    from .vscode import vscode_process_count
 
     code_cli = resolve_code_cli(cfg)
-    settings = vscode_user_settings_path(code_cli)
-    if settings is None:
-        print("Не найдена папка данных VS Code (%APPDATA%).")
+    try:
+        found = cleanup.scan_vscode(code_cli)
+    except OSError as e:
+        print(e)
         return 2
-    items = cleanup.scan(settings.parent.parent, extensions_dir(code_cli),
-                         code_gui_exe(code_cli))
+    items = found if include_all else [i for i in found if i["kind"] in cleanup.SAFE_KINDS]
     total = sum(i["bytes"] for i in items)
     mb = 1024 * 1024
     if not apply:
@@ -797,9 +795,11 @@ def _cleanup(cfg: dict, apply: bool, as_json: bool) -> int:
             print(_json.dumps({"total_mb": round(total / mb), "items": items},
                               ensure_ascii=False, indent=2))
             return 0
-        for kind, size, n in cleanup.summarize(items):
-            print(f"  {round(size / mb):>6} МБ  {cleanup.KIND_TITLES.get(kind, kind)} ({n})")
-        print(f"Всего: {round(total / mb)} МБ. Переместить в Корзину: --cleanup --yes")
+        for kind, size, n in cleanup.summarize(found):
+            mark = "" if kind in cleanup.SAFE_KINDS else "  [только с --all]"
+            print(f"  {round(size / mb):>6} МБ  {cleanup.KIND_TITLES.get(kind, kind)} ({n}){mark}")
+        print(f"К уборке: {round(total / mb)} МБ. Переместить в Корзину: --cleanup --yes"
+              + ("" if include_all else " (с --all — и отмеченное [только с --all])"))
         return 0
     if vscode_process_count(code_cli) > 0:
         print("VS Code запущен — закройте его перед уборкой.")
@@ -904,7 +904,7 @@ def cli_main(argv: list[str] | None = None) -> int:
     if args.stack_sizes:
         return _stack_sizes(cfg, args.json)
     if args.cleanup:
-        return _cleanup(cfg, args.yes, args.json)
+        return _cleanup(cfg, args.yes, args.json, args.all)
 
     if args.list_presets:
         presets = cfg.get("presets", {})
@@ -930,16 +930,37 @@ def cli_main(argv: list[str] | None = None) -> int:
 
     if args.list_stacks:
         return _list_stacks(cats, installed, ext_index, args.json)
+    if args.compat_report:
+        from . import compat
+        from .manifests import read_extension_manifests
+
+        print(compat.report(installed, read_extension_manifests(code_cli),
+                            ctx=compat.context(code_cli)))
+        return 0
 
     selected, warns = _resolve_selected(args, cfg, valid_keys)
     for w in warns:
         out("!", w)
+    if args.run and args.preset and args.preset not in cfg.get("presets", {}):
+        # Опечатка в имени пресета (или ярлык от удалённого) раньше открывала
+        # VS Code с одним ядром — все расширения выключены без объяснения.
+        print(f"Ошибка: пресет не найден: {args.preset!r} — запуск отменён.")
+        return 2
 
     opts = _merge_options(args, cfg)
     # Тот же путь, что у окна и трея (quicklaunch): список установленного уже
     # прочитан выше, поэтому отдаём его готовым.
-    plan = plan_launch(code_cli, cfg, ext_index, selected, opts, installed=installed)
+    if opts["folder"] and not os.path.exists(opts["folder"]):
+        out("!", f"Папка не найдена, VS Code откроется без неё: {opts['folder']}")
+        opts["folder"] = ""
+    plan = plan_launch(code_cli, cfg, ext_index, selected, opts, installed=installed,
+                       compat_mode=args.compat)
     disabled = plan["disabled"]
+    if not args.json:
+        if plan.get("compat_disabled"):
+            out("! выключены несовместимые:", ", ".join(plan["compat_disabled"]))
+        for issue in plan.get("compat_issues") or []:
+            out("!", issue["text"])
     saved, n_calibrated = estimate_saved_mb(disabled, ext_index, cfg)
     cmd = build_launch_command(
         code_cli or "code",
@@ -967,6 +988,8 @@ def cli_main(argv: list[str] | None = None) -> int:
                     "bare": opts["bare"],
                     "folder": opts["folder"],
                     "command": cmd,
+                    "compat_issues": plan.get("compat_issues") or [],
+                    "compat_disabled": plan.get("compat_disabled") or [],
                     "will_run": bool(args.run and code_cli),
                 },
                 ensure_ascii=False,
@@ -994,6 +1017,8 @@ def cli_main(argv: list[str] | None = None) -> int:
 
     if opts["kill"]:
         kill_vscode(code_cli)
+        if not wait_vscode_closed(code_cli):  # иначе новый процесс уйдёт в умирающий старый
+            out("! VS Code закрывается дольше обычного — набор расширений может не примениться.")
     try:
         launch_detached(code_cli, plan["args"])
     except Exception as e:

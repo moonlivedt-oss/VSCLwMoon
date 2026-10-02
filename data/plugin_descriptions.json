@@ -125,6 +125,7 @@
   "ms-ceintl.vscode-language-pack-ru": "русский язык интерфейса.",
   "ms-vscode.powershell": "язык/отладка PowerShell.",
   "formulahendry.code-runner": "запуск сниппета на многих языках. Ctrl+Alt+N.",
+  "danielpinto8zz6.c-cpp-compile-run": "C/C++ Compile Run: собрать и запустить файл по F6. Передаёт g++ полный путь — в папках с русскими буквами сборка падает.",
   "llvm-vs-code-extensions.vscode-clangd": "clangd: подсказки, переход к определению, clang-tidy прямо в редакторе. Легче cpptools; нужен compile_commands.json или .clangd.",
   "jeff-hykin.better-cpp-syntax": "точная подсветка современного C++ (шаблоны, лямбды, концепты).",
   "cschlosser.doxdocgen": "генерирует Doxygen-комментарий к функции по /** + Enter.",

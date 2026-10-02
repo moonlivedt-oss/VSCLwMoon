@@ -125,6 +125,7 @@
   "ms-ceintl.vscode-language-pack-ru": "Russian UI language.",
   "ms-vscode.powershell": "PowerShell language and debugging.",
   "formulahendry.code-runner": "run a snippet in many languages. Ctrl+Alt+N.",
+  "danielpinto8zz6.c-cpp-compile-run": "C/C++ Compile Run: build and run the file with F6. Passes g++ the full path — builds fail in folders with non-English letters.",
   "llvm-vs-code-extensions.vscode-clangd": "clangd: code intelligence, go to definition, clang-tidy right in the editor. Lighter than cpptools; needs compile_commands.json or .clangd.",
   "jeff-hykin.better-cpp-syntax": "accurate highlighting for modern C++ (templates, lambdas, concepts).",
   "cschlosser.doxdocgen": "generates a Doxygen comment for a function on /** + Enter.",

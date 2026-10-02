@@ -2,10 +2,12 @@
 """C++-центр: установка по ролям, проверка окружения, настройка проекта.
 
 Три вкладки:
-- «Установка» — компоненты сгруппированы по тому, за что отвечают (компилятор,
-  сборка, подсказки, отладка, анализ, библиотеки, настройка). У каждого — одна
-  строка «зачем» и статус. Внизу сводка: сколько ставится, сколько весит, нужны
-  ли права администратора. Одна кнопка ставит всё по порядку, с прогрессом.
+- «Установка» — сначала простой выбор: три карточки «что вы будете делать», одна
+  карточка = готовый набор. Рядом режим «Все компоненты»: они сгруппированы по
+  тому, за что отвечают (компилятор, сборка, подсказки, отладка, анализ,
+  библиотеки, настройка), у каждого — строка «зачем» и статус. Внизу сводка:
+  сколько ставится, сколько весит, нужны ли права администратора. Одна кнопка
+  ставит всё по порядку, с прогрессом.
 - «Проверка» — доктор C++: проблемы карточками, у каждой кнопка исправления.
 - «Проект» — сгенерировать .vscode под компилятор или создать проект.
 
@@ -22,7 +24,6 @@ from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
-    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -46,7 +47,8 @@ from . import cpp
 from . import cpp_project as cp
 from . import cpp_setup as cs
 from .detect import cpp_project_hints
-from .gui_widgets import _hline, _wrap
+from .gui_shell import _repolish, segmented
+from .gui_widgets import Clickable, ComboBox, _hline, _wrap
 from .gui_workers import FnWorker
 from .i18n import _, get_language
 from .paths import ASSETS_DIR
@@ -178,6 +180,54 @@ class PlanRunner(QThread):
         self.all_done.emit()
 
 
+class PresetCard(Clickable, QFrame):
+    """Карточка готового набора: для кого, что поставит, сколько качать.
+    Кликабельна целиком, выбранная подсвечена."""
+
+    clicked = pyqtSignal()
+
+    def __init__(self, title: str, who: str, gets: str, recommended: bool = False):
+        super().__init__()
+        self.setObjectName("CatCard")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setProperty("on", "false")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 11, 14, 12)
+        lay.setSpacing(4)
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        ttl = QLabel(title)
+        ttl.setObjectName("CatTitle")
+        top.addWidget(ttl)
+        if recommended:
+            top.addWidget(_tag(_("советуем новичкам"), "Wlight"))
+        top.addStretch()
+        self.tag = QLabel()
+        top.addWidget(self.tag)
+        lay.addLayout(top)
+        who_lbl = QLabel(who)
+        who_lbl.setWordWrap(True)
+        lay.addWidget(who_lbl)
+        lay.addWidget(_note(_("Поставит: {what}.").format(what=gets)))
+
+    def set_status(self, text: str, obj: str) -> None:
+        _retag(self.tag, text, obj)
+
+    def set_on(self, on: bool) -> None:
+        self.setProperty("on", "true" if on else "false")
+        _repolish(self)
+
+    def _on_click(self):
+        self.clicked.emit()
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.clicked.emit()
+            return
+        super().keyPressEvent(e)
+
+
 class CppCenter(QWidget):
     """Содержимое C++-центра: страница главного окна (или тело диалога)."""
 
@@ -203,6 +253,9 @@ class CppCenter(QWidget):
         self._state: dict | None = None
         self._sel: dict = {}
         self._preselect = preselect
+        self._mode = "simple"  # «simple» — карточки наборов, «detail» — все компоненты
+        self._preset_key = ""
+        self._preset_cards: dict[str, PresetCard] = {}
         self._runner: PlanRunner | None = None
         self._open = True
         self._scanned = False
@@ -298,10 +351,30 @@ class CppCenter(QWidget):
             return
         self._state = st
         self.scan_box.setVisible(False)
+        old = self._sel
         self._sel = cs.default_selection(st)
+        if old:
+            # Повторная проверка («Проверить заново», возврат после установки) не
+            # должна стирать то, что человек отметил: раньше выбор молча
+            # сбрасывался к умолчаниям и галочки пропадали.
+            self._sel["checked"] |= set(old.get("checked", ()))
+            self._sel["libs"] = set(old.get("libs", ()))
+            self._sel["intellisense"] = old.get("intellisense") or self._sel["intellisense"]
+            comp = old.get("compiler")
+            if comp and (comp != "keep" or cs.other_compilers(st.get("compilers", []))):
+                self._sel["compiler"] = comp
+                self._sel["keep_path"] = old.get("keep_path") or self._sel["keep_path"]
+        else:
+            self._preset_key = ""
         if self._preselect:
             self._apply_preselect(self._preselect)
             self._preselect = ""
+            self._set_mode("detail")
+        elif not st.get("compilers"):
+            # Чистая машина: сразу предлагаем самый простой набор.
+            self._preset_key = "study"
+            self._sel = cs.apply_preset(self._sel, "study", st)
+        self._render_presets()
         self._render_options()
         self._fill_project_compilers()
 
@@ -322,24 +395,17 @@ class CppCenter(QWidget):
         cv.setSpacing(8)
         pre = QHBoxLayout()
         pre.setSpacing(6)
-        pre.addWidget(_note(_("Готовые наборы:"), "Section"))
-        for key, p in cs.PRESETS.items():
-            b = _btn(cs.text(p, "title", _lang()), tip=cs.text(p, "note", _lang()))
-            b.clicked.connect(lambda _c=False, k=key: self._use_preset(k))
-            pre.addWidget(b)
+        self.mode_seg = segmented(
+            [("simple", _("Простой выбор")), ("detail", _("Все компоненты"))],
+            self._mode,
+            self._set_mode,
+        )
+        pre.addWidget(self.mode_seg)
         pre.addStretch()
         rescan = _btn(_("Проверить заново"), tip=_("Заново найти компиляторы и расширения."))
         rescan.clicked.connect(self._rescan)
         pre.addWidget(rescan)
         cv.addLayout(pre)
-        cv.addWidget(
-            _note(
-                _(
-                    "Отметьте, что нужно. Под каждым пунктом написано, за что он отвечает. "
-                    "Уже установленное помечено и повторно не ставится."
-                )
-            )
-        )
         self.scan_box = QWidget()
         self.scan_box.setObjectName("CatInner")
         sb = QHBoxLayout(self.scan_box)
@@ -348,11 +414,60 @@ class CppCenter(QWidget):
         self.scan_lbl = _note("", "Hint")
         sb.addWidget(self.scan_lbl, 1)
         cv.addWidget(self.scan_box)
+        self.choose_stack = QStackedWidget()
+        cv.addWidget(self.choose_stack, 1)
+
+        # Простой выбор: одна карточка = готовый набор.
+        simple = QWidget()
+        simple.setObjectName("CatInner")
+        sv = QVBoxLayout(simple)
+        sv.setContentsMargins(0, 0, 6, 0)
+        sv.setSpacing(8)
+        ask = QLabel(_("Что вы будете делать?"))
+        ask.setObjectName("CatTitle")
+        sv.addWidget(ask)
+        sv.addWidget(
+            _note(
+                _(
+                    "Нажмите на подходящий вариант и затем «Установить» — лаунчер сам "
+                    "скачает и настроит всё нужное. Не уверены — берите первый: "
+                    "остальное можно доставить позже."
+                )
+            )
+        )
+        self.preset_lay = QVBoxLayout()
+        self.preset_lay.setSpacing(8)
+        sv.addLayout(self.preset_lay)
+        sv.addWidget(
+            _note(
+                _(
+                    "Нужен другой компилятор или отдельный инструмент? Откройте "
+                    "«Все компоненты» вверху."
+                )
+            )
+        )
+        sv.addStretch()
+        self.choose_stack.addWidget(_scroll(simple))
+
+        # Все компоненты.
+        detail = QWidget()
+        dv = QVBoxLayout(detail)
+        dv.setContentsMargins(0, 0, 0, 0)
+        dv.setSpacing(8)
+        dv.addWidget(
+            _note(
+                _(
+                    "Отметьте, что нужно. Под каждым пунктом написано, за что он отвечает. "
+                    "Уже установленное помечено и повторно не ставится."
+                )
+            )
+        )
         self.opt_holder = QWidget()
         self.opt_lay = QVBoxLayout(self.opt_holder)
         self.opt_lay.setContentsMargins(0, 0, 6, 0)
         self.opt_lay.setSpacing(8)
-        cv.addWidget(_scroll(self.opt_holder), 1)
+        dv.addWidget(_scroll(self.opt_holder), 1)
+        self.choose_stack.addWidget(detail)
         cv.addWidget(_hline())
         bar = QHBoxLayout()
         self.summary_lbl = _note("", "Summary")
@@ -432,6 +547,51 @@ class CppCenter(QWidget):
             elif item.layout() is not None:
                 self._clear(item.layout())
 
+    def _set_mode(self, mode: str) -> None:
+        self._mode = mode
+        self.choose_stack.setCurrentIndex(0 if mode == "simple" else 1)
+        self.mode_seg.buttons[mode].setChecked(True)
+        if self._state is not None:
+            if mode == "simple":
+                self._render_presets()  # выбор в «Всех компонентах» мог изменить объём
+            self._sync_summary()
+
+    def _render_presets(self):
+        """Карточки наборов: у каждой — сколько осталось скачать на этой машине."""
+        st = self._state
+        if st is None:
+            return
+        self._clear(self.preset_lay)
+        self._preset_cards = {}
+        lang = _lang()
+        for key, p in cs.PRESETS.items():
+            card = PresetCard(
+                cs.text(p, "title", lang),
+                cs.text(p, "who", lang),
+                cs.text(p, "gets", lang),
+                bool(p.get("recommended")),
+            )
+            steps = cs.build_plan(cs.apply_preset(self._sel, key, st), st)
+            s = cs.plan_summary(steps)
+            if not steps or s["only_setup"]:
+                # Шаг настройки есть в плане всегда — «осталось настроить» висело бы
+                # на карточке и сразу после установки.
+                card.set_status(_("уже установлено"), "Wlight")
+            else:
+                txt = _("скачать около {size}").format(size=_size_text(s["size_mb"]))
+                if s["admin"]:
+                    txt += " · " + _("нужен админ")
+                card.set_status(txt, "Woff")
+            card.set_on(key == self._preset_key)
+            card.clicked.connect(lambda k=key: self._use_preset(k))
+            self.preset_lay.addWidget(card)
+            self._preset_cards[key] = card
+
+    def _mark_preset(self, key: str) -> None:
+        self._preset_key = key
+        for k, card in self._preset_cards.items():
+            card.set_on(k == key)
+
     def _render_options(self):
         st = self._state
         if st is None:
@@ -501,7 +661,7 @@ class CppCenter(QWidget):
         rl.addWidget(what)
         extra = None
         if opt.key == "keep":
-            extra = QComboBox()
+            extra = ComboBox()
             for c in cs.other_compilers(st.get("compilers", [])):
                 extra.addItem(
                     f"{c['kind']} {c['version']} · {c['origin']} — {c['path']}", c["path"]
@@ -549,6 +709,7 @@ class CppCenter(QWidget):
     def _pick(self, group, key):
         prev = self._sel.get(group)
         self._sel[group] = key
+        self._mark_preset("")
         # clangd без cpptools: отладчик gdb (cppdbg) живёт в cpptools, поэтому
         # сразу предлагаем CodeLLDB.
         if (
@@ -562,7 +723,8 @@ class CppCenter(QWidget):
 
     def _toggle(self, key, on):
         (self._sel["checked"].add if on else self._sel["checked"].discard)(key)
-        self._sync_summary()
+        self._mark_preset("")
+        self._sync_rows()  # подсветка строки и сводка — по новому выбору
 
     def _toggle_lib(self, key, on):
         (self._sel["libs"].add if on else self._sel["libs"].discard)(key)
@@ -576,6 +738,7 @@ class CppCenter(QWidget):
         if self._state is None:
             return
         self._sel = cs.apply_preset(self._sel, key, self._state)
+        self._mark_preset(key)
         self._sync_rows()
 
     def _apply_preselect(self, what: str):
@@ -655,10 +818,19 @@ class CppCenter(QWidget):
     def _sync_summary(self):
         steps = self._plan()
         s = cs.plan_summary(steps)
+        self.plan_btn.setVisible(bool(steps))
+        if self._mode == "simple" and not self._preset_key:
+            # Без выбранной карточки кнопка ставила бы невидимый здесь набор галочек.
+            self.sum_icon.set("")
+            self.summary_lbl.setText(_("Выберите вариант выше."))
+            self.install_btn.setEnabled(True)
+            self.install_btn.setText(_("Установить"))
+            self.plan_btn.setVisible(False)
+            return
         if not steps:
             self.sum_icon.set("sleep")
             self.summary_lbl.setText(_("Всё выбранное уже установлено и настроено."))
-            self.install_btn.setEnabled(False)
+            self.install_btn.setEnabled(True)
             self.install_btn.setText(_("Установить"))
             return
         self.install_btn.setEnabled(True)
@@ -691,13 +863,41 @@ class CppCenter(QWidget):
         QMessageBox.information(self, _("План"), "\n".join(lines))
 
     def _start_install(self):
+        # Кнопка не выключается, а объясняет: выключенная выглядела сломанной —
+        # её нажимали, и «ничего не происходило».
+        if self._state is None:
+            return
+        if self._mode == "simple" and not self._preset_key:
+            QMessageBox.information(
+                self,
+                _("Установка"),
+                _("Сначала выберите вариант: нажмите на одну из карточек выше."),
+            )
+            return
         steps = self._plan()
         if not steps:
+            QMessageBox.information(
+                self,
+                _("Установка"),
+                _("Всё выбранное уже установлено и настроено — ставить нечего."),
+            )
             return
         lines = "\n".join(f"  {i}. {self._step_title(s)}" for i, s in enumerate(steps, 1))
         extra = ""
+        need_mb = cs.plan_summary(steps)["size_mb"]
+        try:
+            import shutil as _shutil
+
+            free_mb = _shutil.disk_usage(Path.home().anchor or "C:\\").free // (1024 * 1024)
+        except OSError:
+            free_mb = None
+        if free_mb is not None and need_mb and free_mb < need_mb * 2 + 500:
+            extra += "\n\n" + _(
+                "Внимание: на системном диске свободно {free}, а для установки нужно "
+                "примерно {need} (с запасом на распаковку) — места может не хватить."
+            ).format(free=_size_text(free_mb), need=_size_text(need_mb * 2))
         if any(s.admin for s in steps):
-            extra = "\n\n" + _("Для MSVC появится запрос прав администратора (UAC).")
+            extra += "\n\n" + _("Для MSVC появится запрос прав администратора (UAC).")
         if any(s.kind == "path" for s in steps):
             extra += "\n\n" + _("PATH будет изменён, старое значение сохранится в файл.")
         r = QMessageBox.question(
@@ -871,6 +1071,14 @@ class CppCenter(QWidget):
         if not issues:
             self.doc_icon.set("win")
             self.doc_status.setText(_("Проблем не найдено: C++ собирается и запускается."))
+        elif not errs and not warns:
+            self.doc_icon.set("win")
+            self.doc_status.setText(
+                _(
+                    "Ошибок и предупреждений нет: C++ собирается и запускается. Ниже — "
+                    "замечания к сведению, исправлять их не обязательно."
+                )
+            )
         else:
             self.doc_icon.set("search")
             self.doc_status.setText(
@@ -922,12 +1130,58 @@ class CppCenter(QWidget):
                 b = _btn(_("Навести порядок в PATH…"))
                 b.clicked.connect(self._open_path_fix)
                 row.addWidget(b, 0, Qt.AlignmentFlag.AlignTop)
+            elif fix.startswith("python:"):
+                b = _btn(_("Поставить Python {v}").format(v=fix[7:]))
+                b.clicked.connect(lambda _c=False, v=fix[7:], btn=b: self._install_lldb_python(v, btn))
+                row.addWidget(b, 0, Qt.AlignmentFlag.AlignTop)
+            elif fix.startswith("lldbpath:"):
+                b = _btn(_("Подключить Python {v}").format(v=fix[9:]))
+                b.clicked.connect(
+                    lambda _c=False, v=fix[9:], btn=b: self._install_lldb_python(v, btn, False)
+                )
+                row.addWidget(b, 0, Qt.AlignmentFlag.AlignTop)
             elif fix.startswith("install:"):
                 b = _btn(_("Подобрать установку"))
                 b.clicked.connect(lambda _c=False, f=fix: self._goto_install(f))
                 row.addWidget(b, 0, Qt.AlignmentFlag.AlignTop)
             cl.addLayout(row)
         return card
+
+    def _install_lldb_python(self, ver: str, btn, install: bool = True):
+        r = QMessageBox.question(
+            self,
+            _("Python для lldb"),
+            (
+                _(
+                    "Установить Python {v} через winget (около 30 МБ)?\n\nОн нужен только "
+                    "отладчику lldb из LLVM. Его папка допишется в конец PATH, поэтому "
+                    "команда `python` останется прежней."
+                )
+                if install
+                else _(
+                    "Дописать папку Python {v} в конец вашего PATH?\n\nТак lldb найдёт "
+                    "нужную ему DLL. Команда `python` останется прежней: она берётся из "
+                    "более ранних записей PATH."
+                )
+            ).format(v=ver),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if r != QMessageBox.StandardButton.Yes:
+            return
+        btn.setEnabled(False)
+        btn.setText(_("Устанавливаю…") if install else _("Записываю…"))
+        self.doc_btn.setEnabled(False)
+        work = cpp.install_python_for_lldb if install else cpp.connect_python_to_lldb
+
+        def done(res):
+            ok, msg = res if isinstance(res, tuple) else (False, str(res))
+            (QMessageBox.information if ok else QMessageBox.warning)(
+                self, _("Python для lldb"), (msg or "")[:1200]
+            )
+            self._run_doctor()  # перепроверить: запустился ли теперь lldb
+
+        self._bg(lambda: work(ver), done)
 
     def _compilers_card(self, rep) -> QFrame:
         card, cl = self._card(_("Компиляторы"))
@@ -997,9 +1251,16 @@ class CppCenter(QWidget):
         dlg.exec()
 
     def _goto_install(self, fix: str):
+        if self._state is None:  # сканирование ещё идёт: применим, когда закончится
+            self._preselect = fix
+            self.tabs.setCurrentIndex(0)
+            self.install_stack.setCurrentIndex(0)
+            return
         self._apply_preselect(fix)
         self.tabs.setCurrentIndex(0)
         self.install_stack.setCurrentIndex(0)
+        self._mark_preset("")
+        self._set_mode("detail")
         self._sync_rows()
 
     def _open_path_fix(self):
@@ -1058,7 +1319,7 @@ class CppCenter(QWidget):
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(6)
         grid.addWidget(QLabel(_("Компилятор")), 0, 0)
-        self.pj_comp = QComboBox()
+        self.pj_comp = ComboBox()
         self.pj_comp.currentIndexChanged.connect(lambda _i: self._refresh_files())
         grid.addWidget(self.pj_comp, 0, 1)
         grid.addWidget(QLabel(_("Подсказки кода")), 1, 0)
@@ -1080,13 +1341,13 @@ class CppCenter(QWidget):
         eng.addStretch()
         grid.addLayout(eng, 1, 1)
         grid.addWidget(QLabel(_("Сборка")), 2, 0)
-        self.pj_build = QComboBox()
+        self.pj_build = ComboBox()
         self.pj_build.addItem(_("Одиночные файлы (g++ текущего файла)"), "single")
         self.pj_build.addItem("CMake", "cmake")
         self.pj_build.currentIndexChanged.connect(lambda _i: self._refresh_files())
         grid.addWidget(self.pj_build, 2, 1)
         grid.addWidget(QLabel(_("Стандарт")), 3, 0)
-        self.pj_std = QComboBox()
+        self.pj_std = ComboBox()
         for s in cp.STANDARDS:
             self.pj_std.addItem(s.upper(), s)
         self.pj_std.setCurrentIndex(1)
@@ -1099,6 +1360,18 @@ class CppCenter(QWidget):
         )
         self.pj_olymp.toggled.connect(lambda _o: self._refresh_files())
         cl.addWidget(self.pj_olymp)
+        self.pj_console = QCheckBox(
+            _("Программа читает ввод с клавиатуры (cin): отлаживать во внешней консоли")
+        )
+        self.pj_console.setToolTip(
+            _(
+                "Под отладчиком gdb ввод в панели VS Code не работает — программа ждёт "
+                "данные и кажется зависшей. С этой галочкой отладка идёт в отдельном окне "
+                "консоли. Для CodeLLDB не нужна: у него ввод работает в терминале."
+            )
+        )
+        self.pj_console.toggled.connect(lambda _o: self._refresh_files())
+        cl.addWidget(self.pj_console)
         self.pj_lint = QCheckBox(_("Файлы стиля: .clang-format и .clang-tidy"))
         self.pj_lint.setChecked(True)
         self.pj_lint.toggled.connect(lambda _o: self._refresh_files())
@@ -1143,7 +1416,7 @@ class CppCenter(QWidget):
         self.np_name.setPlaceholderText(_("латиница, цифры, _ . -"))
         g2.addWidget(self.np_name, 1, 1)
         g2.addWidget(QLabel(_("Шаблон")), 2, 0)
-        self.np_tpl = QComboBox()
+        self.np_tpl = ComboBox()
         lang = _lang()
         for key, ru, en, _dru, _den in cp.TEMPLATE_INFO:
             self.np_tpl.addItem(en if lang == "en" else ru, key)
@@ -1183,8 +1456,9 @@ class CppCenter(QWidget):
         if prim:
             self.pj_comp.setCurrentIndex(comps.index(prim))
         self.pj_comp.blockSignals(False)
-        exts = set(st.get("exts", []))
-        if cs.EXT_CLANGD in exts and cs.EXT_CPPTOOLS not in exts:
+        # Тот же движок, что настроен глобально: иначе проект снова включил бы
+        # IntelliSense cpptools рядом с clangd.
+        if cs.current_engine(st) == "clangd":
             self.pj_clangd.setChecked(True)
         self._refresh_project()
 
@@ -1206,9 +1480,11 @@ class CppCenter(QWidget):
         o = cp.options_from_compiler(
             c, engine="clangd" if self.pj_clangd.isChecked() else "cpptools"
         )
+        o.has_cpptools = cs.EXT_CPPTOOLS in set((self._state or {}).get("exts", []))
         o.build = self.pj_build.currentData()
         o.std = self.pj_std.currentData()
         o.olympiad = self.pj_olymp.isChecked()
+        o.external_console = self.pj_console.isChecked()
         o.lint_files = self.pj_lint.isChecked()
         folder = self.pj_folder.text().strip()
         o.name = Path(folder).name if folder else "app"
@@ -1222,9 +1498,14 @@ class CppCenter(QWidget):
         h = self._pj_hints
         if folder and Path(folder).is_dir():
             build = h.get("build", "none")
-            self.pj_build.blockSignals(True)
-            self.pj_build.setCurrentIndex(1 if build == "cmake" else 0)
-            self.pj_build.blockSignals(False)
+            # Систему сборки подставляем только для НОВОЙ папки. Обновление идёт и
+            # при потере фокуса полем, и после «Применить», и после повторной
+            # проверки — и каждый раз выбранный руками CMake сбрасывался обратно.
+            if folder != getattr(self, "_pj_seen_folder", None):
+                self._pj_seen_folder = folder
+                self.pj_build.blockSignals(True)
+                self.pj_build.setCurrentIndex(1 if build == "cmake" else 0)
+                self.pj_build.blockSignals(False)
             parts = []
             if h.get("is_cpp"):
                 parts.append(
@@ -1243,6 +1524,37 @@ class CppCenter(QWidget):
             if h.get("has_vscode_cfg"):
                 parts.append(_("настройки VS Code уже есть"))
             self.pj_hints_lay.addWidget(_note(_("В папке: {what}").format(what="; ".join(parts))))
+            comp = self.pj_comp.currentData() or {}
+            if cp.has_non_ascii(folder) and comp.get("kind") == "gcc":
+                text = _(
+                    "В пути к папке есть русские буквы. Отладчик gdb (cppdbg) такие пути не "
+                    "открывает — F5 отвечает «No such file or directory». Поэтому отладка "
+                    "будет настроена через расширение CodeLLDB."
+                )
+                if cs.EXT_CODELLDB not in set((self._state or {}).get("exts", [])):
+                    text += " " + _(
+                        "Оно не установлено: поставьте его на вкладке «Установка» "
+                        "(«Все компоненты» → «Отладка» → CodeLLDB)."
+                    )
+                self.pj_hints_lay.addWidget(_note(text, "Hint"))
+            problems = cp.project_problems(folder, (self._state or {}).get("exts"))
+            for pr in problems:
+                self.pj_hints_lay.addWidget(_note(pr["text"], "Hint"))
+            if any(pr["key"] in cp.FIXABLE for pr in problems):
+                row = QHBoxLayout()
+                row.addWidget(
+                    _note(
+                        _(
+                            "Исправить можно одной кнопкой: сборка и отладка будут созданы "
+                            "заново под выбранный компилятор, старые файлы сохранятся в .bak."
+                        )
+                    ),
+                    1,
+                )
+                fixb = _btn(_("Исправить проект"), "Accent")
+                fixb.clicked.connect(self._fix_project)
+                row.addWidget(fixb, 0, Qt.AlignmentFlag.AlignVCenter)
+                self.pj_hints_lay.addLayout(row)
             for s in cpp.project_suggestions(h):
                 if s["action"] == "setup":
                     continue  # это и есть кнопка «Применить» ниже
@@ -1277,7 +1589,6 @@ class CppCenter(QWidget):
         folder = self.pj_folder.text().strip()
         o = self._project_options()
         ok_folder = bool(folder) and Path(folder).is_dir()
-        self.pj_apply.setEnabled(ok_folder and o is not None)
         if not ok_folder or o is None:
             self.pj_files_lay.addWidget(
                 _note(
@@ -1288,7 +1599,8 @@ class CppCenter(QWidget):
             )
             return
         what = cp.FILE_WHAT_EN if _lang() == "en" else cp.FILE_WHAT
-        for item in cp.plan_files(folder, o):
+        starter = not getattr(self, "_pj_hints", {}).get("is_cpp")  # в папке нет исходников
+        for item in cp.plan_files(folder, o, starter=starter):
             rel = item["path"]
             if item["merge"]:
                 n = len(item["content"])
@@ -1317,6 +1629,21 @@ class CppCenter(QWidget):
 
     def _apply_project(self):
         folder = self.pj_folder.text().strip()
+        if self._project_options() is None:
+            QMessageBox.information(
+                self,
+                _("Настройка проекта"),
+                _("Сначала нужен компилятор — вкладка «Установка»."),
+            )
+            return
+        if not folder or not Path(folder).is_dir():
+            QMessageBox.information(
+                self,
+                _("Настройка проекта"),
+                _("Сначала укажите папку проекта в поле выше."),
+            )
+            self._browse_project()  # сразу дать её выбрать
+            return
         if not getattr(self, "_file_boxes", None):
             return
         skip = {rel for rel, (b, _i) in self._file_boxes.items() if not b.isChecked()}
@@ -1336,6 +1663,26 @@ class CppCenter(QWidget):
                 "F5 — отладка."
             ).format(n=len(self._pj_plan) - len(skip))
         )
+        self.pj_result.setToolTip("\n".join(report))
+        self.pj_open.setVisible(self._on_folder is not None)
+        self._refresh_project()
+
+    def _fix_project(self):
+        folder = self.pj_folder.text().strip()
+        o = self._project_options()
+        if o is None:
+            QMessageBox.information(
+                self,
+                _("Настройка проекта"),
+                _("Сначала нужен компилятор — вкладка «Установка»."),
+            )
+            return
+        try:
+            report = cp.fix_project(folder, o)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, _("Настройка проекта"), str(e))
+            return
+        self.pj_result.setText(_("Проект исправлен: сборка и отладка созданы заново."))
         self.pj_result.setToolTip("\n".join(report))
         self.pj_open.setVisible(self._on_folder is not None)
         self._refresh_project()
@@ -1394,7 +1741,7 @@ class PathFixDialog(QDialog):
                 )
             )
         )
-        self.combo = QComboBox()
+        self.combo = ComboBox()
         for d in dirs:
             self.combo.addItem(d, d)
         lay.addWidget(self.combo)
@@ -1430,10 +1777,12 @@ class PathFixDialog(QDialog):
     def _update(self):
         plan = self._plan()
         self.preview.setPlainText(cpp.describe_plan(plan))
-        self.apply_btn.setEnabled(plan["user_changed"] or plan["machine_changed"])
 
     def _apply(self):
         plan = self._plan()
+        if not (plan["user_changed"] or plan["machine_changed"]):
+            QMessageBox.information(self, _("Порядок в PATH"), cpp.describe_plan(plan))
+            return
         if plan["lost_tools"]:
             r = QMessageBox.question(
                 self,

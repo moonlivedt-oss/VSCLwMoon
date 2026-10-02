@@ -17,11 +17,13 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QByteArray, QTimer, QUrl
+from PyQt6.QtCore import Qt, QByteArray, QEvent, QTimer, QUrl
 from PyQt6.QtGui import QFont, QIcon, QPixmap, QDesktopServices
 from PyQt6.QtWidgets import (
+    QAbstractButton,
     QApplication,
     QWidget,
     QVBoxLayout,
@@ -32,6 +34,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QFileDialog,
     QComboBox,
+    QMenu,
     QMessageBox,
     QInputDialog,
     QPlainTextEdit,
@@ -45,6 +48,8 @@ from PyQt6.QtWidgets import (
 )
 
 from . import __version__
+from . import compat
+from .quicklaunch import resolve_overrides
 from .core import (
     ICON_FILE,
     LOGO_FILE,
@@ -78,6 +83,7 @@ from .core import (
     normalize_preset,
     plan_launch,
     preset_stacks,
+    project_required_extensions,
     profile_file_content,
     read_installed_from_disk,
     recall_folder_stacks,
@@ -97,13 +103,15 @@ from .core import (
     vscode_user_settings_path,
     load_installed,
 )
-from .categories import cat_note, cat_title
+from .categories import CPP_ENGINES, cat_note, cat_title, cpp_engine_problem
 from .cli import _launcher_invocation
 from .i18n import _, get_language, set_language
 from .settings_apply import missing_settings as _missing_settings
+from .paths import CONFIG_DIR, LOG_FILE
 from .updates import RELEASES_URL, build_update_swap_bat
 from .gui_widgets import (
     CategoryCard,
+    ComboBox,
     FlowLayout,
     ToggleSwitch,
     _hline,
@@ -139,10 +147,65 @@ from .theme import PALETTE_SETS, PALETTES, apply_titlebar, build_qss, make_palet
 from . import toolchains as _tc
 
 
+_save_config = save_config
+
+# Ключи конфига про эту машину: при переносе настроек на другой компьютер не нужны.
+MACHINE_KEYS = frozenset(
+    {
+        "installed_cache",
+        "ext_sizes",
+        "geometry",
+        "footprint_history",
+        "baseline_full",
+        "code_cli",
+        "recent_folders",
+        "folder_stacks",
+        "folder_auto",
+        "last_page",
+    }
+)
+
+
 # --- окно: фабрика класса Launcher --------------------------------------
 # Класс замыкает состояние сессии (карта, конфиг, CLI, логгер, ...). Фабрика
 # делает его модульным и импортируемым: run_gui зовёт её для приложения,
 # тесты — с подставленным состоянием (см. tests/test_gui_smoke.py).
+
+
+# Потоки, пережившие своё окно (смена языка пересобирает окно, пока идёт
+# проверка обновлений или замер). Держим ссылку до завершения: уничтожение
+# работающего QThread роняет приложение целиком.
+_PARKED_THREADS: set = set()
+
+
+def _park_thread(t) -> None:
+    if t is None or not t.isRunning():
+        return
+    try:
+        t.disconnect()  # результаты уже некому принимать
+    except Exception:
+        pass
+    _PARKED_THREADS.add(t)
+    t.finished.connect(lambda x=t: _PARKED_THREADS.discard(x))
+    if not t.isRunning():
+        _PARKED_THREADS.discard(t)
+
+
+def _folder_reachable(p) -> bool:
+    """Папка есть, либо её диск сейчас не подключён (флешка, сетевой) — такую из
+    недавних не выбрасываем."""
+    try:
+        path = Path(p)
+        return path.exists() or not Path(path.anchor or "C:\\").exists()
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+class LogView(QPlainTextEdit):
+    """Журнал окна: каждая строка со временем — видно, что к какому действию."""
+
+    def appendPlainText(self, text):
+        super().appendPlainText(f"{time.strftime('%H:%M:%S')}  {text}")
 
 
 def _note_lbl(text: str) -> QLabel:
@@ -170,6 +233,18 @@ def _switch_row(switch, title: str, desc: str = "") -> QHBoxLayout:
 def _launcher_factory(
     cats, cats_err, cfg, ext_index, code_cli, descriptions, duplicates, log, _lang_switch
 ):
+    save_warned = [False]
+
+    def save_config(c):
+        """Запись конфига, которая не обрывает действие. Папка только для чтения
+        или антивирус раньше роняли обработчик посреди запуска VS Code."""
+        try:
+            _save_config(c)
+        except Exception:
+            if not save_warned[0]:
+                save_warned[0] = True
+                log.exception("Не удалось сохранить настройки")
+
     def show_details(parent, key, cat, installed):
         """Диалог со списком плагинов стека: описания + установка/удаление."""
         dlg = QDialog(parent)
@@ -466,7 +541,7 @@ def _launcher_factory(
                 top.addWidget(eager, 0, Qt.AlignmentFlag.AlignVCenter)
 
             # #9: персональный оверрайд поведения этого расширения.
-            ov_box = QComboBox()
+            ov_box = ComboBox()
             ov_box.setToolTip(_("Поведение этого расширения независимо от галочки стека"))
             for label, mode in (
                 (_("по стеку"), "default"),
@@ -597,10 +672,10 @@ def _launcher_factory(
             self.cat_checks: dict[str, CategoryCard] = {}
             self._install_threads = []
             # #9: персональные оверрайды по одному расширению (перекрывают стек).
-            ov = cfg.get("overrides", {})
-            self._force_disable = {e.lower() for e in ov.get("disable", [])}
-            self._force_enable = {e.lower() for e in ov.get("enable", [])}
+            self._force_disable, self._force_enable = resolve_overrides(cfg)
             self._dep_map = None  # #1: карта зависимостей (ленивая, кэш)
+            self._manifests: dict = {}  # манифесты расширений (вместе с _dep_map)
+            self._launch_pending = False  # запуск ждёт закрытия VS Code
             self._pending_record_sig = None  # #6: подпись выбора для замера после запуска
             self._pending_is_baseline = False  # #2: следующий замер — базлайн «всё вкл»
             self._suggested_keys: set[str] = set()  # #1: что предложил автодетект
@@ -613,6 +688,9 @@ def _launcher_factory(
             )
             self._tray = None  # ставится извне (run_gui), если трей включён
             self._quit_requested = False  # закрытие «по-настоящему», а не в трей
+            self._rebuilding = False  # окно заменяется новым (смена языка)
+            self._folder_seen = None  # папка, для которой уже считали подсказку
+            self._needs_declined: set = set()  # «запустить как есть» — не спрашивать снова
             self._theme = cfg.get("theme", "dark")
             if self._theme not in PALETTES:
                 self._theme = "dark"
@@ -623,6 +701,12 @@ def _launcher_factory(
             self._page = "launch"
             set_switch_palette(self._pal)  # цвета тумблеров под тему
             self.setAcceptDrops(True)  # папку проекта можно просто перетащить в окно
+            # Удалённые проекты из «недавних» убираем: иначе поле папки при старте
+            # получало несуществующий путь, и первый же запуск спрашивал о нём.
+            recent = cfg.get("recent_folders", [])
+            alive = [p for p in recent if isinstance(p, str) and _folder_reachable(p)]
+            if alive != recent:
+                cfg["recent_folders"] = alive
             self._build_ui()
             self._apply_sizes(self._ext_sizes, persist=False)
             self._restore()
@@ -631,12 +715,16 @@ def _launcher_factory(
             self._update_summary()
             # Первая раскладка карточек-сетки, когда окно получит реальную ширину.
             QTimer.singleShot(0, self._relayout_cards)
+            self._background = background
             if background:  # тесты создают окно без фоновых потоков и сети
                 self._start_ext_load()
                 self._probe_memory()
                 self._start_size_probe()
                 self._start_update_check()  # #8
                 self._scan_path_badge()
+                QTimer.singleShot(1500, self._start_health_check)
+            if cfg.get("last_page") in ("ext", "clean", "settings"):
+                self._goto(cfg["last_page"])  # тяжёлые C++ и «Языки» сами не открываем
             geo = cfg.get("geometry")
             if geo:  # запоминаем размер и позицию окна между запусками
                 try:
@@ -819,6 +907,8 @@ def _launcher_factory(
             from .gui_cleanup import CleanupDialog
 
             CleanupDialog(self, code_cli).exec()
+            if getattr(self, "_background", False):
+                self._start_health_check()
 
         def _open_cpp(self, tab: str = "install", preselect: str = ""):
             """Открыть страницу C / C++ (установка, проверка, проект)."""
@@ -827,7 +917,19 @@ def _launcher_factory(
             if center is not None:
                 center.open_tab(tab, preselect)
 
-        def _text_dialog(self, title: str, subtitle: str, text: str):
+        def _save_text(self, parent, text: str, name: str):
+            path, _filt = QFileDialog.getSaveFileName(
+                parent, _("Сохранить отчёт"), name, _("Текст (*.txt)")
+            )
+            if not path:
+                return
+            try:
+                Path(path).write_text(text, encoding="utf-8")
+                self.log.appendPlainText(_("Отчёт сохранён: {path}").format(path=path))
+            except OSError as e:
+                QMessageBox.critical(parent, _("Сохранить отчёт"), str(e))
+
+        def _text_dialog(self, title: str, subtitle: str, text: str, extra=(), file_name=""):
             """Диалог «заголовок + пояснение + текстовый блок + копировать».
             Три диалога окна отличались только текстом, теперь у них одна
             реализация — и одинаковое поведение кнопок."""
@@ -857,6 +959,17 @@ def _launcher_factory(
             copy.setEnabled(bool(text))
             copy.clicked.connect(lambda: QApplication.clipboard().setText(text))
             bar.addWidget(copy)
+            if file_name:
+                save = QPushButton(_("Сохранить…"))
+                save.setObjectName("Ghost")
+                save.clicked.connect(lambda: self._save_text(dlg, text, file_name))
+                bar.addWidget(save)
+            for label, fn in extra:
+                xb = QPushButton(label)
+                xb.setObjectName("Ghost")
+                xb.setCursor(Qt.CursorShape.PointingHandCursor)
+                xb.clicked.connect(lambda _c=False, f=fn: f(dlg))
+                bar.addWidget(xb)
             bar.addStretch()
             close = QPushButton(_("Закрыть"))
             close.setObjectName("Accent")
@@ -891,6 +1004,17 @@ def _launcher_factory(
             # #6: после запуска записываем фактический footprint под подпись выбора.
             # #2: если это был запуск без единого выключенного стека — это базлайн
             # «всё включено», от которого считается реальная экономия.
+            if self._pending_record_sig and not n:
+                # После запуска процессов VS Code не видно — сказать об этом, а не
+                # оставлять в журнале бодрое «OK».
+                self._pending_record_sig = None
+                self._pending_is_baseline = False
+                self.log.appendPlainText(
+                    _(
+                        "VS Code после запуска не обнаружен. Если окно не открылось — "
+                        "проверьте «Обслуживание → Установка VS Code» и повторите."
+                    )
+                )
             dirty = False
             if self._pending_record_sig and n:
                 record_footprint(cfg, self._pending_record_sig, mb, n)
@@ -1009,7 +1133,9 @@ def _launcher_factory(
             ):
                 return
             exe = Path(sys.executable)
-            dest = exe.with_name(f"{exe.stem}-{tag}.new.exe")
+            from .updates import safe_tag
+
+            dest = exe.with_name(f"{exe.stem}-{safe_tag(tag)}.new.exe")
             self.update_bar.setEnabled(False)
             self.update_bar.setText(_("Скачиваю обновление…"))
             self._dl = UpdateDownloader(dest)
@@ -1080,17 +1206,21 @@ def _launcher_factory(
 
         def _apply_folder_auto(self) -> bool:
             """#5: если текущая папка помечена авто и для неё есть набор —
-            включить эти стеки молча. True, если что-то применили."""
+            выставить РОВНО его: нужные стеки включить, остальные выключить.
+            True, если применили.
+
+            Раньше набор только добавлялся к тому, что уже отмечено: стеки от
+            прошлого проекта оставались включёнными, и «авто-набор» с каждым
+            проектом разрастался. Пустой запомненный набор («только ядро») тоже
+            набор — он снимает все галочки."""
             folder = self.folder_edit.text().strip()
             auto = folder_auto_stacks(cfg, folder)
-            if not auto:
+            if auto is None:
                 return False
             available = set(cats.get("categories", {}))
             keys = sorted(set(auto) & available)
-            for k in keys:
-                card = self.cat_checks.get(k)
-                if card is not None:
-                    card.setChecked(True)
+            for k, card in self.cat_checks.items():
+                card.setChecked(k in keys)
             if keys:
                 self.log.appendPlainText(
                     _("Авто-набор для папки: {stacks}").format(
@@ -1128,6 +1258,7 @@ def _launcher_factory(
             """Определить тип проекта и, если есть что предложить, показать
             строку-подсказку. Предлагаем только стеки с установленными
             расширениями, которые ещё не отмечены."""
+            self._folder_seen = (folder or "").strip()
             folder = self._scan_root(folder) if folder else folder
             self._suggested_keys = set()
             self.suggest_bar.setVisible(False)
@@ -1171,6 +1302,27 @@ def _launcher_factory(
                 _("Похоже на проект: {stacks}. Включить эти стеки?").format(stacks=titles)
             )
             self.suggest_bar.setVisible(True)
+
+        def _folder_edited(self):
+            """Поле папки потеряло фокус или в нём нажали Enter.
+
+            editingFinished приходит при КАЖДОЙ потере фокуса, даже если текст не
+            менялся. Раньше на каждый такой сигнал подсказка считалась заново, а
+            для авто-папки её стеки включались ещё раз — снятые руками галочки
+            возвращались сами, стоило щёлкнуть мимо поля."""
+            text = self.folder_edit.text().strip()
+            if text != self._folder_seen:
+                self._suggest_for_folder(text)
+
+        def _mark_folder(self, text: str):
+            """Красная рамка у поля, если такого пути нет: опечатку видно до запуска."""
+            t = (text or "").strip()
+            bad = bool(t) and not Path(t).exists()
+            if self.folder_edit.property("bad") != bad:
+                self.folder_edit.setProperty("bad", bad)
+                self.folder_edit.style().unpolish(self.folder_edit)
+                self.folder_edit.style().polish(self.folder_edit)
+            self.folder_edit.setToolTip(_("Такого пути нет.") if bad else "")
 
         def _suggest_toolchains(self, folder):
             """Показать подсказку, если у проекта есть язык, но его тулчейн
@@ -1329,6 +1481,7 @@ def _launcher_factory(
                 "new_window": self.newwin_cb.isChecked(),
                 "gpu_off": self.gpu_cb.isChecked(),
                 "bare": self.bare_cb.isChecked(),
+                "page": self._page,
                 "scroll": (
                     self._scroll.verticalScrollBar().value() if hasattr(self, "_scroll") else 0
                 ),
@@ -1351,12 +1504,37 @@ def _launcher_factory(
             self._set_inst_filter(st.get("inst_filter", "all"))
             self.search_edit.setText(st.get("search", ""))
             self._update_summary()
+            if st.get("page") in self._page_of:
+                self._goto(st["page"])  # язык меняют в «Настройках» — там и остаться
             if st.get("scroll") and hasattr(self, "_scroll"):
                 QTimer.singleShot(
                     0, lambda: self._scroll.verticalScrollBar().setValue(st["scroll"])
                 )
 
+        def current_code_cli(self):
+            """Путь к CLI сейчас: его меняют на лету («Установка VS Code»)."""
+            return code_cli
+
+        def current_ext_index(self) -> dict:
+            """Карта расширение -> стек сейчас (мастер раскладки её дополняет)."""
+            return ext_index
+
+        def _cpp_busy(self) -> bool:
+            center = getattr(self, "cpp_center", None)
+            return center is not None and center.busy()
+
         def _switch_language(self):
+            if self._cpp_busy():
+                # Пересборка окна оборвала бы показ идущей установки C++.
+                QMessageBox.information(
+                    self,
+                    _("Язык"),
+                    _("Идёт установка C++. Язык можно сменить, когда она закончится."),
+                )
+                seg = getattr(self, "lang_seg", None)
+                if seg is not None and get_language() in seg.buttons:
+                    seg.buttons[get_language()].setChecked(True)
+                return
             self._persist()  # сохранить выбор/опции/папку перед пересборкой окна
             new = "ru" if get_language() == "en" else "en"
             set_language(new)
@@ -1370,7 +1548,8 @@ def _launcher_factory(
                 return
             if not self._loaded:
                 self._set_hero("…", "", _("считаю расширения…"), "")
-            self.b_run.setEnabled(False)
+                self.b_run.setEnabled(False)  # тихое обновление кнопку не трогает
+            self._last_ext_load = time.monotonic()
             self._loader = ExtLoader(code_cli)
             self._loader.loaded.connect(self._on_installed)
             self._loader.start()
@@ -1647,13 +1826,12 @@ def _launcher_factory(
             self.folder_edit.setPlaceholderText(
                 _("путь к проекту или .code-workspace — можно перетащить сюда")
             )
-            self.folder_edit.editingFinished.connect(
-                lambda: self._suggest_for_folder(self.folder_edit.text().strip())
-            )
+            self.folder_edit.editingFinished.connect(self._folder_edited)
+            self.folder_edit.textChanged.connect(self._mark_folder)
             grid.addWidget(self.folder_edit, 0, 1)
             # Недавние папки: скрытый список для совместимости (_pick_recent) и
             # меню у кнопки «Обзор».
-            self.recent_box = QComboBox()
+            self.recent_box = ComboBox()
             self.recent_box.addItem(_("— недавние папки —"), "")
             for p in cfg.get("recent_folders", []):
                 self.recent_box.addItem(p, p)
@@ -1681,7 +1859,7 @@ def _launcher_factory(
             lbl_p = QLabel(_("Пресет"))
             lbl_p.setObjectName("CatNote")
             grid.addWidget(lbl_p, 1, 0)
-            self.preset_box = QComboBox()
+            self.preset_box = ComboBox()
             self.preset_box.setMinimumWidth(180)
             self._reload_presets()
             self.preset_box.activated.connect(self._apply_preset)
@@ -1689,6 +1867,7 @@ def _launcher_factory(
             preset_menu = menu_button(
                 [
                     (_("Сохранить текущий выбор как пресет…"), self._save_preset),
+                    (_("Обновить выбранный пресет текущим выбором"), self._update_preset),
                     (_("Удалить выбранный пресет"), self._delete_preset),
                     None,
                     (_("Экспорт пресетов в файл…"), self._export_presets),
@@ -1864,6 +2043,10 @@ def _launcher_factory(
                     lambda _=False, k=key, c=cat: show_details(self, k, c, set(self.installed)),
                 )
                 self.cat_checks[key] = card
+                card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                card.customContextMenuRequested.connect(
+                    lambda pos, k=key, c=cat, w=card: self._card_menu(k, c, w, pos)
+                )
                 self._cards_flow.addWidget(card)
             stacks.body.addWidget(self.cards_host)
             self._update_seg_counts()
@@ -2150,6 +2333,7 @@ def _launcher_factory(
                 ),
             )
             t_clean.clicked.connect(self._open_cleanup)
+            self.t_clean = t_clean
             t_env = Tile(
                 "steps",
                 _("Проверить окружение"),
@@ -2176,9 +2360,30 @@ def _launcher_factory(
             grid.addWidget(t_clean, 0, 1)
             grid.addWidget(t_env, 1, 0)
             grid.addWidget(t_code, 1, 1)
+            self.t_report = Tile(
+                "hint",
+                _("Отчёт для поддержки"),
+                _(
+                    "Собрать в один текстовый файл версию, журнал, проверку C++ и PATH — "
+                    "чтобы отправить при проблеме. Ничего не меняет."
+                ),
+            )
+            self.t_report.clicked.connect(self._make_support_report)
+            grid.addWidget(self.t_report, 2, 0)
+            t_compat = Tile(
+                "ext",
+                _("Совместимость расширений"),
+                _(
+                    "Какие расширения не подходят к вашему VS Code, остались без нужных им "
+                    "расширений, мешают друг другу или устарели. Ничего не меняет."
+                ),
+            )
+            t_compat.clicked.connect(self._show_compat_report)
+            grid.addWidget(t_compat, 2, 1)
+            self.t_compat = t_compat
             v.addLayout(grid)
             jr = Section(_("Журнал"))
-            self.log = QPlainTextEdit()
+            self.log = LogView()
             self.log.setObjectName("Log")
             self.log.setReadOnly(True)
             self.log.setMinimumHeight(220)
@@ -2186,6 +2391,20 @@ def _launcher_factory(
             # Последняя строка журнала видна на «Запуске» под баннером.
             self.log.textChanged.connect(self._mirror_log)
             jr.body.addWidget(self.log)
+            jrow = QHBoxLayout()
+            for text, target in (
+                (_("Открыть файл журнала"), LOG_FILE),
+                (_("Папка настроек"), CONFIG_DIR),
+            ):
+                jb = QPushButton(text)
+                jb.setObjectName("HBtn")
+                jb.setCursor(Qt.CursorShape.PointingHandCursor)
+                jb.clicked.connect(
+                    lambda _c=False, t=target: QDesktopServices.openUrl(QUrl.fromLocalFile(str(t)))
+                )
+                jrow.addWidget(jb)
+            jrow.addStretch()
+            jr.body.addLayout(jrow)
             v.addWidget(jr)
             v.addStretch()
             return scroll
@@ -2207,8 +2426,74 @@ def _launcher_factory(
                 if not isinstance(rep, _pd.Report):
                     return
                 n = sum(1 for i in rep.issues if i.level in ("error", "warn") and i.fixable)
-                self.nav.items["clean"].set_badge(n)
+                self._set_maint_badge("path", n)
                 self.t_path.set_num(n or "")
+
+            w.done.connect(_d)
+            w.finished.connect(lambda x=w: self._reap_installer(x))
+            self._install_threads.append(w)
+            w.start()
+
+        def _set_maint_badge(self, part: str, n: int):
+            """Счётчик на «Обслуживании» складывается из нескольких проверок."""
+            parts = getattr(self, "_maint_badges", {})
+            parts[part] = int(n or 0)
+            self._maint_badges = parts
+            self.nav.items["clean"].set_badge(sum(parts.values()))
+
+        def _start_health_check(self):
+            """Фоновая сводка при старте: сколько освободит уборка, есть ли ошибки
+            совместимости. Показывается на плитках «Обслуживания» и в журнале."""
+            from . import health
+
+            cli = code_cli
+            w = FnWorker(lambda: health.quick_health(cli))
+
+            def _d(res):
+                if not isinstance(res, dict):
+                    return
+                self._health = res
+                safe = res.get("cleanup_safe_bytes", 0)
+                if safe >= 200 * 1024 * 1024:
+                    self.t_clean.set_num(health.size_label(safe))
+                    self.log.appendPlainText(
+                        _("Уборка VS Code может освободить {size} («Обслуживание»).").format(
+                            size=health.size_label(safe)
+                        )
+                    )
+                self._set_maint_badge("cleanup", 1 if safe >= 1024**3 else 0)
+                bad = res.get("compat_errors", 0) + res.get("compat_warnings", 0)
+                self.t_compat.set_num(bad or "")
+                self._set_maint_badge("compat", res.get("compat_errors", 0))
+                if res.get("compat_errors"):
+                    self.log.appendPlainText(
+                        _("Расширения: ошибок совместимости — {n} («Обслуживание» → «Совместимость расширений»).").format(
+                            n=res["compat_errors"]
+                        )
+                    )
+
+            w.done.connect(_d)
+            w.finished.connect(lambda x=w: self._reap_installer(x))
+            self._install_threads.append(w)
+            w.start()
+
+        def _make_support_report(self):
+            if getattr(self, "_report_busy", False):
+                return
+            self._report_busy = True
+            self.log.appendPlainText(_("Собираю отчёт (до минуты: идёт пробная сборка C++)…"))
+            from . import support
+
+            sel = sorted(self._selected())
+            w = FnWorker(lambda: support.save_report(support.build_report(code_cli, cfg, sel)))
+
+            def _d(res):
+                self._report_busy = False
+                if isinstance(res, Exception):
+                    QMessageBox.warning(self, _("Отчёт для поддержки"), str(res))
+                    return
+                self.log.appendPlainText(_("Отчёт сохранён: {path}").format(path=res))
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(res)))
 
             w.done.connect(_d)
             w.finished.connect(lambda x=w: self._reap_installer(x))
@@ -2222,7 +2507,10 @@ def _launcher_factory(
 
         def _run_env_doctor(self):
             """Проверка окружения (тулчейны, PATH, JAVA_HOME) в фоне."""
-            w = FnWorker(_tc.environment_report)
+            from . import envcheck
+
+            cli = code_cli
+            w = FnWorker(lambda: envcheck.deep_report(cli))
 
             def _d(res):
                 if isinstance(res, dict):
@@ -2256,13 +2544,12 @@ def _launcher_factory(
             row2 = QHBoxLayout()
             row2.addWidget(QLabel(_("Язык")))
             row2.addStretch()
-            row2.addWidget(
-                segmented(
-                    [("ru", _("Русский")), ("en", "English")],
-                    get_language(),
-                    lambda k: k != get_language() and self._switch_language(),
-                )
+            self.lang_seg = segmented(
+                [("ru", _("Русский")), ("en", "English")],
+                get_language(),
+                lambda k: k != get_language() and self._switch_language(),
             )
+            row2.addWidget(self.lang_seg)
             view.body.addLayout(row2)
             view.body.addWidget(_note_lbl(_("Палитра — цвета окна и пейзаж на баннере запуска.")))
             pal_host = QWidget()
@@ -2306,6 +2593,74 @@ def _launcher_factory(
             self.newwin_cb.setChecked(cfg.get("new_window", True))
             run.body.addLayout(
                 _switch_row(self.newwin_cb, _("Открывать в новом окне"), "--new-window")
+            )
+            self.autofix_cb = ToggleSwitch()
+            self.autofix_cb.setChecked(cfg.get("auto_fix", True))
+
+            def _autofix_changed(*_a):
+                cfg["auto_fix"] = self.autofix_cb.isChecked()
+                save_config(cfg)
+
+            self.autofix_cb.stateChanged.connect(_autofix_changed)
+            run.body.addLayout(
+                _switch_row(
+                    self.autofix_cb,
+                    _("Исправлять проблемы перед запуском автоматически"),
+                    _(
+                        "Устаревшие настройки C/C++ проекта пересоздаются (старые — в .bak), "
+                        "нужные стеки включаются, мешающие сборке расширения выключаются на "
+                        "этот запуск. Что сделано — покажет сообщение. Выключено — лаунчер "
+                        "спрашивает про каждое."
+                    ),
+                )
+            )
+            crow = QHBoxLayout()
+            crow.addWidget(QLabel(_("Несовместимые расширения")))
+            crow.addStretch()
+            self.compat_seg = segmented(
+                [
+                    ("warn", _("Спрашивать")),
+                    ("auto", _("Выключать сами")),
+                    ("off", _("Не проверять")),
+                ],
+                compat.mode_of(cfg),
+                self._set_compat_mode,
+            )
+            crow.addWidget(self.compat_seg)
+            run.body.addLayout(crow)
+            run.body.addWidget(
+                _note_lbl(
+                    _(
+                        "Перед запуском лаунчер проверяет включаемые расширения: подходят ли "
+                        "они к вашей версии VS Code, на месте ли то, от чего они зависят, и не "
+                        "мешают ли друг другу. «Спрашивать» — покажет и даст выбрать; "
+                        "«Выключать сами» — проблемные выключаются на этот запуск без вопроса."
+                    )
+                )
+            )
+            self.compat_reset_btn = QPushButton()
+            self.compat_reset_btn.setObjectName("HBtn")
+            self.compat_reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.compat_reset_btn.clicked.connect(lambda _c=False: self._reset_compat_ignored())
+            self._refresh_compat_reset()
+            rrow = QHBoxLayout()
+            rrow.addWidget(self.compat_reset_btn)
+            rrow.addStretch()
+            run.body.addLayout(rrow)
+            self.hide_cb = ToggleSwitch()
+            self.hide_cb.setChecked(cfg.get("hide_after_launch", False))
+
+            def _hide_changed(*_a):
+                cfg["hide_after_launch"] = self.hide_cb.isChecked()
+                save_config(cfg)
+
+            self.hide_cb.stateChanged.connect(_hide_changed)
+            run.body.addLayout(
+                _switch_row(
+                    self.hide_cb,
+                    _("Убирать окно лаунчера после запуска"),
+                    _("В трей, если значок включён, иначе — свернуть на панель задач."),
+                )
             )
             self.gpu_cb = ToggleSwitch()
             self.gpu_cb.setChecked(cfg.get("disable_gpu", False))
@@ -2364,8 +2719,99 @@ def _launcher_factory(
                 )
             )
             v.addWidget(tray)
+
+            about = Section(_("О программе и настройки"))
+            about.body.addWidget(
+                _note_lbl(
+                    _("Версия {ver}. Настройки: {path}").format(ver=__version__, path=CONFIG_DIR)
+                )
+            )
+            arow = QHBoxLayout()
+            for text, slot, tip in (
+                (
+                    _("Экспорт настроек…"),
+                    self._export_settings,
+                    _("Сохранить пресеты, исключения и параметры в файл — для другого компьютера."),
+                ),
+                (
+                    _("Импорт настроек…"),
+                    self._import_settings,
+                    _("Загрузить настройки из файла. Текущие сохранятся рядом как .bak."),
+                ),
+                (
+                    _("Страница релизов"),
+                    lambda: QDesktopServices.openUrl(QUrl(RELEASES_URL)),
+                    "",
+                ),
+            ):
+                ab = QPushButton(text)
+                ab.setObjectName("HBtn")
+                ab.setCursor(Qt.CursorShape.PointingHandCursor)
+                if tip:
+                    ab.setToolTip(tip)
+                ab.clicked.connect(lambda _c=False, f=slot: f())
+                arow.addWidget(ab)
+            arow.addStretch()
+            about.body.addLayout(arow)
+            v.addWidget(about)
             v.addStretch()
             return scroll
+
+        def _export_settings(self):
+            self._persist_light()
+            path, _filt = QFileDialog.getSaveFileName(
+                self, _("Экспорт настроек"), "vscode_launcher_settings.json", "JSON (*.json)"
+            )
+            if not path:
+                return
+            data = {k: v for k, v in cfg.items() if k not in MACHINE_KEYS}
+            try:
+                Path(path).write_text(
+                    json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                self.log.appendPlainText(_("Настройки сохранены: {path}").format(path=path))
+            except OSError as e:
+                QMessageBox.critical(self, _("Экспорт настроек"), str(e))
+
+        def _import_settings(self):
+            path, _filt = QFileDialog.getOpenFileName(
+                self, _("Импорт настроек"), "", "JSON (*.json)"
+            )
+            if not path:
+                return
+            try:
+                data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+                if not isinstance(data, dict):
+                    raise ValueError(_("в файле не настройки лаунчера"))
+            except Exception as e:
+                QMessageBox.critical(self, _("Импорт настроек"), str(e))
+                return
+            from .config import migrate_config
+
+            keep = {k: cfg[k] for k in MACHINE_KEYS if k in cfg}  # своё про эту машину
+            new = migrate_config({k: v for k, v in data.items() if k not in MACHINE_KEYS})
+            cfg.clear()
+            cfg.update(new)
+            cfg.update(keep)
+            save_config(cfg)
+            set_language(cfg.get("lang", "ru"))
+            QMessageBox.information(
+                self, _("Импорт настроек"), _("Настройки загружены. Окно будет открыто заново.")
+            )
+            if _lang_switch.get("fn"):
+                _lang_switch["fn"](None)
+
+        def _card_menu(self, key, cat, card, pos):
+            """Правый клик по карточке стека: частые действия без поиска по окну."""
+            m = QMenu(self)
+            only = m.addAction(_("Оставить только этот стек"))
+            more = m.addAction(_("Что внутри стека…"))
+            chosen = m.exec(card.mapToGlobal(pos))
+            if chosen is only:
+                for k, c in self.cat_checks.items():
+                    c.setChecked(k == key)
+            elif chosen is more:
+                show_details(self, key, cat, set(self.installed))
 
         def _selected(self) -> set[str]:
             return {k for k, cb in self.cat_checks.items() if cb.isChecked()}
@@ -2374,7 +2820,7 @@ def _launcher_factory(
             # Применяем только к видимым (после фильтра) карточкам — чтобы «Всё вкл»
             # при активном поиске не трогал скрытые стеки неожиданно.
             for cb in self.cat_checks.values():
-                if cb.isVisible():
+                if not cb.isHidden():  # isVisible ложно у всех, пока страница не на экране
                     cb.setChecked(state)
 
         def _set_inst_filter(self, key: str):
@@ -2460,10 +2906,18 @@ def _launcher_factory(
             откатывается к прежнему."""
             if self._dep_map is None:
                 try:
-                    self._dep_map = build_dependency_map(read_extension_manifests(code_cli))
+                    self._manifests = read_extension_manifests(code_cli)
+                    self._dep_map = build_dependency_map(self._manifests)
                 except Exception:
+                    self._manifests = {}
                     self._dep_map = {}
             return self._dep_map
+
+        def _get_manifests(self) -> dict:
+            """Манифесты установленных расширений; кэш живёт вместе с _dep_map
+            и сбрасывается там же (сменился набор расширений или VS Code)."""
+            self._get_dep_map()
+            return self._manifests
 
         def _disabled_list(self) -> list[str]:
             return compute_disabled(
@@ -2557,7 +3011,7 @@ def _launcher_factory(
                 line = QHBoxLayout()
                 cb = QCheckBox(ext_id)
                 cb.setChecked(True)
-                combo = QComboBox()
+                combo = ComboBox()
                 for k, title in key_titles:
                     combo.addItem(title, k)
                 if key in keys_order:
@@ -2734,6 +3188,95 @@ def _launcher_factory(
                 (QMessageBox.information if ok else QMessageBox.warning)(
                     dlg, _("Настройка VS Code"), msg
                 )
+
+            def do_purge(pkg):
+                """Удалить пакет полностью: вместе с папкой и записями PATH.
+                Сначала показываем, что именно будет стёрто, и спрашиваем."""
+                if state["busy"]:
+                    return
+                QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+                try:  # спрашивает winget, что именно установлено, — секунда-две
+                    plan = _tc.purge_plan(pkg)
+                finally:
+                    QApplication.restoreOverrideCursor()
+                if not plan["ids"] and not plan["dirs"]:
+                    QMessageBox.information(
+                        dlg,
+                        _("Полное удаление"),
+                        _(
+                            "«{name}» ставили не через winget, и его папку не удалось "
+                            "определить надёжно. Чтобы не стереть лишнее, лаунчер ничего "
+                            "не трогает — удалите программу через «Параметры → Приложения»."
+                        ).format(name=pkg.title),
+                    )
+                    return
+                body = _(
+                    "Полностью удалить «{name}»?\n\nБудет удалён сам пакет и всё, что "
+                    "от него осталось на диске."
+                ).format(name=pkg.title)
+                if plan["ids"]:
+                    # Стоять может другая версия, чем в названии строки, — называем точно.
+                    body += "\n\n" + _("Пакеты winget: {ids}.").format(ids=", ".join(plan["ids"]))
+                if plan["dirs"]:
+                    body += (
+                        "\n\n"
+                        + _("Эти папки будут стёрты целиком, мимо Корзины:")
+                        + "\n"
+                        + "\n".join("  " + d for d in plan["dirs"])
+                    )
+                else:
+                    body += "\n\n" + _(
+                        "Отдельной папки пакета не найдено — будет удалён только сам пакет."
+                    )
+                n_path = len(plan["user_path"]) + len(plan["machine_path"])
+                if n_path:
+                    body += "\n\n" + _("Из PATH будет убрано записей: {n}.").format(n=n_path)
+                if plan["needs_admin"]:
+                    body += "\n\n" + _(
+                        "Могут понадобиться права администратора: Windows покажет запрос "
+                        "«Разрешить этому приложению вносить изменения?» — ответьте «Да»."
+                    )
+                body += "\n\n" + _(
+                    "Отменить это действие будет нельзя. Вы действительно хотите удалить?"
+                )
+                box = QMessageBox(dlg)
+                box.setIcon(QMessageBox.Icon.Warning)
+                box.setWindowTitle(_("Удалить полностью?"))
+                box.setText(body)
+                yes = box.addButton(_("Удалить полностью"), QMessageBox.ButtonRole.DestructiveRole)
+                cancel = box.addButton(_("Отмена"), QMessageBox.ButtonRole.RejectRole)
+                box.setDefaultButton(cancel)
+                box.setEscapeButton(cancel)
+                box.exec()
+                if box.clickedButton() is not yes:
+                    return
+                lock_actions(True)
+                status_lbl.setText(_("Удаляю «{name}»…").format(name=pkg.title))
+                status_lbl.setVisible(True)
+                prog_bar.setRange(0, 0)
+                prog_bar.setVisible(True)
+                w = FnWorker(lambda: _tc.purge_package(pkg, plan))
+
+                def _d(res):
+                    if not state["open"]:
+                        return
+                    prog_bar.setVisible(False)
+                    lock_actions(False)
+                    ok, msg = res if isinstance(res, tuple) else (False, str(res))
+                    refresh_pkg_row(pkg, _tc.package_installed(pkg), None)
+                    status_lbl.setText(
+                        _("«{name}» удалён полностью.").format(name=pkg.title)
+                        if ok
+                        else _("«{name}»: удалено не всё.").format(name=pkg.title)
+                    )
+                    (QMessageBox.information if ok else QMessageBox.warning)(
+                        dlg, _("Полное удаление"), (msg or "")[:1800]
+                    )
+
+                w.done.connect(_d)
+                w.finished.connect(lambda x=w: self._reap_installer(x))
+                self._install_threads.append(w)
+                w.start()
 
             def _resolve_version(pkg):
                 """#4: подставить выбранную в комбобоксе версию пакета."""
@@ -2954,7 +3497,7 @@ def _launcher_factory(
                     if cpp_card_done:
                         continue
                     cpp_card_done = True
-                    card = self._cpp_toolchain_card(dlg)
+                    card = self._cpp_toolchain_card(dlg, do_purge)
                     card_of["cpp"] = card
                     for k in _tc.toolchain_keys():
                         if k.startswith("cpp_"):
@@ -3004,7 +3547,7 @@ def _launcher_factory(
                     # #4: выбор версии для пакетов, у которых есть варианты.
                     ver_combo = None
                     if pkg.versions:
-                        ver_combo = QComboBox()
+                        ver_combo = ComboBox()
                         for vid, vtitle in pkg.versions:
                             ver_combo.addItem(vtitle, vid)
                         # по умолчанию — winget_id пакета (первый подходящий).
@@ -3060,6 +3603,16 @@ def _launcher_factory(
                                 _("winget uninstall --id {id}").format(id=pkg.winget_id),
                             ),
                         ]
+                    items.append(
+                        (
+                            _("Удалить полностью…"),
+                            lambda p=pkg: do_purge(p),
+                            _(
+                                "Удалить пакет вместе с его папкой и записями в PATH, "
+                                "чтобы ничего не осталось. Спросит подтверждение."
+                            ),
+                        )
+                    )
                     more = menu_button(items, tip=_("Проверить, обновить или удалить"))
                     action_btns.append(more)
                     for b in (ib, ap, more):
@@ -3121,7 +3674,10 @@ def _launcher_factory(
                 lock_actions(True)
                 status_lbl.setText(_("Проверяю окружение…"))
                 status_lbl.setVisible(True)
-                w = FnWorker(_tc.environment_report)
+                from . import envcheck
+
+                cli = code_cli
+                w = FnWorker(lambda: envcheck.deep_report(cli))
 
                 def _d(res):
                     if not state["open"]:
@@ -3184,7 +3740,7 @@ def _launcher_factory(
                 QTimer.singleShot(0, lambda: _scroll_to(target))
             dlg.exec()
 
-        def _cpp_toolchain_card(self, dlg):
+        def _cpp_toolchain_card(self, dlg, purge=None):
             """Карточка C/C++ в окне тулчейнов: коротко что стоит и кнопка в
             C++-центр, где всё ставится одним списком по ролям."""
             from shutil import which
@@ -3208,6 +3764,27 @@ def _launcher_factory(
                 self._open_cpp()
 
             go.clicked.connect(_go)
+            # Полное удаление компиляторов C/C++ — здесь же: в C++-центре только
+            # установка, а убрать MinGW/MSYS2/LLVM с папкой было неоткуда.
+            rm_items, seen_ids = [], set()
+            for k in _tc.toolchain_keys() if purge is not None else ():
+                if not (k == "cpp" or k.startswith("cpp_")) or k == "cpp_msvc":
+                    continue
+                for p in _tc.get_toolchain(k).packages:
+                    if p.winget_id not in seen_ids and _tc.package_installed(p):
+                        seen_ids.add(p.winget_id)
+                        rm_items.append((p.title, lambda p=p: purge(p)))
+            if rm_items:
+                head.addWidget(
+                    menu_button(
+                        rm_items,
+                        tip=_("Удалить полностью: пакет вместе с его папкой и записями в PATH"),
+                        text=_("Удалить…"),
+                        obj="HBtn",
+                    ),
+                    0,
+                    Qt.AlignmentFlag.AlignVCenter,
+                )
             head.addWidget(go, 0, Qt.AlignmentFlag.AlignVCenter)
             cl.addLayout(head)
             found = [n for n in ("g++", "clang++", "cmake", "ninja", "gdb", "clangd") if which(n)]
@@ -3235,7 +3812,7 @@ def _launcher_factory(
             """#8: показать отчёт environment_report в читаемом виде."""
             dlg = QDialog(self)
             dlg.setWindowTitle(_("Проверка окружения"))
-            dlg.resize(640, 620)
+            dlg.resize(820, 680)
             lay = QVBoxLayout(dlg)
             lay.setContentsMargins(18, 18, 18, 16)
             lay.setSpacing(10)
@@ -3243,51 +3820,18 @@ def _launcher_factory(
             title.setObjectName("Title")
             lay.addWidget(title)
 
-            lines: list[str] = []
-            lines.append(_("winget: {v}").format(v=rep.get("winget") or _("не найден")))
-            lines.append("")
-            tools = rep.get("tools", [])
-            lines.append(_("Установленные тулчейны ({n}):").format(n=len(tools)))
-            for t in tools:
-                lines.append(f"  ✓ {t['title']}  —  {t.get('version') or ''}")
-            if not tools:
-                lines.append("  —")
-            lines.append("")
+            from . import envcheck
+
+            lines = envcheck.format_lines(rep)
             jh = rep.get("java_home", {})
-            if jh.get("set"):
-                mark = "✓ " if jh.get("ok") else "✗ "
-                extra = f"  ({jh.get('reason')})" if not jh.get("ok") else ""
-                lines.append(f"{mark}JAVA_HOME: {jh.get('path')}{extra}")
-            else:
-                lines.append(_("JAVA_HOME не задан."))
-            lines.append("")
-            ph = rep.get("path", {})
             pu = rep.get("path_user", {})
             pm = rep.get("path_machine", {})
-            lines.append(
-                _("PATH: {n} записей, длина {l} символов").format(
-                    n=ph.get("count", 0), l=ph.get("length", 0)
-                )
-            )
-            # #3: раздельно user (чистится без прав) и machine (нужен админ).
             u_dups, u_miss = pu.get("duplicates", []), pu.get("missing", [])
             m_dups, m_miss = pm.get("duplicates", []), pm.get("missing", [])
-            lines.append(
-                _("  Ваш PATH: дублей {d}, мёртвых {m}").format(d=len(u_dups), m=len(u_miss))
-            )
-            for d in (u_dups + u_miss)[:10]:
-                lines.append(f"      • {d}")
-            lines.append(
-                _("  Системный PATH: дублей {d}, мёртвых {m}  (нужны права админа)").format(
-                    d=len(m_dups), m=len(m_miss)
-                )
-            )
-            for d in (m_dups + m_miss)[:10]:
-                lines.append(f"      • {d}")
-            if not (u_dups or u_miss or m_dups or m_miss):
-                lines.append(_("  PATH в порядке: дублей и мёртвых записей не найдено."))
+            actions = {i.get("action") for i in rep.get("issues") or []}
 
             box = QPlainTextEdit("\n".join(lines))
+            box.setObjectName("Log")  # моноширинный: колонки отчёта ровные
             box.setReadOnly(True)
             lay.addWidget(box, 1)
             b = QHBoxLayout()
@@ -3297,7 +3841,56 @@ def _launcher_factory(
                 (QMessageBox.information if ok else QMessageBox.warning)(dlg, _("JAVA_HOME"), msg)
                 box.setPlainText(box.toPlainText() + "\n\n— " + msg)
 
-            if u_dups or u_miss or m_dups or m_miss:
+            def _jump(fn):
+                def go():
+                    dlg.accept()
+                    fn()
+
+                return go
+
+            save_btn = QPushButton(_("Сохранить…"))
+            save_btn.setObjectName("Ghost")
+            save_btn.clicked.connect(
+                lambda: self._save_text(dlg, box.toPlainText(), "vscode_environment.txt")
+            )
+            b.addWidget(save_btn)
+            fixable = rep.get("fixable_env") or []
+            if fixable:
+                env_btn = QPushButton(_("Исправить переменные…"))
+                env_btn.setObjectName("Ghost")
+                env_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+
+                def do_fix_env():
+                    listing = "\n".join(f"{n} = {v}  ({why})" for n, v, why in fixable)
+                    r = QMessageBox.question(
+                        dlg,
+                        _("Исправить переменные"),
+                        _(
+                            "Удалить ваши переменные окружения?\n\n{list}\n\nПрежние значения "
+                            "сохранятся в env_history.txt в папке настроек лаунчера."
+                        ).format(list=listing),
+                    )
+                    if r != QMessageBox.StandardButton.Yes:
+                        return
+                    from . import envcheck as _ec
+
+                    msgs = _ec.fix_env_vars([f[0] for f in fixable])
+                    box.setPlainText(box.toPlainText() + "\n\n— " + "\n— ".join(msgs))
+                    env_btn.setEnabled(False)
+
+                env_btn.clicked.connect(do_fix_env)
+                b.addWidget(env_btn)
+            for act, label, fn in (
+                ("compat", _("Совместимость расширений"), self._show_compat_report),
+                ("cleanup", _("Уборка VS Code"), self._open_cleanup),
+            ):
+                if act in actions:
+                    jb = QPushButton(label)
+                    jb.setObjectName("Ghost")
+                    jb.setCursor(Qt.CursorShape.PointingHandCursor)
+                    jb.clicked.connect(_jump(fn))
+                    b.addWidget(jb)
+            if u_dups or u_miss or m_dups or m_miss or "path" in actions:
                 # Одна кнопка вместо двух «почистить»: умная починка видит обе ветки
                 # PATH, конфликты и показывает, что изменится.
                 fix_btn = QPushButton(_("Починить PATH…"))
@@ -3701,6 +4294,18 @@ def _launcher_factory(
             self.b_run.setText(
                 _("Запустить · −{dis}").format(dis=len(dis)) if dis else _("Запустить VS Code")
             )
+            folder = self.folder_edit.text().strip() if hasattr(self, "folder_edit") else ""
+            self.b_run.setToolTip(
+                _(
+                    "Стеков включено: {on} из {all}. Расширений выключится: {dis}.\n"
+                    "Папка: {folder}\nEnter — запустить."
+                ).format(
+                    on=len(self._selected()),
+                    all=len(self.cat_checks),
+                    dis=len(dis),
+                    folder=folder or _("не задана"),
+                )
+            )
 
         def _toggle_tray_setting(self):
             """Сохранить настройки трея сразу: это переключатели поведения окна,
@@ -3865,16 +4470,28 @@ def _launcher_factory(
                 self.kill_cb.isChecked(),
                 **self._cmd_kwargs(),
             )
-            self._text_dialog(
-                _("Команда запуска"),
-                _("Эквивалент для cmd (сам лаунчер запускает Code.exe напрямую, без оболочки):"),
-                cmd,
-            )
+            note = _("Эквивалент для cmd (сам лаунчер запускает Code.exe напрямую, без оболочки):")
+            if len(cmd) > 8000:
+                note += " " + _(
+                    "Внимание: команда длиннее 8191 символа — cmd её не выполнит. Лаунчеру "
+                    "это не мешает; для ярлыка используйте пресет («Пресеты» → «Ярлык .cmd»)."
+                )
+            self._text_dialog(_("Команда запуска"), note, cmd)
 
         def _run(self):
+            nonlocal code_cli
+            if self._launch_pending:
+                # Второе нажатие, пока ждём закрытия VS Code, запускало редактор
+                # дважды: оба ожидания доходили до запуска.
+                self.log.appendPlainText(_("Запуск уже идёт — жду, пока закроется VS Code."))
+                return
+            if code_cli and not Path(code_cli).exists():
+                # VS Code обновили или переставили, пока лаунчер был открыт.
+                code_cli = resolve_code_cli(cfg)
             if not code_cli:
                 QMessageBox.critical(self, _("Ошибка"), _("Не найден CLI VS Code (code.cmd)."))
                 return
+            self._auto_notes = []  # что поправили сами — покажем одним сообщением
             folder = self.folder_edit.text().strip()
             if folder and not Path(folder).exists():
                 # Не открываем молча несуществующий путь — легче заметить опечатку
@@ -3891,11 +4508,28 @@ def _launcher_factory(
                 if r != QMessageBox.StandardButton.Yes:
                     return
                 self.folder_edit.clear()
-            if self.kill_cb.isChecked():
+                folder = ""  # проверки ниже не должны смотреть в несуществующий путь
+            if not self._confirm_project_health(folder):
+                return
+            if not self._confirm_project_needs(folder):
+                return
+            if not self._confirm_cpptools_engine(folder):
+                return
+            if not self._confirm_empty_selection():
+                return
+            if not self._confirm_stack_conflicts(folder):
+                return
+            compat_off = self._confirm_compat()
+            if compat_off is None:
+                return
+            # Закрывать нечего — и спрашивать не о чем.
+            kill = self.kill_cb.isChecked() and vscode_process_count(code_cli) > 0
+            soft = self.soft_cb.isChecked()
+            if kill:
                 # Текст должен совпадать с тем, что реально произойдёт: при
                 # мягком закрытии VS Code сам спросит про несохранённое, и
                 # пугать потерей файлов здесь неправильно.
-                if self.soft_cb.isChecked():
+                if soft:
                     body = _(
                         "Сейчас VS Code получит обычный запрос на закрытие — он "
                         "сам спросит про несохранённые файлы. Когда закроется, "
@@ -3908,17 +4542,28 @@ def _launcher_factory(
                         "затем откроется новое с выбранным набором.\n\n"
                         "Сохранил несохранённые файлы? Продолжить?"
                     )
+                # По умолчанию «Нет» при принудительном закрытии: случайный второй
+                # Enter не должен стоить несохранённых файлов.
                 r = QMessageBox.question(
                     self,
                     _("Закрыть VS Code?"),
                     body,
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes if soft else QMessageBox.StandardButton.No,
                 )
                 if r != QMessageBox.StandardButton.Yes:
                     return
-            if not self._confirm_stack_conflicts(folder):
-                return
+            elif (self._bare() or self._disabled_list()) and vscode_process_count(code_cli) > 0:
+                # Уже запущенный VS Code новые --disable-extension не применяет:
+                # без закрытия окно открылось бы с прежним набором, а журнал
+                # сказал бы «выключено N расширений».
+                choice = self._ask_running_vscode(soft)
+                if choice == "cancel":
+                    return
+                kill = choice == "close"
             bare = self._bare()
+            options = self._plan_options()
+            options["kill"] = kill
             # Один путь сборки запуска с CLI и треем (quicklaunch.plan_launch),
             # иначе три места считают выключаемое по чуть-чуть по-разному.
             # Списки отдаём готовыми: окно уже держит их в руках.
@@ -3927,13 +4572,24 @@ def _launcher_factory(
                 cfg,
                 ext_index,
                 self._selected(),
-                self._plan_options(),
+                options,
                 installed=self.installed,
                 dep_map=self._get_dep_map(),
+                manifests=self._get_manifests(),
+                extra_disable=compat_off,
+                compat_mode="off",  # окно уже проверило и спросило (_confirm_compat)
             )
             dis, args = plan["disabled"], plan["args"]
+            for ext_id in plan.get("auto_disabled", []):
+                self._auto_note(
+                    _(
+                        "Расширение {ext} выключено на этот запуск: оно собирает файл с "
+                        "полным путём, а в пути к папке русские буквы — сборка падала бы."
+                    ).format(ext=ext_id)
+                )
 
             def do_launch():
+                self._launch_pending = False
                 try:
                     launch_detached(code_cli, args)  # без оболочки, напрямую Code.exe
                 except Exception as e:
@@ -3954,17 +4610,375 @@ def _launcher_factory(
                 # «всё включено», от которого считается реальная экономия.
                 self._pending_is_baseline = (not bare) and len(dis) == 0
                 QTimer.singleShot(6000, self._probe_memory)  # новый footprint
+                if cfg.get("hide_after_launch", False):
+                    if self._tray is not None:
+                        self.hide()
+                    else:
+                        self.showMinimized()
 
-            if self.kill_cb.isChecked():
-                if self.soft_cb.isChecked():
+            if kill:
+                self._launch_pending = True
+                if soft:
                     self._graceful_close_then(do_launch)  # дать сохранить, дождаться
                 else:
-                    kill_vscode(code_cli)  # жёстко (/F), затем стартуем с паузой
+                    kill_vscode(code_cli)  # жёстко (/F)
                     self.log.appendPlainText(_("Закрываю VS Code…"))
-                    QTimer.singleShot(1800, do_launch)  # не блокируем интерфейс
+                    self._wait_closed_then(do_launch)  # не блокируем интерфейс
             else:
                 do_launch()
             self._persist()
+            self._show_auto_notes()
+
+        def _auto_note(self, text: str):
+            notes = getattr(self, "_auto_notes", None)
+            if notes is not None:
+                notes.append(text)
+            self.log.appendPlainText(_("Автоматически: {text}").format(text=text))
+
+        def _show_auto_notes(self):
+            """Одно сообщение обо всём, что лаунчер поправил сам перед запуском."""
+            notes = getattr(self, "_auto_notes", None) or []
+            self._auto_notes = []
+            if not notes:
+                return
+            body = "\n\n".join("• " + n for n in notes)
+            tail = _("Отключить автопочинку можно в «Настройки» → «Запуск VS Code».")
+            if cfg.get("hide_after_launch", False) and self._tray is not None:
+                self._tray.showMessage(
+                    _("Лаунчер поправил перед запуском"),
+                    body[:400],
+                    QSystemTrayIcon.MessageIcon.Warning,
+                    8000,
+                )
+                return
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setWindowTitle(_("Лаунчер поправил перед запуском"))
+            box.setText(body + "\n\n" + tail)
+            box.setModal(False)
+            box.open()  # не мешает: VS Code уже запускается
+
+        def _ask_running_vscode(self, soft: bool) -> str:
+            """VS Code уже открыт, а закрывать его не просили: 'close' | 'asis' |
+            'cancel'."""
+            text = _(
+                "VS Code уже открыт. Запущенный редактор не применяет новый набор "
+                "расширений: окно откроется с теми же расширениями, что и сейчас.\n\n"
+                "Закрыть VS Code и открыть заново с выбранным набором?"
+            )
+            if not soft:
+                text += "\n\n" + _("Окна закроются принудительно — сначала сохраните файлы.")
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle(_("VS Code уже открыт"))
+            box.setText(text)
+            close = box.addButton(_("Закрыть и запустить"), QMessageBox.ButtonRole.AcceptRole)
+            asis = box.addButton(_("Открыть как есть"), QMessageBox.ButtonRole.ActionRole)
+            cancel = box.addButton(_("Отмена"), QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(cancel)
+            box.exec()
+            clicked = box.clickedButton()
+            return "close" if clicked is close else "asis" if clicked is asis else "cancel"
+
+        def _setting_value(self, folder: str, key: str):
+            """Значение настройки VS Code: проектная (.vscode/settings.json) важнее
+            пользовательской. None — нигде не задана."""
+            from .detect import _loads_jsonc
+
+            files = [Path(folder) / ".vscode" / "settings.json"] if folder else []
+            files.append(vscode_user_settings_path(code_cli))
+            for f in files:
+                try:
+                    data = (
+                        _loads_jsonc(f.read_text(encoding="utf-8-sig"))
+                        if f and f.is_file()
+                        else None
+                    )
+                except Exception:
+                    continue
+                if isinstance(data, dict) and key in data:
+                    return data[key]
+            return None
+
+        def _missing_for_project(self, folder: str) -> tuple[dict, str]:
+            """Стеки, без которых проект не заработает, и пояснение.
+
+            ({ключ стека: причина}, текст). Два случая: проект сам называет
+            расширение (отладчик из launch.json, CMake Tools, clangd), а оно
+            сейчас выключится; либо выбраны стеки C/C++ без движка подсказок."""
+            root = self._scan_root(folder)
+            disabled = set(self._disabled_list())
+            wanted: dict[str, str] = {}
+            for ext_id, why in project_required_extensions(root).items():
+                key = ext_index.get(ext_id)
+                if ext_id in disabled and key in self.cat_checks:
+                    wanted.setdefault(key, why)
+            if wanted:
+                items = "\n".join(
+                    f"  {cat_title(cats['categories'][k], k)} ({why})"
+                    for k, why in sorted(wanted.items())
+                )
+                return wanted, _(
+                    "Проект настроен на расширения, которые сейчас выключатся:\n\n"
+                    "{items}\n\nБез них в этом проекте не заработает отладка (F5), "
+                    "сборка или подсказки кода."
+                ).format(items=items)
+            avail = {
+                k for k in CPP_ENGINES if k in self.cat_checks and self.cat_checks[k].is_installed()
+            }
+            off = self._setting_value(root, "C_Cpp.intelliSenseEngine") == "disabled"
+            problem = cpp_engine_problem(self._selected(), avail, off)
+            if problem == "none":
+                key = "cpp_clangd" if (off or "cpp_cpptools" not in avail) else "cpp_cpptools"
+                return {key: ""}, _(
+                    "Выбраны стеки C/C++, но ни один движок подсказок не включён: "
+                    "автодополнения, переходов по коду и подсветки ошибок не будет."
+                )
+            if problem == "cpptools_off":
+                return {"cpp_clangd": ""}, _(
+                    "Из движков подсказок C++ включён только cpptools, а его подсказки "
+                    "отключены настройкой C_Cpp.intelliSenseEngine: disabled (так "
+                    "настраивается работа с clangd). Стек clangd при этом выключен — "
+                    "подсказок кода не будет."
+                )
+            return {}, ""
+
+        def _auto_fix_project(self, root: str, problems: list) -> bool:
+            """Автопочинка настроек проекта: пересоздать то, что чинится, о прочем
+            предупредить. Запуск не останавливает."""
+            from . import cpp_project as cp
+
+            fixable = [p for p in problems if p["key"] in cp.FIXABLE]
+            if fixable:
+                QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+                try:
+                    o = cp.auto_options(root, self.installed)
+                    report = cp.fix_project(root, o) if o is not None else None
+                except Exception:
+                    log.exception("Автопочинка настроек проекта")
+                    report = None
+                finally:
+                    QApplication.restoreOverrideCursor()
+                what = " ".join(p["text"] for p in fixable)
+                self._auto_note(
+                    (
+                        _("Настройки проекта пересозданы, старые сохранены как .bak. Было: {what}")
+                        if report is not None
+                        else _("Не удалось исправить настройки проекта: {what}")
+                    ).format(what=what)
+                )
+            for p in problems:
+                # Мешающий сборщик выключается самим запуском (conflicting_extensions).
+                if p["key"] not in cp.FIXABLE and p["key"] != "abs_runner":
+                    self._auto_note(p["text"])
+            return True
+
+        def _confirm_project_health(self, folder: str) -> bool:
+            """Перед запуском: не сломаны ли настройки C/C++ в самой папке проекта
+            (удалённый компилятор, gdb и русские буквы в пути…). Предлагаем
+            исправить сразу, а не узнавать об этом по неработающему F5."""
+            root = self._scan_root(folder)
+            if not root:
+                return True
+            try:
+                from . import cpp_project as cp
+
+                problems = cp.project_problems(root, self.installed or None)
+            except Exception:
+                log.exception("Проверка настроек проекта")
+                return True
+            mark = ("health", root, tuple(p["key"] for p in problems))
+            if not problems or mark in self._needs_declined:
+                return True
+            if cfg.get("auto_fix", True):
+                return self._auto_fix_project(root, problems)
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle(_("Настройки проекта устарели"))
+            box.setText(
+                _("В настройках C/C++ этой папки есть то, что не заработает:")
+                + "\n\n"
+                + "\n\n".join(p["text"] for p in problems)
+                + "\n\n"
+                + (
+                    _(
+                        "Исправить? Сборка и отладка будут созданы заново под ваш компилятор, "
+                        "старые файлы сохранятся рядом как .bak."
+                    )
+                    if any(p["key"] in cp.FIXABLE for p in problems)
+                    else ""
+                )
+            )
+            fix = None
+            if any(p["key"] in cp.FIXABLE for p in problems):
+                fix = box.addButton(_("Исправить и запустить"), QMessageBox.ButtonRole.AcceptRole)
+            asis = box.addButton(_("Запустить как есть"), QMessageBox.ButtonRole.ActionRole)
+            box.addButton(_("Отмена"), QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(fix or asis)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is asis:
+                self._needs_declined.add(mark)
+                return True
+            if clicked is not fix:
+                return False
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                o = cp.auto_options(root, self.installed)
+                report = cp.fix_project(root, o) if o is not None else None
+            except Exception as e:
+                log.exception("Починка настроек проекта")
+                report = None
+                err = str(e)
+            else:
+                err = _("Не найден компилятор C++ — поставьте его на странице «C / C++».")
+            finally:
+                QApplication.restoreOverrideCursor()
+            if report is None:
+                QMessageBox.warning(self, _("Настройки проекта устарели"), err)
+                return False
+            self.log.appendPlainText(
+                _("Настройки проекта исправлены: {n} файл(ов).").format(n=len(report))
+            )
+            return True
+
+        def _confirm_empty_selection(self) -> bool:
+            """Ни одной галочки: VS Code откроется только с ядром. Чаще всего это
+            первый запуск, а не решение — спрашиваем один раз за сессию."""
+            if self._bare() or self._selected() or "empty" in self._needs_declined:
+                return True
+            n = len(self._disabled_list())
+            if not n:
+                return True
+            r = QMessageBox.question(
+                self,
+                _("Не выбран ни один стек"),
+                _(
+                    "Ни один стек не отмечен: VS Code откроется только с ядром, остальные "
+                    "расширения ({n}) будут выключены на этот запуск.\n\nПродолжить?"
+                ).format(n=n),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if r != QMessageBox.StandardButton.Yes:
+                return False
+            self._needs_declined.add("empty")
+            return True
+
+        def _confirm_cpptools_engine(self, folder: str) -> bool:
+            """cpptools включён, его подсказки отключены настройкой, а clangd не
+            установлен — подсказок кода не будет вовсе. Предложить включить обратно."""
+            sel = self._selected()
+            clangd = self.cat_checks.get("cpp_clangd")
+            if (
+                self._bare()
+                or "cpp_cpptools" not in sel
+                or "cpp_clangd" in sel
+                or (clangd is not None and clangd.is_installed())
+            ):
+                return True
+            root = self._scan_root(folder)
+            mark = ("engine_off", root)
+            if mark in self._needs_declined:
+                return True
+            if self._setting_value(root, "C_Cpp.intelliSenseEngine") != "disabled":
+                return True
+            if cfg.get("auto_fix", True):
+                self._enable_cpptools_engine(root)
+                self._auto_note(
+                    _(
+                        "Подсказки cpptools были отключены настройкой, а clangd не установлен — "
+                        "подсказки cpptools включены обратно."
+                    )
+                )
+                return True
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle(_("Подсказки кода отключены"))
+            box.setText(
+                _(
+                    "Подсказки cpptools отключены настройкой C_Cpp.intelliSenseEngine: "
+                    "disabled, а расширение clangd не установлено. Автодополнения и "
+                    "переходов по коду C++ не будет.\n\nВключить подсказки cpptools обратно?"
+                )
+            )
+            fix = box.addButton(_("Включить и запустить"), QMessageBox.ButtonRole.AcceptRole)
+            asis = box.addButton(_("Запустить как есть"), QMessageBox.ButtonRole.ActionRole)
+            box.addButton(_("Отмена"), QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(fix)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is asis:
+                self._needs_declined.add(mark)
+                return True
+            if clicked is not fix:
+                return False
+            self._enable_cpptools_engine(root)
+            return True
+
+        def _enable_cpptools_engine(self, root: str):
+            from .cpp_setup import _set_string_keys
+
+            from .settings_apply import backup_settings
+
+            files = [Path(root) / ".vscode" / "settings.json"] if root else []
+            user = vscode_user_settings_path(code_cli)
+            if user is not None:
+                files.append(user)
+            for f in files:
+                try:
+                    # Общие настройки VS Code правим только с копией рядом: это не
+                    # файл проекта, и автопочинка не должна менять его без следа.
+                    if (
+                        f == user
+                        and f.is_file()
+                        and "C_Cpp.intelliSenseEngine" in f.read_text(encoding="utf-8-sig")
+                    ):
+                        backup_settings(f)
+                    _set_string_keys(f, {"C_Cpp.intelliSenseEngine": "default"})
+                except OSError:
+                    log.exception("Не удалось включить подсказки cpptools в %s", f)
+
+        def _confirm_project_needs(self, folder: str) -> bool:
+            """Перед запуском: не выключаем ли мы то, без чего проект не работает.
+            Раньше это выяснялось уже в VS Code — «F5 не работает», «нет подсказок
+            C++» — и выглядело как поломка редактора."""
+            if self._bare() or not self.installed:
+                return True
+            try:
+                wanted, text = self._missing_for_project(folder)
+            except Exception:
+                log.exception("Проверка нужд проекта")
+                return True
+            mark = frozenset(wanted)
+            if not wanted or mark in self._needs_declined:
+                return True
+            names = ", ".join(cat_title(cats["categories"][k], k) for k in sorted(wanted))
+            if cfg.get("auto_fix", True):
+                for k in wanted:
+                    self.cat_checks[k].setChecked(True)
+                self._auto_note(
+                    _("Включены стеки: {names}. Причина: {why}").format(names=names, why=text)
+                )
+                return True
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle(_("Не хватает стеков"))
+            box.setText(text + "\n\n" + _("Включить: {stacks}?").format(stacks=names))
+            add = box.addButton(_("Включить и запустить"), QMessageBox.ButtonRole.AcceptRole)
+            asis = box.addButton(_("Запустить как есть"), QMessageBox.ButtonRole.ActionRole)
+            box.addButton(_("Отмена"), QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(add)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is add:
+                for k in wanted:
+                    self.cat_checks[k].setChecked(True)
+                return True
+            if clicked is asis:
+                self._needs_declined.add(mark)  # в этой сессии больше не спрашиваем
+                return True
+            return False
 
         def _confirm_stack_conflicts(self, folder: str) -> bool:
             """cpptools и clangd вместе дают двойные подсказки и двойную память,
@@ -3976,19 +4990,31 @@ def _launcher_factory(
             pairs = stack_conflicts(self._selected(), cats)
             if not pairs:
                 return True
-            if {"cpp_cpptools", "cpp_clangd"} <= set(self._selected()) and folder:
-                try:
-                    from .detect import _loads_jsonc
+            if {"cpp_cpptools", "cpp_clangd"} <= set(self._selected()):
+                from .detect import _loads_jsonc
 
-                    ws = Path(folder) / ".vscode" / "settings.json"
-                    data = _loads_jsonc(ws.read_text(encoding="utf-8-sig")) if ws.is_file() else {}
+                # IntelliSense cpptools может быть отключён в проекте или глобально
+                # (так делает установка C++ с clangd).
+                files = [Path(folder) / ".vscode" / "settings.json"] if folder else []
+                files.append(vscode_user_settings_path(code_cli))
+                for ws in files:
+                    try:
+                        data = (
+                            _loads_jsonc(ws.read_text(encoding="utf-8-sig"))
+                            if ws and ws.is_file()
+                            else {}
+                        )
+                    except Exception:
+                        continue
                     if (
                         isinstance(data, dict)
                         and data.get("C_Cpp.intelliSenseEngine") == "disabled"
                     ):
-                        return True  # в проекте cpptools уже без IntelliSense
-                except Exception:
-                    pass
+                        # cpptools уже без IntelliSense — эта пара не мешает.
+                        pairs = [p for p in pairs if set(p) != {"cpp_cpptools", "cpp_clangd"}]
+                        break
+                if not pairs:
+                    return True
             names = "; ".join(
                 " + ".join(cat_title(cats["categories"].get(k, {}), k) for k in pair)
                 for pair in pairs
@@ -4008,31 +5034,225 @@ def _launcher_factory(
             box.exec()
             return box.clickedButton() is run
 
+        def _confirm_compat(self) -> set[str] | None:
+            """Проверка совместимости набора перед запуском (compat.py).
+
+            Возвращает, что выключить на этот запуск (пустое множество — ничего),
+            или None — человек отменил запуск. Режим из настроек: 'warn' —
+            показать и дать выбрать, 'auto' — выключить решаемое самим и сказать
+            об этом в итоговом сообщении, 'off' — не проверять."""
+            mode = compat.mode_of(cfg)
+            if self._bare() or mode == "off" or not self.installed:
+                return set()
+            try:
+                off = set(self._disabled_list())
+                issues, extra = compat.resolve(
+                    [e for e in self.installed if e not in off],
+                    self._get_manifests(),
+                    compat.vscode_version(code_cli),
+                    self.installed,
+                    mode,
+                    cfg.get("compat_ignored") or (),
+                    ctx=compat.context(code_cli),
+                )
+            except Exception:
+                log.exception("Проверка совместимости расширений")
+                return set()
+            if mode == "auto":
+                if extra:
+                    self._auto_note(
+                        _("Выключены на этот запуск как несовместимые: {ids}.").format(
+                            ids=", ".join(sorted(extra))
+                        )
+                    )
+                for issue in issues:  # то, что без человека не решить
+                    self._auto_note(issue["text"])
+                return extra
+            if not issues:
+                return set()
+            fixable = compat.auto_disable(issues)
+            shown = issues[:8]
+            body = _("С выбранным набором расширений есть проблемы:") + "\n\n"
+            body += "\n\n".join("• " + i["text"] for i in shown)
+            if len(issues) > len(shown):
+                body += "\n\n" + _("…и ещё {n}.").format(n=len(issues) - len(shown))
+            if fixable:
+                body += "\n\n" + _(
+                    "«Выключить и запустить» выключит только на этот запуск: {ids}. "
+                    "Ничего не удаляется."
+                ).format(ids=", ".join(sorted(fixable)))
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle(_("Несовместимые расширения"))
+            box.setText(body)
+            mute = QCheckBox(_("Больше не предупреждать об этих проблемах"))
+            box.setCheckBox(mute)
+            fix = None
+            if fixable:
+                fix = box.addButton(_("Выключить и запустить"), QMessageBox.ButtonRole.AcceptRole)
+            asis = box.addButton(_("Запустить как есть"), QMessageBox.ButtonRole.ActionRole)
+            box.addButton(_("Отмена"), QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(fix or asis)
+            box.exec()
+            clicked = box.clickedButton()
+            if fix is not None and clicked is fix:
+                self.log.appendPlainText(
+                    _("Выключены на этот запуск как несовместимые: {ids}.").format(
+                        ids=", ".join(sorted(fixable))
+                    )
+                )
+                return fixable
+            if clicked is asis:
+                if mute.isChecked():
+                    ignored = [k for k in cfg.get("compat_ignored") or [] if isinstance(k, str)]
+                    ignored += [i["key"] for i in issues if i["key"] not in ignored]
+                    cfg["compat_ignored"] = ignored[-200:]
+                    save_config(cfg)
+                    self._refresh_compat_reset()
+                return set()
+            return None
+
+        def _set_compat_mode(self, mode: str):
+            cfg["compat_check"] = mode if mode in compat.MODES else "warn"
+            save_config(cfg)
+
+        def _refresh_compat_reset(self):
+            btn = getattr(self, "compat_reset_btn", None)
+            if btn is None:
+                return
+            n = len(cfg.get("compat_ignored") or [])
+            btn.setText(_("Вернуть скрытые предупреждения ({n})").format(n=n))
+            btn.setEnabled(n > 0)
+
+        def _reset_compat_ignored(self):
+            cfg["compat_ignored"] = []
+            save_config(cfg)
+            self._refresh_compat_reset()
+            self.log.appendPlainText(
+                _("Скрытые предупреждения о совместимости снова показываются.")
+            )
+
+        def _show_compat_report(self):
+            """Полный отчёт о совместимости всех установленных расширений —
+            как если бы включили всё сразу (стеки, зависимости, версия VS Code)."""
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            bad: list[str] = []
+            try:
+                ctx = compat.context(code_cli)
+                issues = compat.check(
+                    self.installed, self._get_manifests(), installed=self.installed, ctx=ctx
+                )
+                bad = sorted(
+                    {
+                        e
+                        for i in issues
+                        if i["severity"] == "error"
+                        for e in i["disable"]
+                        if e not in self._force_disable
+                    }
+                )
+                off = set(self._disabled_list())
+                text = compat.report(
+                    self.installed,
+                    self._get_manifests(),
+                    ctx=compat.context(code_cli),
+                    current=None if self._bare() else [e for e in self.installed if e not in off],
+                )
+            except Exception as e:
+                log.exception("Отчёт о совместимости")
+                text = str(e)
+            finally:
+                QApplication.restoreOverrideCursor()
+            self._text_dialog(
+                _("Совместимость расширений"),
+                _(
+                    "Проверены все установленные расширения: версия VS Code, зависимости, "
+                    "известные конфликты и устаревшие расширения. Перед запуском проверяется "
+                    "только включаемый набор."
+                ),
+                text,
+                extra=[(_("Выключать проблемные всегда…"), lambda d: self._disable_forever(d, bad))]
+                if bad
+                else (),
+                file_name="vscode_compat_report.txt",
+            )
+
+        def _disable_forever(self, parent, ids: list[str]):
+            """Занести неработающие расширения в личные исключения «всегда
+            выключать»: они перестанут грузиться при любом наборе стеков. Вернуть —
+            «Расширения» → «Исключения»."""
+            if not ids:
+                return
+            r = QMessageBox.question(
+                parent,
+                _("Выключать всегда"),
+                _(
+                    "Эти расширения не заработают с вашим VS Code. Выключать их при каждом "
+                    "запуске (личные исключения, ничего не удаляется)?\n\n{ids}"
+                ).format(ids="\n".join(ids)),
+            )
+            if r != QMessageBox.StandardButton.Yes:
+                return
+            for e in ids:
+                self.set_override(e, "disable")
+            self.log.appendPlainText(
+                _("Выключены всегда: {ids}").format(ids=", ".join(ids))
+            )
+            if getattr(self, "_background", False):
+                self._start_health_check()
+
         def _graceful_close_then(self, cont):
             """Мягко закрыть VS Code (с запросом на сохранение) и дождаться выхода,
             затем cont(). Если через ~15 с редактор ещё открыт (скорее всего висит
             диалог сохранения) — отменяем запуск, ничего не потеряв."""
             kill_vscode(code_cli, graceful=True)
             self.log.appendPlainText(_("Прошу VS Code закрыться (ответь на запрос сохранения)…"))
-            self._soft_tries = 0
+
+            def go():
+                self.log.appendPlainText(_("VS Code закрыт. Запускаю…"))
+                cont()
+
+            self._wait_closed_then(
+                go,
+                give_up=_(
+                    "VS Code всё ещё открыт — запуск отменён. Закрой окна "
+                    "(или ответь на запрос сохранения) и нажми «Запустить» снова."
+                ),
+            )
+
+        def _wait_closed_then(self, cont, give_up: str = ""):
+            """Дождаться выхода всех процессов VS Code и вызвать cont().
+
+            taskkill возвращается раньше, чем процессы реально исчезнут. Раньше
+            после принудительного закрытия запуск шёл через фиксированные 1,8 с:
+            на медленной машине новый Code.exe находил ещё живой старый процесс,
+            отдавал ему аргументы и выходил — окно не открывалось вовсе. Теперь
+            опрашиваем до ~15 с. give_up — что написать в журнал, если редактор
+            так и не закрылся (запуск тогда отменяется); без него — запускаем."""
+            tries = 0
 
             def check():
-                self._soft_tries += 1
+                nonlocal tries
+                tries += 1
                 if vscode_process_count(code_cli) == 0:
-                    self.log.appendPlainText(_("VS Code закрыт. Запускаю…"))
-                    cont()
+                    QTimer.singleShot(300, cont)  # дать системе отпустить блокировки
                     return
-                if self._soft_tries >= 20:  # ~15 секунд
-                    self.log.appendPlainText(
-                        _(
-                            "VS Code всё ещё открыт — запуск отменён. Закрой окна "
-                            "(или ответь на запрос сохранения) и нажми «Запустить» снова."
+                if tries >= 20:
+                    if give_up:
+                        self._launch_pending = False
+                        self.log.appendPlainText(give_up)
+                    else:
+                        self.log.appendPlainText(
+                            _(
+                                "VS Code закрывается дольше обычного — запускаю, но новый "
+                                "набор расширений может не примениться."
+                            )
                         )
-                    )
+                        cont()
                     return
                 QTimer.singleShot(750, check)
 
-            QTimer.singleShot(750, check)
+            QTimer.singleShot(400, check)
 
         def _reload_presets(self):
             # Меню в трее показывает те же пресеты — пересобираем и его, иначе
@@ -4075,10 +5295,35 @@ def _launcher_factory(
             name, ok = QInputDialog.getText(self, _("Сохранить пресет"), _("Имя пресета:"))
             if not ok or not name.strip():
                 return
+            if name.strip() in cfg.get("presets", {}) and (
+                QMessageBox.question(
+                    self,
+                    _("Сохранить пресет"),
+                    _("Пресет «{name}» уже есть. Заменить его текущим выбором?").format(
+                        name=name.strip()
+                    ),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                != QMessageBox.StandardButton.Yes
+            ):
+                return
+            self._store_preset(name.strip())
+
+        def _update_preset(self):
+            """Записать текущий выбор в пресет, выбранный в списке."""
+            name = self.preset_box.currentData()
+            if not name:
+                QMessageBox.information(self, _("Пресеты"), _("Сначала выберите пресет в списке."))
+                return
+            self._store_preset(name)
+            self.log.appendPlainText(_("Пресет «{name}» обновлён.").format(name=name))
+
+        def _store_preset(self, name: str):
             # #4: сохраняем не только стеки, но и текущие опции запуска —
             # пресет становится полноценным лаунч-профилем. Форма — словарь;
             # normalize_preset и preset_stacks читают её везде, где нужно.
-            cfg.setdefault("presets", {})[name.strip()] = {
+            cfg.setdefault("presets", {})[name] = {
                 "stacks": sorted(self._selected()),
                 "folder": self.folder_edit.text().strip(),
                 "kill": self.kill_cb.isChecked(),
@@ -4089,13 +5334,24 @@ def _launcher_factory(
             }
             save_config(cfg)
             self._reload_presets()
-            i = self.preset_box.findData(name.strip())
+            i = self.preset_box.findData(name)
             if i >= 0:
                 self.preset_box.setCurrentIndex(i)
 
         def _delete_preset(self):
             name = self.preset_box.currentData()
             if name and name in cfg.get("presets", {}):
+                if (
+                    QMessageBox.question(
+                        self,
+                        _("Удалить пресет"),
+                        _("Удалить пресет «{name}»?").format(name=name),
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No,
+                    )
+                    != QMessageBox.StandardButton.Yes
+                ):
+                    return
                 del cfg["presets"][name]
                 save_config(cfg)
                 self._reload_presets()
@@ -4243,6 +5499,16 @@ def _launcher_factory(
             if recent and not self.folder_edit.text().strip():
                 self.folder_edit.setText(recent[0])
 
+        def _persist_light(self):
+            """Запомнить галочки и параметры без запуска: закрыли окно, не запуская, —
+            при следующем открытии выбор тот же, а не от прошлого запуска."""
+            cfg["last_selected"] = sorted(self._selected())
+            cfg["kill_first"] = self.kill_cb.isChecked()
+            cfg["soft_close"] = self.soft_cb.isChecked()
+            cfg["new_window"] = self.newwin_cb.isChecked()
+            cfg["disable_gpu"] = self.gpu_cb.isChecked()
+            cfg["profile"] = self.profile_edit.text().strip()
+
         def _persist(self):
             cfg["last_selected"] = sorted(self._selected())
             cfg["kill_first"] = self.kill_cb.isChecked()
@@ -4265,17 +5531,50 @@ def _launcher_factory(
             # Ctrl+F — фокус в поле поиска стеков (полезно, когда карточек много).
             # Опасный путь (закрыть VS Code) всё равно спрашивает подтверждение в _run.
             if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                # Enter запускает VS Code, только когда фокус «в окне». Поле ввода
+                # и кнопка передают нам свой Enter необработанным — раньше Enter
+                # после набора пути, в поиске стеков или на «Обзор…» закрывал и
+                # перезапускал редактор.
+                fw = QApplication.focusWidget()
+                if isinstance(fw, (QLineEdit, QComboBox, QPlainTextEdit)):
+                    return
+                if isinstance(fw, QAbstractButton) and fw is not self.b_run:
+                    fw.click()
+                    return
                 if getattr(self, "_page", "launch") == "launch" and self.b_run.isEnabled():
                     self._run()
                 return
             if e.key() == Qt.Key.Key_Escape:
+                if self.search_edit.hasFocus() and self.search_edit.text():
+                    self.search_edit.clear()  # сначала сбросить поиск, окно не закрывать
+                    return
                 self.close()
                 return
+            if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                pages = ("launch", "cpp", "tools", "ext", "clean", "settings")
+                idx = e.key() - Qt.Key.Key_1
+                if 0 <= idx < len(pages):
+                    self._goto(pages[idx])  # Ctrl+1…6 — страницы по порядку
+                    return
             if e.key() == Qt.Key.Key_F and e.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 self.search_edit.setFocus()
                 self.search_edit.selectAll()
                 return
             super().keyPressEvent(e)
+
+        def changeEvent(self, e):
+            # Вернулись в окно — перечитать список расширений (не чаще раза в 20 с).
+            # Пока лаунчер открыт, расширения ставят и удаляют в самом VS Code, а
+            # по устаревшему списку новое расширение не выключалось бы стеком.
+            super().changeEvent(e)
+            if (
+                e.type() == QEvent.Type.ActivationChange
+                and self.isActiveWindow()
+                and getattr(self, "_background", False)
+                and self._loaded
+                and time.monotonic() - getattr(self, "_last_ext_load", 0.0) > 20
+            ):
+                self._start_ext_load()
 
         def _reap_installer(self, worker):
             # Убираем завершившийся поток установки/удаления, чтобы список не рос.
@@ -4305,7 +5604,23 @@ def _launcher_factory(
                     2500,
                 )
                 return
+            if self._cpp_busy() and not self._rebuilding:
+                r = QMessageBox.question(
+                    self,
+                    _("Идёт установка"),
+                    _("Установка ещё идёт. Прервать после текущего шага и закрыть?"),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if r != QMessageBox.StandardButton.Yes:
+                    self._quit_requested = False
+                    e.ignore()
+                    return
+                self.cpp_center._runner.cancel()
+            if not self._rebuilding:
+                self._persist_light()
             try:  # запоминаем геометрию окна
+                cfg["last_page"] = self._page
                 cfg["geometry"] = bytes(self.saveGeometry().toBase64()).decode("ascii")
                 save_config(cfg)
             except Exception:
@@ -4321,9 +5636,17 @@ def _launcher_factory(
                 getattr(self, "_status", None),  # code --status
             ]
             threads += list(self._install_threads)
+            center = getattr(self, "cpp_center", None)
+            if center is not None:
+                threads += center.threads()
             for t in threads:
-                if t is not None and t.isRunning():
+                if t is None or not t.isRunning():
+                    continue
+                if not self._rebuilding:
                     t.wait(2000)
+                # Не успел (сеть, winget) или окно просто меняется на новое —
+                # поток доживёт сам, окно его не ждёт и не уничтожает.
+                _park_thread(t)
             super().closeEvent(e)
 
     return Launcher
@@ -4429,6 +5752,32 @@ def run_gui():
         theme_name = "dark"
     app.setStyleSheet(build_qss(make_palette(theme_name, cfg.get("palette", "mocha"))))
 
+    # Исключение в обработчике кнопки раньше уходило только в журнал: кнопку
+    # нажимали, и «ничего не происходило». Теперь ошибка видна (каждая — один раз).
+    logged_hook = sys.excepthook
+    shown_errors: set[str] = set()
+
+    def _visible_hook(exc_type, exc, tb):
+        logged_hook(exc_type, exc, tb)
+        key = f"{exc_type.__name__}: {exc}"[:200]
+        if issubclass(exc_type, KeyboardInterrupt) or key in shown_errors or len(shown_errors) >= 5:
+            return
+        shown_errors.add(key)
+        try:
+            QMessageBox.warning(
+                holder["w"],
+                _("Непредвиденная ошибка"),
+                _(
+                    "Действие не выполнено из-за внутренней ошибки:\n\n{err}\n\n"
+                    "Подробности записаны в журнал:\n{log}"
+                ).format(err=key, log=LOG_FILE),
+            )
+        except Exception:
+            pass
+
+    holder = {"w": None}
+    sys.excepthook = _visible_hook
+
     def build_window():
         win = Launcher()
         if ICON_FILE.exists():
@@ -4440,7 +5789,6 @@ def run_gui():
     # #7: смена языка пересобирает окно (текст виджетов задаётся при сборке).
     # Держим текущее окно в holder, чтобы кнопка языка могла заменить его,
     # перенеся геометрию и сохранённый выбор.
-    holder = {"w": None}
     tray_holder = {"t": None}
 
     def rebuild(state=None):
@@ -4454,6 +5802,7 @@ def run_gui():
         holder["w"] = nw
         if old is not None:
             old._quit_requested = True  # старое окно закрываем, а не прячем в трей
+            old._rebuilding = True  # и не ждём его фоновые потоки — они доживут сами
             old.close()
             old.deleteLater()
         if tray_holder["t"] is not None:
@@ -4513,5 +5862,5 @@ def run_gui():
             holder["w"].grab().save(_shot)
             app.quit()
 
-        QTimer.singleShot(1800, _grab)
+        QTimer.singleShot(int(os.environ.get("LAUNCHER_SHOT_DELAY", "1800")), _grab)
     sys.exit(app.exec())

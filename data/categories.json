@@ -283,7 +283,8 @@
       "title_en": "Code Runner",
       "note_en": "Run a file in any language with one button. Starts together with the editor.",
       "extensions": [
-        "formulahendry.code-runner"
+        "formulahendry.code-runner",
+        "danielpinto8zz6.c-cpp-compile-run"
       ]
     },
     "powershell": {

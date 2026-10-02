@@ -96,6 +96,11 @@
           "description": "Пакеты pacman без префикса окружения (toolchain, cmake…): ставятся в MSYS2 после winget.",
           "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9+._-]*$" }
         },
+        "purge_dirs": {
+          "type": "array",
+          "description": "Каталоги, которые пакет оставляет вне папки установки (%VAR% раскрываются); их убирает «Удалить полностью».",
+          "items": { "type": "string" }
+        },
         "msys_env": {
           "type": "string",
           "enum": ["ucrt64", "clang64", "mingw64"],
