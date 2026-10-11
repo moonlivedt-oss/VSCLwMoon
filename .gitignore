@@ -28,3 +28,7 @@ desktop.ini
 .vscode/
 
 scripts/vscl_diag_*.txt
+
+# Личные заметки и бэкапы автора
+SESSION_NOTES.txt
+*.bak
