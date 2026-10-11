@@ -403,6 +403,24 @@ class CategoryCard(Clickable, QFrame):
         Не память, но твёрдое число: видно, какой стек «дорогой», ещё до первого
         запуска редактора. 0 — ничего не дописываем, «0 МБ» только шумел бы."""
         self._disk_mb = int(mb or 0)
+        self._render_weight()
+
+    def set_startup_ms(self, ms: int):
+        """Показать, сколько стек стоит на каждом старте VS Code — по замерам
+        Moon Core изнутри редактора (moonperf). Меньше SHOW_MIN_MS не пишем."""
+        self._startup_ms = int(ms or 0)
+        self._render_weight()
+
+    def _startup_text(self) -> str:
+        """'1,8 с' — стоимость старта стека, или '' (замеров нет / пустяк)."""
+        from . import moonperf
+        from .i18n import get_language
+
+        ms = getattr(self, "_startup_ms", 0)
+        return moonperf.format_ms(ms, get_language()) if ms >= moonperf.SHOW_MIN_MS else ""
+
+    def _render_weight(self):
+        """Метка нагрузки + размер на диске + стоимость старта одной строкой."""
         label = _(WEIGHT_LABEL[self._weight])
         tip = _(WEIGHT_HELP.get(self._weight, ""))
         if self._disk_mb > 0:
@@ -410,9 +428,21 @@ class CategoryCard(Clickable, QFrame):
             tip += "\n\n" + _(
                 "Установленные расширения этого стека занимают {mb} МБ на диске."
             ).format(mb=self._disk_mb)
+        t = self._startup_text()
+        if t:
+            label = f"{label} · " + _("старт {t}").format(t=t)
+            tip += "\n\n" + _(
+                "По замерам Moon Core изнутри VS Code: расширения этого стека "
+                "в среднем добавляют {t} к каждому запуску (сумма загрузки и "
+                "активации; часть идёт параллельно, так что это верхняя оценка)."
+            ).format(t=t)
         self.weight_lbl.setText(label)
         self.weight_lbl.setToolTip(tip)
         self._refresh_accessible()
+
+    def startup_ms(self) -> int:
+        """Показанная стоимость старта стека в мс (0 — замеров Moon Core нет)."""
+        return getattr(self, "_startup_ms", 0)
 
     def disk_mb(self) -> int:
         """Показанный размер стека на диске в МБ (0 — размеры ещё не считали)."""
@@ -430,6 +460,9 @@ class CategoryCard(Clickable, QFrame):
         ]
         if getattr(self, "_disk_mb", 0):
             parts.append(_("{mb} МБ на диске").format(mb=self._disk_mb))
+        t = self._startup_text()
+        if t:
+            parts.append(_("старт {t}").format(t=t))
         self.setAccessibleDescription(", ".join(parts))
 
     def _changed(self):

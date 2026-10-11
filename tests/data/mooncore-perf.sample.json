@@ -1,0 +1,79 @@
+{
+ "v": 1,
+ "starts": [
+  {
+   "at": 1791289850988,
+   "win": "aaaaaaaaaaaaaaaa",
+   "vs": "1.140.0",
+   "ready": 1176,
+   "extensions": 1442,
+   "runtime": null,
+   "phases": {}
+  }
+ ],
+ "ext": {
+  "ms-python.python": {
+   "n": 2,
+   "sum": 3600,
+   "max": 1800,
+   "last": 1800,
+   "at": 2,
+   "kind": "star"
+  },
+  "Redhat.Java": {
+   "n": 2,
+   "sum": 1600,
+   "max": 800,
+   "last": 800,
+   "at": 2,
+   "kind": "startup"
+  },
+  "vscode.git": {
+   "n": 2,
+   "sum": 300,
+   "max": 150,
+   "last": 150,
+   "at": 2,
+   "kind": "star"
+  }
+ },
+ "export": {
+  "schema": "moon-core/perf@1",
+  "generated": "2026-10-06T00:00:00.000Z",
+  "vscode": "1.140.0",
+  "window": {
+   "samples": 1,
+   "readyMedianMs": 1176,
+   "extensionsMedianMs": 1442
+  },
+  "extensions": [
+   {
+    "id": "ms-python.python",
+    "samples": 2,
+    "avgMs": 1800,
+    "maxMs": 1800,
+    "lastMs": 1800,
+    "activation": "star",
+    "eager": true
+   },
+   {
+    "id": "Redhat.Java",
+    "samples": 2,
+    "avgMs": 800,
+    "maxMs": 800,
+    "lastMs": 800,
+    "activation": "startup",
+    "eager": true
+   },
+   {
+    "id": "vscode.git",
+    "samples": 2,
+    "avgMs": 150,
+    "maxMs": 150,
+    "lastMs": 150,
+    "activation": "star",
+    "eager": true
+   }
+  ]
+ }
+}

@@ -28,6 +28,7 @@ from .categories import WEIGHT, WEIGHT_LABEL, build_ext_index, cat_title, load_c
 from .config import load_config
 from .launch import build_launch_command
 from .weights import estimate_saved_mb, measured_stack_costs, stack_disk_mb
+from . import moonperf
 from .quicklaunch import plan_launch
 from .presets import build_shortcut_cmd, normalize_preset, preset_stacks
 from .vscode import (
@@ -144,6 +145,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--stack-sizes",
         action="store_true",
         help="сколько МБ на диске занимает каждый стек (по установленным расширениям)",
+    )
+    p.add_argument(
+        "--startup-costs",
+        action="store_true",
+        help="сколько времени каждый стек добавляет к старту VS Code — по замерам "
+        "расширения Moon Core («Скорость VS Code») изнутри редактора",
     )
     p.add_argument("--quiet", action="store_true", help="без пояснительного вывода (для ярлыков)")
     p.add_argument(
@@ -824,12 +831,14 @@ def _stack_sizes(cfg: dict, as_json: bool) -> int:
     sizes = extension_sizes(code_cli)
     per_stack = stack_disk_mb(ext_index, sizes, installed)
     measured = measured_stack_costs(cfg)
+    startup = moonperf.stack_startup_ms(ext_index, moonperf.load_startup_costs(code_cli), installed)
     rows = [
         {
             "key": k,
             "title": cat_title(cats.get("categories", {}).get(k, {}), k),
             "disk_mb": mb,
             "measured_ram_mb": measured.get(k),
+            "startup_ms": startup.get(k),
         }
         for k, mb in sorted(per_stack.items(), key=lambda kv: -kv[1])
     ]
@@ -842,7 +851,45 @@ def _stack_sizes(cfg: dict, as_json: bool) -> int:
     print("Стеки по размеру на диске:")
     for r in rows:
         ram = f"  ОЗУ по замерам: {r['measured_ram_mb']} МБ" if r["measured_ram_mb"] else ""
-        print(f"  {r['disk_mb']:>6} МБ  {r['key']:<14} {r['title']}{ram}")
+        start_ms = startup.get(str(r["key"]), 0)
+        st = (f"  старт: {moonperf.format_ms(start_ms)}"
+              if start_ms >= moonperf.SHOW_MIN_MS else "")
+        print(f"  {r['disk_mb']:>6} МБ  {r['key']:<14} {r['title']}{ram}{st}")
+    return 0
+
+
+def _startup_costs(cfg: dict, as_json: bool) -> int:
+    """Сколько стеки и отдельные расширения стоят на старте VS Code — по
+    замерам Moon Core (mooncore-perf.json, схема moon-core/perf@1)."""
+    cats, _err = load_categories()
+    ext_index = build_ext_index(cats, cfg.get("extra_categories"))
+    code_cli = resolve_code_cli(cfg)
+    installed, _src = load_installed(code_cli)
+    costs = moonperf.load_startup_costs(code_cli)
+    per_stack = moonperf.stack_startup_ms(ext_index, costs, installed)
+    title = lambda k: cat_title(cats.get("categories", {}).get(k, {}), k)  # noqa: E731
+    if as_json:
+        print(_json.dumps({
+            "vscode": costs.get("vscode", ""), "samples": costs.get("samples", 0),
+            "stacks": [{"key": k, "title": title(k), "startup_ms": ms}
+                       for k, ms in sorted(per_stack.items(), key=lambda kv: -kv[1])],
+            "eager": [{"id": i, "avg_ms": ms, "stack": ext_index.get(i)}
+                      for i, ms in moonperf.eager_costly(costs)],
+        }, ensure_ascii=False, indent=2))
+        return 0
+    if not costs:
+        print("Замеров Moon Core нет: поставьте расширение Moon Core и откройте VS Code "
+              "несколько раз — оно запишет, сколько стоит каждое расширение на старте.")
+        return 0
+    print(f"Время старта стеков (замеры Moon Core, VS Code {costs.get('vscode') or '?'}, "
+          f"запусков: {costs.get('samples', 0)}):")
+    for k, ms in sorted(per_stack.items(), key=lambda kv: -kv[1]):
+        print(f"  {moonperf.format_ms(ms):>8}  {k:<14} {title(k)}")
+    eager = moonperf.eager_costly(costs)
+    if eager:
+        print("\nВключаются при каждом старте и стоят дорого:")
+        for ext_id, ms in eager[:15]:
+            print(f"  {moonperf.format_ms(ms):>8}  {ext_id} ({ext_index.get(ext_id) or 'вне стеков'})")
     return 0
 
 
@@ -903,6 +950,8 @@ def cli_main(argv: list[str] | None = None) -> int:
         return _measure_extensions(cfg, args.json)
     if args.stack_sizes:
         return _stack_sizes(cfg, args.json)
+    if args.startup_costs:
+        return _startup_costs(cfg, args.json)
     if args.cleanup:
         return _cleanup(cfg, args.yes, args.json, args.all)
 

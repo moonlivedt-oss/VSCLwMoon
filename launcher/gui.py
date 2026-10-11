@@ -143,6 +143,7 @@ from .gui_workers import (
     UpdateDownloader,
 )
 from . import weights as _w
+from . import moonperf as _mp
 from .theme import PALETTE_SETS, PALETTES, apply_titlebar, build_qss, make_palette, palette_name
 from . import toolchains as _tc
 
@@ -686,6 +687,10 @@ def _launcher_factory(
             self._ext_sizes = (
                 dict(cached_sizes.get("sizes", {})) if isinstance(cached_sizes, dict) else {}
             )
+            # Сколько каждое расширение стоит на старте — по замерам Moon Core
+            # изнутри VS Code (файл крошечный, читается мгновенно). Нет Moon Core
+            # или замеров — пусто, карточки просто без «старт ...».
+            self._startup = _mp.load_startup_costs(code_cli)
             self._tray = None  # ставится извне (run_gui), если трей включён
             self._quit_requested = False  # закрытие «по-настоящему», а не в трей
             self._rebuilding = False  # окно заменяется новым (смена языка)
@@ -709,6 +714,7 @@ def _launcher_factory(
                 cfg["recent_folders"] = alive
             self._build_ui()
             self._apply_sizes(self._ext_sizes, persist=False)
+            self._apply_startup()
             self._restore()
             self._apply_folder_auto()  # #5: молча включить набор для авто-папки
             self._maybe_auto_suggest()  # #1: если папка подставилась из «недавних»
@@ -804,6 +810,15 @@ def _launcher_factory(
                 cfg["ext_sizes"] = {"n": len(self.installed), "sizes": self._ext_sizes}
                 save_config(cfg)
 
+        def _apply_startup(self):
+            """Стоимость старта стеков на карточках (замеры Moon Core)."""
+            per_stack = _mp.stack_startup_ms(ext_index, self._startup, self.installed)
+            for key, card in self.cat_checks.items():
+                card.set_startup_ms(per_stack.get(key, 0))
+            if per_stack and hasattr(self, "_cards_flow"):
+                self._cards_flow.invalidate()
+                self.cards_host.updateGeometry()
+
         # --- честная стоимость расширений: code --status ------------------
         def _measure_extensions(self):
             """Спросить у самого VS Code, сколько сейчас едят его процессы, и
@@ -883,6 +898,7 @@ def _launcher_factory(
                 lines += ["", _("Размер стеков на диске (установленное):")]
                 for key, mb in sorted(per_stack.items(), key=lambda kv: -kv[1]):
                     lines.append(f"  {mb:>6} {unit}  {titles.get(key, key)}")
+            lines += _mp_report_lines(self._startup, ext_index, self.installed, titles)
             if tree and tree["stacks"]:
                 top_key, top_mb = next(iter(tree["stacks"].items()))
                 subtitle = _(
@@ -1567,6 +1583,9 @@ def _launcher_factory(
             # новым списком установленного (свежий замер придёт из SizeProbe).
             if self._ext_sizes:
                 self._apply_sizes(self._ext_sizes, persist=False)
+            # Замеры Moon Core могли пополниться, пока лаунчер был открыт.
+            self._startup = _mp.load_startup_costs(code_cli)
+            self._apply_startup()
             # Набор расширений изменился (что-то поставили/удалили) — размеры
             # на диске устарели, перечитываем их в фоне.
             cached = cfg.get("ext_sizes", {})
@@ -4274,13 +4293,23 @@ def _launcher_factory(
             extra = ""
             sav = measured_savings_mb(cfg, sig)
             fp = lookup_footprint(cfg, sig)
+            # Время старта, которое уйдёт вместе с выключенными расширениями, —
+            # по замерам Moon Core изнутри VS Code (их нет — ничего не пишем).
+            start_ms = _mp.startup_saved_ms(dis, self._startup)
+            start_txt = (
+                _("старт быстрее на ~{t}").format(t=_mp.format_ms(start_ms, get_language()))
+                if start_ms >= _mp.SHOW_MIN_MS
+                else ""
+            )
             if sav:
                 self._set_hero(
                     sav,
                     _("МБ"),
                     _("включено {en}").format(en=en),
                     _("выключится {dis}").format(dis=len(dis)),
-                    _("реально · оценка ~{saved}").format(saved=saved),
+                    " · ".join(
+                        t for t in (_("реально · оценка ~{saved}").format(saved=saved), start_txt) if t
+                    ),
                 )
             else:
                 extra = _("замерено {mb} МБ").format(mb=fp["mb"]) if fp else ""
@@ -4289,7 +4318,7 @@ def _launcher_factory(
                     _("МБ"),
                     _("включено {en}").format(en=en),
                     _("выключится {dis}").format(dis=len(dis)),
-                    extra,
+                    " · ".join(t for t in (extra, start_txt) if t),
                 )
             self.b_run.setText(
                 _("Запустить · −{dis}").format(dis=len(dis)) if dis else _("Запустить VS Code")
@@ -5677,6 +5706,27 @@ def _single_instance_guard(app_id: str = "vscode-launcher-single"):
     server = QLocalServer()
     server.listen(app_id)
     return server, False
+
+
+def _mp_report_lines(costs: dict, ext_index: dict, installed: list, titles: dict) -> list[str]:
+    """Раздел отчёта о расширениях: время старта по замерам Moon Core."""
+    lang = get_language()
+    per = _mp.stack_startup_ms(ext_index, costs, installed)
+    if not per:
+        return ["", _(
+            "Время старта стеков: замеров нет. Их пишет расширение Moon Core "
+            "(«Скорость VS Code») — после нескольких запусков VS Code они появятся здесь."
+        )]
+    out = ["", _("Время старта стеков (замеры Moon Core, запусков: {n}):").format(n=costs.get("samples", 0))]
+    for key, ms in sorted(per.items(), key=lambda kv: -kv[1]):
+        out.append(f"  {_mp.format_ms(ms, lang):>8}  {titles.get(key, key)}")
+    eager = _mp.eager_costly(costs)
+    if eager:
+        out += ["", _("Включаются при каждом старте и стоят дорого:")]
+        for ext_id, ms in eager[:8]:
+            stack = titles.get(ext_index.get(ext_id, ""), _("вне стеков"))
+            out.append(f"  {_mp.format_ms(ms, lang):>8}  {ext_id} ({stack})")
+    return out
 
 
 def run_gui():

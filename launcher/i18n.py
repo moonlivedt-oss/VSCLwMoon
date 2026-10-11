@@ -1062,6 +1062,14 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         'Уборка VS Code может освободить {size} («Обслуживание»).': "VS Code cleanup can free {size} ('Maintenance').",
         'Удалить ваши переменные окружения?\n\n{list}\n\nПрежние значения сохранятся в env_history.txt в папке настроек лаунчера.': 'Remove your environment variables?\n\n{list}\n\nThe previous values will be saved to env_history.txt in the launcher settings folder.',
         'Эти расширения не заработают с вашим VS Code. Выключать их при каждом запуске (личные исключения, ничего не удаляется)?\n\n{ids}': 'These extensions will not work with your VS Code. Disable them on every launch (personal exceptions, nothing is uninstalled)?\n\n{ids}',
+        # замеры Moon Core (moonperf)
+        'старт {t}': 'startup {t}',
+        'По замерам Moon Core изнутри VS Code: расширения этого стека в среднем добавляют {t} к каждому запуску (сумма загрузки и активации; часть идёт параллельно, так что это верхняя оценка).': "Measured by Moon Core inside VS Code: this stack's extensions add {t} to every launch on average (load plus activation; some of it runs in parallel, so this is an upper bound).",
+        'старт быстрее на ~{t}': 'startup ~{t} faster',
+        'Время старта стеков: замеров нет. Их пишет расширение Moon Core («Скорость VS Code») — после нескольких запусков VS Code они появятся здесь.': "Stack startup time: no measurements yet. The Moon Core extension ('VS Code speed') records them — they will appear here after a few VS Code launches.",
+        'Время старта стеков (замеры Moon Core, запусков: {n}):': 'Stack startup time (Moon Core measurements, launches: {n}):',
+        'Включаются при каждом старте и стоят дорого:': 'Activate on every startup and cost a lot:',
+        'вне стеков': 'outside stacks',
     }
 }
 
