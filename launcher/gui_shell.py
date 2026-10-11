@@ -311,7 +311,7 @@ class Tile(Clickable, QFrame):
         super().keyPressEvent(e)
 
 
-def menu_button(items, tip: str = "", text: str = "···", obj: str = "Round") -> QPushButton:
+def menu_button(items, tip: str = "", text: str = "…", obj: str = "Round") -> QPushButton:
     """Кнопка «⋯» с меню: items — [(текст, слот) | None для разделителя].
     Редкие действия живут здесь, а не рядом кнопок."""
     b = QPushButton(text)

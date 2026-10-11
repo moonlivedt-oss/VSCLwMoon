@@ -580,7 +580,7 @@ class CppCenter(QWidget):
             else:
                 txt = _("скачать около {size}").format(size=_size_text(s["size_mb"]))
                 if s["admin"]:
-                    txt += " · " + _("нужен админ")
+                    txt += " | " + _("нужен админ")
                 card.set_status(txt, "Woff")
             card.set_on(key == self._preset_key)
             card.clicked.connect(lambda k=key: self._use_preset(k))
@@ -664,7 +664,7 @@ class CppCenter(QWidget):
             extra = ComboBox()
             for c in cs.other_compilers(st.get("compilers", [])):
                 extra.addItem(
-                    f"{c['kind']} {c['version']} · {c['origin']} — {c['path']}", c["path"]
+                    f"{c['kind']} {c['version']} | {c['origin']} — {c['path']}", c["path"]
                 )
             idx = extra.findData(self._sel.get("keep_path"))
             extra.setCurrentIndex(max(0, idx))
@@ -784,7 +784,7 @@ class CppCenter(QWidget):
                 r["tag"].setVisible(True)
             elif installed:
                 _retag(
-                    r["tag"], (_("уже есть") + (f" · {r['info']}" if r["info"] else "")), "Wlight"
+                    r["tag"], (_("уже есть") + (f" | {r['info']}" if r["info"] else "")), "Wlight"
                 )
                 r["tag"].setVisible(True)
             else:
@@ -843,11 +843,11 @@ class CppCenter(QWidget):
             )
             self.install_btn.setText(_("Настроить"))
             return
-        txt = _("Будет установлено: {n} · около {size}").format(
+        txt = _("Будет установлено: {n} | около {size}").format(
             n=s["count"], size=_size_text(s["size_mb"])
         )
         if s["admin"]:
-            txt += " · " + _("понадобятся права администратора")
+            txt += " | " + _("понадобятся права администратора")
         self.summary_lbl.setText(txt)
         self.install_btn.setText(_("Установить ({n})").format(n=s["count"]))
 
@@ -1211,7 +1211,7 @@ class CppCenter(QWidget):
             c = s["compiler"]
             row = QHBoxLayout()
             row.setSpacing(6)
-            lbl = QLabel(f"{c['kind']} {c['version']} · {c['origin']}")
+            lbl = QLabel(f"{c['kind']} {c['version']} | {c['origin']}")
             lbl.setMinimumWidth(220)
             row.addWidget(lbl)
             for st in s["steps"]:
@@ -1451,7 +1451,7 @@ class CppCenter(QWidget):
         self.pj_comp.clear()
         comps = st.get("compilers", [])
         for c in comps:
-            self.pj_comp.addItem(f"{c['kind']} {c['version']} · {c['origin']}", c)
+            self.pj_comp.addItem(f"{c['kind']} {c['version']} | {c['origin']}", c)
         prim = cs.primary_of(comps)
         if prim:
             self.pj_comp.setCurrentIndex(comps.index(prim))

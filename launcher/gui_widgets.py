@@ -321,7 +321,7 @@ class CategoryCard(Clickable, QFrame):
         bottom = QHBoxLayout()
         bottom.setSpacing(10)
         # Метка нагрузки; сюда же дописывается реальный размер стека на диске
-        # («тяжёлый · 865 МБ»). Отдельным бейджем он не помещался: карточка в
+        # («тяжёлый | 865 МБ»). Отдельным бейджем он не помещался: карточка в
         # три колонки узкая, и лишний элемент отбирал ширину то у названия, то
         # у заметки. А рядом с классом нагрузки размер и читается связнее —
         # это две грани одного вопроса «дорого ли обходится стек».
@@ -424,13 +424,13 @@ class CategoryCard(Clickable, QFrame):
         label = _(WEIGHT_LABEL[self._weight])
         tip = _(WEIGHT_HELP.get(self._weight, ""))
         if self._disk_mb > 0:
-            label = f"{label} · " + _("{mb} МБ").format(mb=self._disk_mb)
+            label = f"{label} | " + _("{mb} МБ").format(mb=self._disk_mb)
             tip += "\n\n" + _(
                 "Установленные расширения этого стека занимают {mb} МБ на диске."
             ).format(mb=self._disk_mb)
         t = self._startup_text()
         if t:
-            label = f"{label} · " + _("старт {t}").format(t=t)
+            label = f"{label} | " + _("старт {t}").format(t=t)
             tip += "\n\n" + _(
                 "По замерам Moon Core изнутри VS Code: расширения этого стека "
                 "в среднем добавляют {t} к каждому запуску (сумма загрузки и "

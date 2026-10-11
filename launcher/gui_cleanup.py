@@ -139,7 +139,7 @@ class CleanupDialog(QDialog):
             safe = kind in cleanup.SAFE_KINDS
             title = _(cleanup.KIND_TITLES.get(kind, kind))
             if not safe:
-                title += "  · " + _("проверьте перед удалением")
+                title += "  | " + _("проверьте перед удалением")
             g = QTreeWidgetItem([f"{title}  ({n})", _mb(size), ""])
             g.setFlags(g.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsAutoTristate)
             g.setCheckState(0, Qt.CheckState.Checked if safe else Qt.CheckState.Unchecked)
@@ -198,7 +198,7 @@ class CleanupDialog(QDialog):
             safe = sum(i["bytes"] for i in self._items if i["kind"] in cleanup.SAFE_KINDS)
             self.status.setText(
                 _(
-                    "Найдено {all} (безопасно убрать — {safe}). Выбрано: {n} · освободится {size}"
+                    "Найдено {all} (безопасно убрать — {safe}). Выбрано: {n} | освободится {size}"
                 ).format(all=_mb(found), safe=_mb(safe), n=len(sel), size=_mb(total))
             )
         self.go_btn.setEnabled(bool(sel))

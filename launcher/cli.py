@@ -447,7 +447,7 @@ def _path_undo(which: str, apply: bool) -> int:
         print("Бэкапы PATH (свежие первыми):")
         for k, b in enumerate(backups, 1):
             scope = "системный" if b["scope"] == "machine" else "ваш"
-            print(f"  {k}. {b['time']} · {scope} · {b['file']}")
+            print(f"  {k}. {b['time']} | {scope} | {b['file']}")
         print("\nОткатить: --path-undo N --yes")
         return 0
     if n > len(backups):

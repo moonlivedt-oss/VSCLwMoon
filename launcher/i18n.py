@@ -102,8 +102,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Голый режим: все расширения выключены (--disable-extensions).": "Bare mode: all extensions disabled (--disable-extensions).",
         "Список расширений не получен (нет CLI?).": "Extension list not available (no CLI?).",
         "Включено {en}, выключено {dis} — экономия ~{saved} МБ": "Enabled {en}, disabled {dis} — saving ~{saved} MB",
-        " · замерено ранее: {mb} МБ": " · measured before: {mb} MB",
-        " · реально сэкономлено ~{mb} МБ": " · actually saved ~{mb} MB",
+        " | замерено ранее: {mb} МБ": " | measured before: {mb} MB",
+        " | реально сэкономлено ~{mb} МБ": " | actually saved ~{mb} MB",
         # диалог diff (#5)
         "Что будет выключено": "What will be disabled",
         "Выключается {n} расширений из невыбранных стеков. always_on и всё, "
@@ -161,8 +161,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "VS Code marketplace, “Remove” deletes it from disk (you "
         "can reinstall). Disabling the stack in the main window removes "
         "nothing — it just doesn't load this session.",
-        "{total} расширений · установлено {n} · нагрузка {load} · "
-        "выключение освобождает ~{mb} МБ": "{total} extensions · {n} installed · {load} load · disabling "
+        "{total} расширений | установлено {n} | нагрузка {load} | "
+        "выключение освобождает ~{mb} МБ": "{total} extensions | {n} installed | {load} load | disabling "
         "frees ~{mb} MB",
         "установлено": "installed",
         "нет в системе": "not installed",
@@ -231,7 +231,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Не удалось установить": "Installation failed",
         "Установлено: {ok}, ошибок: {err}": "Installed: {ok}, errors: {err}",
         "Установить всё ({n})": "Install all ({n})",
-        " · доп.": " · optional",
+        " | доп.": " | optional",
         "winget install --id {id}": "winget install --id {id}",
         "winget upgrade --id {id}": "winget upgrade --id {id}",
         "winget uninstall --id {id}": "winget uninstall --id {id}",
@@ -311,14 +311,14 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "выключится {dis}": "{dis} off",
         "показано {n} из {total}": "showing {n} of {total}",
         "ничего не найдено": "nothing found",
-        "Запустить · −{dis}": "Launch · −{dis}",
+        "Запустить | −{dis}": "Launch | −{dis}",
         "Запустить (голый режим)": "Launch (bare mode)",
         "голый режим": "bare mode",
         "все расширения выключены": "all extensions off",
         "нет списка расширений": "no extension list",
         "считаю расширения…": "counting extensions…",
         "замерено {mb} МБ": "measured {mb} MB",
-        "реально · оценка ~{saved}": "actual · est. ~{saved}",
+        "реально | оценка ~{saved}": "actual | est. ~{saved}",
         # сегментированный фильтр установленных/неустановленных
         "Все": "All",
         "Установленные": "Installed",
@@ -368,7 +368,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Не найдена папка данных VS Code (%APPDATA%).": "VS Code data folder not found (%APPDATA%).",
         "Ошибка поиска: {err}": "Scan error: {err}",
         "Убирать нечего — всё чисто.": "Nothing to clean — all tidy.",
-        "Выбрано: {n} · освободится {size}": "Selected: {n} · frees {size}",
+        "Выбрано: {n} | освободится {size}": "Selected: {n} | frees {size}",
         "VS Code запущен. Закройте его: кэши открытого редактора заняты "
         "и удалятся не полностью.": "VS Code is running. Close it: the open editor holds its caches "
         "and they would be removed only partially.",
@@ -677,7 +677,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Показать шаги по порядку.": "Show the steps in order.",
         "Пакеты скачиваются по очереди — это может занять несколько минут. Окно можно не трогать. После установки откройте новый терминал и перезапустите VS Code, чтобы подхватился PATH.": "Packages download one after another — this may take several minutes. You can leave the window alone. Afterwards open a new terminal and restart VS Code so PATH is picked up.",
         "Всё выбранное уже установлено и настроено.": "Everything selected is already installed and set up.",
-        "Будет установлено: {n} · около {size}": "To install: {n} · about {size}",
+        "Будет установлено: {n} | около {size}": "To install: {n} | about {size}",
         "понадобятся права администратора": "administrator rights needed",
         "Делать нечего.": "Nothing to do.",
         "Для MSVC появится запрос прав администратора (UAC).": "MSVC will ask for administrator rights (UAC).",
@@ -822,7 +822,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Подсказки": "Hints",
         "Починка PATH": "PATH repair",
         "Проверяю системный и ваш PATH…": "Checking the system and user PATH…",
-        "Windows ищет команду сначала в системном PATH, потом в вашем — слева направо. Здесь видно, что мешает, и что именно изменится. Каждое исправление можно снять галочкой; перед записью делается бэкап, откат — в меню «···».": "Windows looks for a command in the system PATH first, then in yours — left to right. Here you see what gets in the way and exactly what will change. Any fix can be unchecked; a backup is made before writing, undo is in the '···' menu.",
+        "Windows ищет команду сначала в системном PATH, потом в вашем — слева направо. Здесь видно, что мешает, и что именно изменится. Каждое исправление можно снять галочкой; перед записью делается бэкап, откат — в меню «…».": "Windows looks for a command in the system PATH first, then in yours — left to right. Here you see what gets in the way and exactly what will change. Any fix can be unchecked; a backup is made before writing, undo is in the '…' menu.",
         "Что изменится": "What will change",
         "Починить": "Fix",
         "Показать итоговый PATH": "Show the resulting PATH",
@@ -1000,7 +1000,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         'ВСЁ УСТАНОВЛЕННОЕ': 'EVERYTHING INSTALLED',
         'Изменено': 'Modified',
         'Набор {name} установлен не полностью, нет: {ids}.': 'Pack {name} is not fully installed, missing: {ids}.',
-        'Найдено {all} (безопасно убрать — {safe}). Выбрано: {n} · освободится {size}': 'Found {all} ({safe} safe to remove). Selected: {n} · frees {size}',
+        'Найдено {all} (безопасно убрать — {safe}). Выбрано: {n} | освободится {size}': 'Found {all} ({safe} safe to remove). Selected: {n} | frees {size}',
         'Одинаковое название у разных расширений: {ids} — похоже на дубль или копию.': 'Different extensions with the same name: {ids} — looks like a duplicate or a copy.',
         'Отладчик «{type}» есть сразу у {names} — F5 может запустить не тот.': "Debugger '{type}' is provided by {names} — F5 may start the wrong one.",
         'Отметить всё': 'Select all',

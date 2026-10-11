@@ -309,8 +309,8 @@ def _launcher_factory(
             approx = WEIGHT_MB.get(weight, 30)
             meta.setText(
                 _(
-                    "{total} расширений · установлено {n} · нагрузка "
-                    "{load} · выключение освобождает ~{mb} МБ"
+                    "{total} расширений | установлено {n} | нагрузка "
+                    "{load} | выключение освобождает ~{mb} МБ"
                 ).format(total=len(exts), n=n, load=_(WEIGHT_LABEL[weight]), mb=approx)
             )
 
@@ -3169,7 +3169,7 @@ def _launcher_factory(
                     tag.setObjectName("Wlight")
                 elif installed:
                     tag.setText(
-                        _("установлено{ver}").format(ver=f" · {version}" if version else "")
+                        _("установлено{ver}").format(ver=f" | {version}" if version else "")
                     )
                     tag.setObjectName("Wlight")
                 else:
@@ -3533,7 +3533,7 @@ def _launcher_factory(
                 cl.setSpacing(4)
                 head = QHBoxLayout()
                 head.setSpacing(8)
-                nm = QLabel(f"{tc.title}  ·  {key}")
+                nm = QLabel(f"{tc.title}  |  {key}")
                 nm.setObjectName("CatTitle")
                 head.addWidget(nm, 1)
                 req_missing = [
@@ -3554,7 +3554,7 @@ def _launcher_factory(
                     pkg = st["package"]
                     prow = QHBoxLayout()
                     prow.setSpacing(6)
-                    label = pkg.title + (_(" · доп.") if pkg.optional else "")
+                    label = pkg.title + (_(" | доп.") if pkg.optional else "")
                     pn = QLabel(label)
                     pn.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                     if pkg.provides:
@@ -4307,8 +4307,8 @@ def _launcher_factory(
                     _("МБ"),
                     _("включено {en}").format(en=en),
                     _("выключится {dis}").format(dis=len(dis)),
-                    " · ".join(
-                        t for t in (_("реально · оценка ~{saved}").format(saved=saved), start_txt) if t
+                    " | ".join(
+                        t for t in (_("реально | оценка ~{saved}").format(saved=saved), start_txt) if t
                     ),
                 )
             else:
@@ -4318,10 +4318,10 @@ def _launcher_factory(
                     _("МБ"),
                     _("включено {en}").format(en=en),
                     _("выключится {dis}").format(dis=len(dis)),
-                    " · ".join(t for t in (extra, start_txt) if t),
+                    " | ".join(t for t in (extra, start_txt) if t),
                 )
             self.b_run.setText(
-                _("Запустить · −{dis}").format(dis=len(dis)) if dis else _("Запустить VS Code")
+                _("Запустить | −{dis}").format(dis=len(dis)) if dis else _("Запустить VS Code")
             )
             folder = self.folder_edit.text().strip() if hasattr(self, "folder_edit") else ""
             self.b_run.setToolTip(
@@ -5747,11 +5747,11 @@ def run_gui():
     _lang_switch = {"fn": None}
     descriptions = load_descriptions()
     log.info(
-        "Старт v%s · CLI=%s · тема=%s%s",
+        "Старт v%s | CLI=%s | тема=%s%s",
         __version__,
         code_cli,
         cfg.get("theme", "dark"),
-        f" · categories.json: {cats_err}" if cats_err else "",
+        f" | categories.json: {cats_err}" if cats_err else "",
     )
     # Дубли в карте — тихая мина: build_ext_index молча оставляет последнее
     # назначение, и стек, куда расширение было положено раньше, теряет его.
